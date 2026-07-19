@@ -25,3 +25,11 @@ cfo:
   daily_loss_limit_pct: 2.0
   max_consecutive_losses: 3
   max_drawdown_halt_pct: 8.0
+
+# Council order construction (council/order_construction.py), per
+# trading_system_summary_v2.md Appendix A §1.4 / §6. All values [adjustable].
+order:
+  sl_buffer_atr: 0.2
+  sl_min_atr: 0.8
+  sl_max_atr: 2.5
+  tp_r_multiple: 2.0
