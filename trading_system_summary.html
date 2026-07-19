@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Automated Gold & Forex Trading System - Decision Brief</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', 'Calibri', 'Arial', sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: white;
+            padding: 40px;
+            max-width: 950px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: #000;
+            border-bottom: 3px solid #0066cc;
+            padding-bottom: 12px;
+            margin-bottom: 8px;
+            margin-top: 0;
+        }
+
+        .subtitle {
+            font-size: 14px;
+            color: #666;
+            font-style: italic;
+            margin-bottom: 24px;
+        }
+
+        h2 {
+            font-size: 18px;
+            font-weight: 600;
+            color: #0066cc;
+            margin-top: 28px;
+            margin-bottom: 14px;
+            border-left: 4px solid #0066cc;
+            padding-left: 12px;
+        }
+
+        h3 {
+            font-size: 14px;
+            font-weight: 600;
+            color: #0066cc;
+            margin-top: 16px;
+            margin-bottom: 10px;
+        }
+
+        p {
+            margin: 12px 0;
+            text-align: justify;
+        }
+
+        ul, ol {
+            margin: 12px 0 12px 30px;
+        }
+
+        li {
+            margin: 6px 0;
+            line-height: 1.5;
+        }
+
+        strong {
+            color: #0066cc;
+            font-weight: 600;
+        }
+
+        em {
+            font-style: italic;
+            color: #555;
+        }
+
+        hr {
+            border: none;
+            border-top: 2px solid #ccc;
+            margin: 30px 0;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 18px 0;
+            background: white;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        th {
+            background-color: #f0f0f0;
+            border: 1px solid #999;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #333;
+            font-size: 11px;
+        }
+
+        td {
+            border: 1px solid #999;
+            padding: 10px 12px;
+            font-size: 11px;
+            line-height: 1.4;
+        }
+
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+
+        tr:hover {
+            background-color: #f0f7ff;
+        }
+
+        .section-intro {
+            background-color: #f0f8ff;
+            border-left: 4px solid #0066cc;
+            padding: 12px;
+            margin: 14px 0;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .highlight {
+            background-color: #fff9e6;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+
+        .note-box {
+            background-color: #fff0f5;
+            border-left: 4px solid #d32f2f;
+            padding: 12px;
+            margin: 12px 0;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .stage-box {
+            background-color: #e8f5e9;
+            border-left: 4px solid #4caf50;
+            padding: 12px;
+            margin: 12px 0;
+        }
+
+        @page {
+            size: letter;
+            margin: 0.75in;
+        }
+
+        @media print {
+            body {
+                padding: 0;
+                margin: 0;
+                max-width: 100%;
+            }
+
+            h1, h2 {
+                page-break-after: avoid;
+            }
+
+            h3 {
+                page-break-after: avoid;
+            }
+
+            table {
+                page-break-inside: avoid;
+            }
+
+            .section-intro, .stage-box, .note-box {
+                page-break-inside: avoid;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<h1>Automated Gold & Forex Trading System</h1>
+<p class="subtitle">Decision Brief for Non-Technical Stakeholders</p>
+
+<hr>
+
+<h2>What This Is</h2>
+
+<p>This project builds a <strong>24/7 automated trading system for Gold and Forex</strong> that replicates how a professional trading team operates — five specialists working together on every single trade decision before any money is committed to a trade.</p>
+
+<p>Instead of one "black-box" algorithm making isolated decisions, the system enforces debate and checks at every step:</p>
+
+<h3>The Five-Person Team:</h3>
+
+<ol>
+<li><strong>The Brain (AI Council)</strong> — Three analytical voices score each trading opportunity: a bull (looks for reasons to buy), a bear (looks for reasons to sell), and a risk-management voice (watches for danger signs like too-wide stop-losses, approaching economic news, or market turmoil). A trade only proceeds if it passes a majority vote and passes the risk-manager's veto gate. When a decision is borderline or high-stakes, the system escalates to Claude AI for a human-level sanity check before acting.</li>
+
+<li><strong>The Shield (Portfolio Checkpoint)</strong> — Before the Council's idea becomes an order, this checkpoint asks: is this trade good enough on its own (win/loss ratio)? Would it duplicate risk we already have? Does it fit the current portfolio direction? If not, it blocks the trade with a logged reason.</li>
+
+<li><strong>The CFO (Money Manager)</strong> — Given an approved trade idea, this role calculates the right position size: How much of the account should we risk? Adjust for current market volatility. Size the position so even a losing trade doesn't blow up our capital. It also enforces a daily loss limit — if we've had a bad day, no more new trades until tomorrow.</li>
+
+<li><strong>The Watchman (Position Monitor)</strong> — Once a trade is open, this role actively manages it: trails the stop-loss to lock in gains, exits early if the market structure that justified the trade breaks, protects profits once they form. It works alongside a broker-side stop-loss (a hard safety net independent of our system).</li>
+
+<li><strong>The Auditor (Performance Reviewer)</strong> — Each day, reviews what happened: which trades worked, which didn't, why, what we learned. Most importantly: decides which strategies have proven themselves enough to risk real money. Nothing moves from testing to live trading without the Auditor's sign-off.</li>
+</ol>
+
+<div class="section-intro">
+<strong>Core Safety Philosophy:</strong><br>
+Nothing goes live with real capital until it has <em>proven itself three times over</em>:
+<ul style="margin: 8px 0 0 20px;">
+<li>Passes historical simulation (backtesting) on data it wasn't trained on</li>
+<li>Runs weeks in real-time paper trading (live market conditions, zero real money at risk)</li>
+<li>Starts with tiny real trades and ramps up gradually — never a sudden jump to full position size</li>
+</ul>
+</div>
+
+<hr>
+
+<h2>How It Gets Built</h2>
+
+<p>This is not built all at once. Instead, it's built in <strong>five plain-language stages</strong>, each proven to work before the next begins:</p>
+
+<h3>Stage 1: Foundation & Data (Phases 0–1)</h3>
+<p>Set up the basic plumbing: get Python and the trading platform talking, log into real-time market data, download historical price data for backtesting.</p>
+<div class="stage-box">
+<strong>Proof point:</strong> The system can see and record live market data.
+</div>
+
+<h3>Stage 2: Proof of Concept — Tiny Test Trades (Phases 2–3)</h3>
+<p>Implement one very simple trading rule and run it in shadow-mode on the broker's demo account (no real money, no risk). The full pipeline — idea generation, risk checks, position sizing, order placement — runs end-to-end, but trades are throttled and logged for manual verification.</p>
+<div class="stage-box">
+<strong>Proof point:</strong> The system can place trades, broker infrastructure works, nothing crashes.
+</div>
+
+<h3>Stage 3: Add Intelligence & Optimization (Phases 4–8)</h3>
+<p>Build the backtest engine so we can test strategies on years of historical data. Implement the full five-person team: Council (multi-voice debate), Shield (portfolio-level checks), CFO (intelligent sizing), Watchman (trailing stops). Each piece is tested independently and together.</p>
+<div class="stage-box">
+<strong>Proof point:</strong> Strategies demonstrably profit in historical simulation without overfitting.
+</div>
+
+<h3>Stage 4: Extended Real-Time Testing with No Real Money (Phase 9)</h3>
+<p>Run the full system in paper-trading mode for weeks. Live market data, real conditions, but every trade is simulated — no capital at risk. The Auditor produces daily reports. We validate that the strategy holds up in reality.</p>
+<div class="stage-box">
+<strong>Proof point:</strong> The system performs as expected when facing real market conditions, surprises are understood.
+</div>
+
+<h3>Stage 5: Careful Rollout to Real Trading (Phases 10–11)</h3>
+<p>Deploy to a VPS (a small cloud server running 24/7). First trades are tiny (0.25% of account risk per trade). Gradually increase to full size only after live performance confirms the strategy works with real money.</p>
+<div class="stage-box">
+<strong>Proof point:</strong> Real trading works, monitoring/alerts work, strategy survives first contact with the live market.
+</div>
+
+<p><strong>Why this approach works:</strong> Each stage catches errors before they become expensive. If the backtest looks good but paper trading reveals a flaw, we fix it without touching real capital. Most problems surface in stages 2–4, not after months of build time.</p>
+
+<hr>
+
+<h2>Cost Breakdown</h2>
+
+<p>All costs are for <strong>infrastructure</strong> — the tools and cloud services the system runs on. This is <em>separate</em> from trading capital (the money being traded with) and trading losses (the risk of trading itself).</p>
+
+<table>
+    <thead>
+        <tr>
+            <th style="width: 25%;">Item</th>
+            <th style="width: 20%;">Cost</th>
+            <th style="width: 55%;">Notes</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>Trading platform (MT5)</td>
+            <td>Free</td>
+            <td>Provided by broker</td>
+        </tr>
+        <tr>
+            <td>Python &amp; development</td>
+            <td>Free</td>
+            <td>Open-source</td>
+        </tr>
+        <tr>
+            <td>Cloud server (VPS)</td>
+            <td>$10–30/month</td>
+            <td>Entry to mid-tier; premium servers ($60–190/month) aren't needed for our decision frequency</td>
+        </tr>
+        <tr>
+            <td>AI (Claude API)</td>
+            <td>$5–30/month</td>
+            <td>Used for trade debate escalation and daily performance summaries; starts Phase 10</td>
+        </tr>
+        <tr>
+            <td>Market data &amp; news</td>
+            <td>Free</td>
+            <td>Free sources initially; premium feeds optional later</td>
+        </tr>
+        <tr>
+            <td>Monitoring alerts</td>
+            <td>Free</td>
+            <td>Standard integrations (email, Telegram, Discord)</td>
+        </tr>
+        <tr>
+            <td><strong>Total monthly infrastructure</strong></td>
+            <td><strong>~$15–60/month</strong></td>
+            <td><strong>Once fully live (Phase 5)</strong></td>
+        </tr>
+    </tbody>
+</table>
+
+<div class="note-box">
+<strong>Important distinction:</strong>
+<ul style="margin: 8px 0 0 20px;">
+<li><strong>Infrastructure cost</strong> (~$15–60/month) is the operational overhead, separate from trading costs.</li>
+<li><strong>Trading capital</strong> is the money being traded with — that's a separate decision and risk.</li>
+<li><strong>Trading losses</strong> are the money lost from bad trades — that's the risk of the strategy, managed by daily loss limits, forced ramp, and the Auditor's gating.</li>
+</ul>
+</div>
+
+<hr>
+
+<h2>AI Provider Options (Instead of Claude)</h2>
+
+<p>The "AI (Claude API)" line above is only used for one narrow job: double-checking borderline trade decisions and writing the daily performance summary. It is <strong>not</strong> required for the system to work — the five-person team's rule-based decision-making runs on its own without any AI API. Because this piece is isolated to one small part of the system, switching providers later is easy — it doesn't affect anything else that's been built.</p>
+
+<table>
+    <thead>
+        <tr>
+            <th style="width: 30%;">Option</th>
+            <th style="width: 20%;">Est. Cost/Month</th>
+            <th style="width: 50%;">Trade-off</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><strong>No AI at all — team runs on rules only</strong></td>
+            <td><strong>$0</strong></td>
+            <td>Recommended starting point. The team's math-and-rules-based decisions are fully functional without any AI double-check. Add AI later only if there's a proven need.</td>
+        </tr>
+        <tr>
+            <td>Budget AI options (Groq, or similar low-cost providers)</td>
+            <td>~$1–5</td>
+            <td>Cheapest paid option. Lower judgment quality — worth testing before trusting it on real trades.</td>
+        </tr>
+        <tr>
+            <td>Google's AI (Gemini)</td>
+            <td>~$2–10</td>
+            <td>Often has a free usage tier that may cover this system's light, occasional use entirely.</td>
+        </tr>
+        <tr>
+            <td>OpenAI (makers of ChatGPT)</td>
+            <td>~$2–15</td>
+            <td>Comparable quality range to Claude, similar cost.</td>
+        </tr>
+        <tr>
+            <td>Claude (Anthropic) — current plan</td>
+            <td>~$5–30</td>
+            <td>The default recommendation — favors a stronger AI for "should we risk real money on this" decisions over marginal savings.</td>
+        </tr>
+        <tr>
+            <td>Run an AI model ourselves (no per-use fee)</td>
+            <td>$0 extra fee, but a bigger/pricier server</td>
+            <td>Avoids AI subscription costs but needs a more powerful (and more expensive) cloud server, plus more setup work. Not recommended for a first build.</td>
+        </tr>
+    </tbody>
+</table>
+
+<div class="section-intro">
+<strong>Bottom line:</strong> this is not a decision that needs to be made now. The recommended path is to build and prove the system with <strong>no AI subscription at all</strong> (Stages 1–4), and only decide on an AI provider once there's a real track record showing it's needed — at that point, pick based on actual usage, not an estimate.
+</div>
+
+<hr>
+
+<h2>What's Still Undecided (Non-Blockers)</h2>
+
+<p>A handful of choices will be made as each build stage approaches. These are <strong>not</strong> holding up the project:</p>
+
+<ul>
+<li><strong>Which broker &amp; account</strong> — details on trading fees, contract sizes, specific platform rules. Chosen before Phase 3.</li>
+<li><strong>Which VPS provider</strong> — cloud hosting choice (general-purpose vs. forex-specialized). Chosen before Phase 11.</li>
+<li><strong>News data source</strong> — free economic calendar or paid real-time news feed. Decided as Phase 2 starts.</li>
+<li><strong>AI budget ceiling</strong> — determines whether we use cost-optimized Claude or premium tier for edge cases. Set before Phase 10.</li>
+<li><strong>Technical thresholds</strong> — specific win-rate requirements for "proven" strategy, daily loss limit amount, circuit-breaker behavior. These are written into configuration and can be adjusted.</li>
+</ul>
+
+<p>None of these are architectural problems or surprises. They're choices that depend on broker selection or budget preferences.</p>
+
+<hr>
+
+<h2>Risk Acknowledgment</h2>
+
+<p><strong>Automated trading carries real risks:</strong></p>
+<ul>
+<li>Strategies can fail on unseen market conditions despite backtesting.</li>
+<li>Execution errors, broker platform issues, or connectivity gaps can cause losses.</li>
+<li>Market events (flash crashes, gaps) can exceed even carefully-sized stop-losses.</li>
+</ul>
+
+<p><strong>How this system mitigates those risks:</strong></p>
+<ul>
+<li>The five-person-team approach catches logical errors that a solo algorithm would miss.</li>
+<li>No decision is trusted without proof: backtest, paper trading, then live ramp.</li>
+<li>Hard broker-side stop-losses (independent of our monitoring) protect every position.</li>
+<li>Daily loss limits prevent "death spiral" days from compounding.</li>
+<li>Full audit trails make every decision reviewable — when something goes wrong, we know why.</li>
+<li>The Auditor controls which strategies touch real money, using objective historical criteria.</li>
+</ul>
+
+<p>This is not "fire and forget." It's continuous automated trading with multiple layers of human-like reasoning and mechanical safety checks.</p>
+
+<hr>
+
+<h2>Next Steps</h2>
+
+<p><strong>To greenlight:</strong></p>
+<ul>
+<li>Confirm budget for infrastructure (~$15–60/month).</li>
+<li>Confirm willingness to invest development time through Stage 2 (proof the system can place trades without crashing).</li>
+<li>Identify broker preference (needed by Phase 3 to finalize platform integration details).</li>
+</ul>
+
+<p><strong>To proceed, this document should be reviewed alongside:</strong></p>
+<ul>
+<li>The technical specification (<code>spec.md</code>) for architecture details if needed.</li>
+<li>The verification summary (final section of spec) listing concrete proof-points before any live capital is committed.</li>
+</ul>
+
+<hr>
+
+<p style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #ccc; text-align: center; color: #666; font-size: 12px;">
+Document Date: 2026-07-18 | Project: Automated Gold & Forex Trading System | Status: Design Phase
+</p>
+
+</body>
+</html>

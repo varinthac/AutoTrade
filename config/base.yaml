@@ -1,0 +1,19 @@
+# Shared defaults across dev/sandbox/live. Broker-specific overrides (symbol
+# suffixes, server-specific quirks) belong in dev.yaml / sandbox.yaml / live.yaml
+# once those are needed (Phase 3+).
+
+global:
+  timeframe: H1
+  timezone: server # MT5 server time, per spec.md Appendix A §0
+
+# Canonical symbol name -> broker symbol name. IC Markets uses no suffix on
+# its standard demo servers; change the right-hand side here if your account
+# shows e.g. "XAUUSD.a" in Market Watch instead.
+symbols:
+  XAUUSD: XAUUSD
+  EURUSD: EURUSD
+  GBPUSD: GBPUSD
+  USDJPY: USDJPY
+
+historical:
+  default_days: 730 # ~2 years, enough for a first backtest pass in Phase 4

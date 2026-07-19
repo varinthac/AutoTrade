@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autotrade"
+version = "0.1.0"
+description = "Automated Gold & Forex trading system — five-role rule-based decision pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "MetaTrader5>=5.0.45",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "python-dotenv>=1.0",
+    "PyYAML>=6.0",
+    "SQLAlchemy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
