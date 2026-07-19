@@ -15,6 +15,7 @@ import MetaTrader5 as mt5
 import pandas as pd
 
 from autotrade.common.config import REPO_ROOT
+from autotrade.common.mt5_time import server_now
 from autotrade.common.symbols import to_broker_name
 from autotrade.feed.poller import TIMEFRAME_MAP
 
@@ -79,7 +80,11 @@ def download_historical(
         )
 
     df = pd.DataFrame(rates)
-    df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+    # rates["time"] is MT5 broker server time, not true UTC (see
+    # common/mt5_time.py) — pd.to_datetime(..., unit="s") without utc=True
+    # reads it as a naive server-time reading, matching feed/poller.py's
+    # utcfromtimestamp() convention for the same raw integer.
+    df["time"] = pd.to_datetime(df["time"], unit="s")
 
     before = len(df)
     df = df.drop_duplicates(subset="time").sort_values("time").reset_index(drop=True)
@@ -88,6 +93,16 @@ def download_historical(
         logger.warning("%s %s: dropped %d duplicate-timestamp rows", symbol, timeframe, duplicates_dropped)
 
     expected_delta = _TIMEFRAME_DELTA[timeframe]
+
+    now = server_now(broker_symbol)
+    last_bar_time = df["time"].iloc[-1].to_pydatetime()
+    if last_bar_time + expected_delta > now:
+        df = df.iloc[:-1]
+        logger.info(
+            "%s %s: dropped still-forming last bar at %s (not yet closed as of server time %s)",
+            symbol, timeframe, last_bar_time, now,
+        )
+
     unexplained_gaps = 0
     for prev_time, next_time in zip(df["time"], df["time"].shift(-1).dropna()):
         gap = next_time - prev_time

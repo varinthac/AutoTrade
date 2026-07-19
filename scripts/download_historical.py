@@ -9,9 +9,6 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from autotrade.common.config import load_mt5_credentials, load_yaml_config
 from autotrade.common.mt5_connection import mt5_session

@@ -14,7 +14,8 @@ from datetime import datetime
 
 @dataclass(frozen=True)
 class Bar:
-    time: datetime  # bar OPEN time, UTC, as reported by MT5
+    time: datetime  # bar OPEN time, MT5 broker server time (naive — not UTC,
+    # not local; see spec.md Appendix A §0 and common/mt5_time.py)
     open: float
     high: float
     low: float
@@ -28,4 +29,4 @@ class MarketSnapshot:
     symbol: str  # canonical name, e.g. "XAUUSD"
     timeframe: str  # e.g. "H1"
     bar: Bar  # the most recent *closed* bar — never an in-progress bar
-    news: None = None  # placeholder — populated from Phase 2 onward
+    news: dict | None = None  # placeholder shape — populated from Phase 2 onward

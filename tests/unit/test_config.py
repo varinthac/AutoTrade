@@ -1,0 +1,103 @@
+"""Unit tests for common/config.py — .env credential loading and YAML config
+loading. No MT5/network dependency."""
+from __future__ import annotations
+
+import pytest
+
+from autotrade.common.config import MT5Credentials, load_mt5_credentials, load_yaml_config
+
+# A path that doesn't exist: load_dotenv() on a missing file is a documented
+# safe no-op, so these tests are isolated from the repo's real .env and from
+# each other purely via monkeypatch'd os.environ.
+_MISSING_ENV_FILE = None
+
+
+@pytest.fixture
+def clean_mt5_env(monkeypatch, tmp_path):
+    """Ensure MT5_* vars start unset, and point load_dotenv() at a file that
+    doesn't exist so it can't leak the repo's real .env into the test."""
+    for key in ("MT5_LOGIN", "MT5_PASSWORD", "MT5_SERVER", "MT5_TERMINAL_PATH"):
+        monkeypatch.delenv(key, raising=False)
+    return tmp_path / "does_not_exist.env"
+
+
+def test_load_mt5_credentials_success(monkeypatch, clean_mt5_env):
+    monkeypatch.setenv("MT5_LOGIN", "12345678")
+    monkeypatch.setenv("MT5_PASSWORD", "hunter2")
+    monkeypatch.setenv("MT5_SERVER", "ICMarketsSC-Demo")
+
+    creds = load_mt5_credentials(clean_mt5_env)
+
+    assert creds == MT5Credentials(
+        login=12345678, password="hunter2", server="ICMarketsSC-Demo", terminal_path=None
+    )
+
+
+def test_load_mt5_credentials_login_is_coerced_to_int(monkeypatch, clean_mt5_env):
+    monkeypatch.setenv("MT5_LOGIN", "999")
+    monkeypatch.setenv("MT5_PASSWORD", "pw")
+    monkeypatch.setenv("MT5_SERVER", "srv")
+
+    creds = load_mt5_credentials(clean_mt5_env)
+
+    assert creds.login == 999
+    assert isinstance(creds.login, int)
+
+
+def test_load_mt5_credentials_includes_terminal_path_when_set(monkeypatch, clean_mt5_env):
+    monkeypatch.setenv("MT5_LOGIN", "1")
+    monkeypatch.setenv("MT5_PASSWORD", "pw")
+    monkeypatch.setenv("MT5_SERVER", "srv")
+    monkeypatch.setenv("MT5_TERMINAL_PATH", r"C:\MT5\terminal64.exe")
+
+    creds = load_mt5_credentials(clean_mt5_env)
+
+    assert creds.terminal_path == r"C:\MT5\terminal64.exe"
+
+
+@pytest.mark.parametrize("missing_var", ["MT5_LOGIN", "MT5_PASSWORD", "MT5_SERVER"])
+def test_load_mt5_credentials_raises_when_a_required_var_is_missing(monkeypatch, clean_mt5_env, missing_var):
+    all_vars = {"MT5_LOGIN": "1", "MT5_PASSWORD": "pw", "MT5_SERVER": "srv"}
+    for key, value in all_vars.items():
+        if key != missing_var:
+            monkeypatch.setenv(key, value)
+
+    with pytest.raises(RuntimeError, match="MT5_LOGIN, MT5_PASSWORD, and MT5_SERVER"):
+        load_mt5_credentials(clean_mt5_env)
+
+
+def test_load_mt5_credentials_raises_when_all_vars_missing(clean_mt5_env):
+    with pytest.raises(RuntimeError):
+        load_mt5_credentials(clean_mt5_env)
+
+
+def test_load_mt5_credentials_treats_blank_string_as_missing(monkeypatch, clean_mt5_env):
+    # .env.example ships with blank values (MT5_LOGIN=) — must not pass validation
+    monkeypatch.setenv("MT5_LOGIN", "")
+    monkeypatch.setenv("MT5_PASSWORD", "pw")
+    monkeypatch.setenv("MT5_SERVER", "srv")
+
+    with pytest.raises(RuntimeError):
+        load_mt5_credentials(clean_mt5_env)
+
+
+def test_load_yaml_config_reads_real_base_config():
+    cfg = load_yaml_config("base")
+
+    assert cfg["global"]["timeframe"] == "H1"
+    assert cfg["symbols"]["XAUUSD"] == "XAUUSD"
+    assert isinstance(cfg["historical"]["default_days"], int)
+
+
+def test_load_yaml_config_missing_file_raises_file_not_found_error():
+    with pytest.raises(FileNotFoundError):
+        load_yaml_config("this_config_does_not_exist")
+
+
+def test_load_yaml_config_empty_file_returns_empty_dict(tmp_path, monkeypatch):
+    import autotrade.common.config as config_mod
+
+    monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
+    (tmp_path / "empty.yaml").write_text("", encoding="utf-8")
+
+    assert load_yaml_config("empty") == {}

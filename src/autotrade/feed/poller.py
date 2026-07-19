@@ -44,7 +44,10 @@ def fetch_last_closed_bar(broker_symbol: str, timeframe: str) -> Bar:
 
     r = rates[0]
     return Bar(
-        time=datetime.fromtimestamp(int(r["time"]), tz=timezone.utc),
+        # r["time"] is MT5 broker server time, not true UTC (see
+        # common/mt5_time.py) — this reads it as a naive server-time
+        # reading without any timezone conversion.
+        time=datetime.fromtimestamp(int(r["time"]), tz=timezone.utc).replace(tzinfo=None),
         open=float(r["open"]),
         high=float(r["high"]),
         low=float(r["low"]),
@@ -65,12 +68,13 @@ def poll_new_bars(
     time its last-closed-bar timestamp advances. Requires an active
     mt5_session(). Set max_iterations for tests/manual verification runs;
     leave None to run forever."""
+    broker_symbols = {symbol: to_broker_name(symbol) for symbol in symbols}
     last_seen: dict[str, datetime] = {}
     iterations = 0
 
     while max_iterations is None or iterations < max_iterations:
         for symbol in symbols:
-            broker_symbol = to_broker_name(symbol)
+            broker_symbol = broker_symbols[symbol]
             try:
                 bar = fetch_last_closed_bar(broker_symbol, timeframe)
             except BarFetchError:

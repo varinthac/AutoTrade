@@ -8,6 +8,7 @@ rather than calling mt5.initialize()/mt5.login() itself.
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -22,35 +23,61 @@ class MT5ConnectionError(RuntimeError):
     pass
 
 
+# Reentrancy bookkeeping for the one shared MT5 terminal connection. Nested
+# or sequential `with mt5_session(creds):` blocks compose safely: only the
+# outermost 0->1 transition actually calls mt5.initialize(), and only the
+# matching 1->0 transition calls mt5.shutdown(). This assumes every nested
+# caller passes the same credentials — this system only ever talks to one
+# account at a time, so multi-account support is intentionally out of scope.
+_lock = threading.Lock()
+_depth = 0
+
+
 @contextmanager
 def mt5_session(creds: MT5Credentials) -> Iterator[None]:
     """Initialize the MT5 terminal connection and log in for the duration
-    of the `with` block; always shuts down cleanly on exit."""
-    init_kwargs = dict(login=creds.login, password=creds.password, server=creds.server)
-    if creds.terminal_path:
-        init_kwargs["path"] = creds.terminal_path
+    of the outermost `with` block; nested calls (same credentials) reuse the
+    existing connection. Shuts down cleanly when the outermost block exits."""
+    global _depth
 
-    if not mt5.initialize(**init_kwargs):
-        code, desc = mt5.last_error()
-        raise MT5ConnectionError(
-            f"MT5 initialize() failed: [{code}] {desc}. "
-            "Check that the terminal is installed, the demo account is valid, "
-            "and MT5_SERVER in .env exactly matches the server name shown in the terminal."
+    with _lock:
+        _depth += 1
+        is_outermost = _depth == 1
+
+    if is_outermost:
+        init_kwargs = dict(login=creds.login, password=creds.password, server=creds.server)
+        if creds.terminal_path:
+            init_kwargs["path"] = creds.terminal_path
+
+        if not mt5.initialize(**init_kwargs):
+            with _lock:
+                _depth -= 1
+            code, desc = mt5.last_error()
+            raise MT5ConnectionError(
+                f"MT5 initialize() failed: [{code}] {desc}. "
+                "Check that the terminal is installed, the demo account is valid, "
+                "and MT5_SERVER in .env exactly matches the server name shown in the terminal."
+            )
+
+        account = mt5.account_info()
+        if account is None:
+            mt5.shutdown()
+            with _lock:
+                _depth -= 1
+            code, desc = mt5.last_error()
+            raise MT5ConnectionError(f"MT5 login succeeded but account_info() failed: [{code}] {desc}")
+
+        logger.info(
+            "MT5 connected: login=%s server=%s balance=%s currency=%s",
+            account.login, account.server, account.balance, account.currency,
         )
-
-    account = mt5.account_info()
-    if account is None:
-        mt5.shutdown()
-        code, desc = mt5.last_error()
-        raise MT5ConnectionError(f"MT5 login succeeded but account_info() failed: [{code}] {desc}")
-
-    logger.info(
-        "MT5 connected: login=%s server=%s balance=%s currency=%s",
-        account.login, account.server, account.balance, account.currency,
-    )
 
     try:
         yield
     finally:
-        mt5.shutdown()
-        logger.info("MT5 connection shut down")
+        with _lock:
+            _depth -= 1
+            is_last = _depth == 0
+        if is_last:
+            mt5.shutdown()
+            logger.info("MT5 connection shut down")
