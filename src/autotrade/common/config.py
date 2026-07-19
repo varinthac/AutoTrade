@@ -24,6 +24,15 @@ class MT5Credentials:
     server: str
     terminal_path: str | None
 
+    def __repr__(self) -> str:
+        """Mask `password` so logging/printing a `MT5Credentials` (whole
+        object, e.g. an accidental `logger.debug(creds)` or an exception
+        formatter dumping locals) never leaks it in full."""
+        return (
+            f"MT5Credentials(login={self.login!r}, password='***', "
+            f"server={self.server!r}, terminal_path={self.terminal_path!r})"
+        )
+
 
 def load_mt5_credentials(env_file: Path | None = None) -> MT5Credentials:
     load_dotenv(env_file or REPO_ROOT / ".env")

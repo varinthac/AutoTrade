@@ -81,6 +81,16 @@ def test_load_mt5_credentials_treats_blank_string_as_missing(monkeypatch, clean_
         load_mt5_credentials(clean_mt5_env)
 
 
+def test_mt5_credentials_repr_masks_password():
+    creds = MT5Credentials(login=1, password="hunter2", server="srv", terminal_path=None)
+
+    assert "hunter2" not in repr(creds)
+    assert "hunter2" not in str(creds)
+    assert "password='***'" in repr(creds)
+    assert "login=1" in repr(creds)
+    assert "server='srv'" in repr(creds)
+
+
 def test_load_yaml_config_reads_real_base_config():
     cfg = load_yaml_config("base")
 

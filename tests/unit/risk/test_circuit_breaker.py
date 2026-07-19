@@ -348,13 +348,20 @@ def test_missing_state_file_is_a_clean_start_not_an_error(tmp_path):
     assert not breaker.check(FixedClock(datetime(2026, 7, 19, 9, 0))).blocks_new_entries
 
 
-def test_corrupt_state_file_is_treated_as_a_clean_start(tmp_path):
+def test_corrupt_state_file_fails_closed_with_drawdown_halt_active(tmp_path):
+    # A corrupt/unreadable state file must NOT silently un-halt an active
+    # drawdown halt -- that's exactly backwards from the persistence's whole
+    # purpose (Appendix A §3.3). Mirrors common/kill_switch_flag.py's
+    # fail-closed handling of a corrupt flag file.
     state_path = tmp_path / "circuit_breaker_state.json"
     state_path.write_text("{not valid json", encoding="utf-8")
 
     breaker = _breaker(state_path=state_path)
 
-    assert not breaker.check(FixedClock(datetime(2026, 7, 19, 9, 0))).blocks_new_entries
+    assert breaker._drawdown_halted is True
+    state = breaker.check(FixedClock(datetime(2026, 7, 19, 9, 0)))
+    assert state.drawdown_halted
+    assert state.blocks_new_entries
 
 
 def test_active_consecutive_loss_halt_survives_a_simulated_restart(tmp_path):

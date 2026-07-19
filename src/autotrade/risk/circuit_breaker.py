@@ -14,12 +14,15 @@ break the daily-loss reset boundary.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from autotrade.common.clock import Clock
 from autotrade.common.config import REPO_ROOT
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_STATE_PATH = REPO_ROOT / "data" / "db" / "circuit_breaker_state.json"
 
@@ -96,12 +99,29 @@ class CircuitBreaker:
         """Restore persisted state (if `state_path` is set and the file
         exists) -- critically, `_drawdown_halted`, whose whole point is that
         a crash/restart must NOT be how it gets cleared (Appendix A §3.3:
-        "ต้อง manual restart เท่านั้น")."""
+        "ต้อง manual restart เท่านั้น").
+
+        A present-but-corrupt/unreadable state file fails CLOSED: rather
+        than silently keeping the constructor default of `_drawdown_halted =
+        False` (which would un-halt an active drawdown halt -- exactly the
+        scenario this persistence exists to prevent), it is treated as
+        `_drawdown_halted = True` and logged loudly, same fail-safe
+        philosophy as `common/kill_switch_flag.get_status()`. The other
+        fields aren't safety-critical one-way latches, so they simply reset
+        to their defaults."""
         if self._state_path is None or not self._state_path.exists():
             return
         try:
             payload = json.loads(self._state_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.error(
+                "circuit breaker state file %s is corrupt/unreadable (%s); "
+                "conservatively treating drawdown halt as ACTIVE pending manual "
+                "investigation, per Appendix A §3.3's fail-closed philosophy",
+                self._state_path,
+                exc,
+            )
+            self._drawdown_halted = True
             return
 
         self._drawdown_halted = payload.get("drawdown_halted", False)
