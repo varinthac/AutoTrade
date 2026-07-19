@@ -1,0 +1,308 @@
+"""Core event-driven backtest engine (spec.md §4 "Backtest engine" / §6 Phase
+4). Replays through the *exact same* signal/order-construction/sizing
+functions the live system uses (`council.trivial_signal.build_trade_idea` by
+default, injected so Phase 6's real Council is a drop-in later) over
+historical OHLC(+spread) data -- it does not reimplement any decision logic.
+
+Guardrails (spec.md §4), enforced structurally, not just documented:
+- Decisions only read closed bars: the signal function is called with
+  `as_of_index=i`, one full loop iteration *before* bar `i + 1` (the fill
+  bar) is even looked at.
+- Fills happen at next-bar open, with modeled spread: a signal fired at bar
+  `i` becomes a `_PendingOrder` and is only filled at bar `i + 1`'s `open`.
+- No MT5 import anywhere in this module -- `SymbolSpec` is a plain input the
+  caller resolves once before the backtest starts (spec.md §2.1's `backtest/`
+  entry: "Replay the *same* pipeline code over historical ... data"; §2.3's
+  dependency-direction invariant).
+
+Cost-model convention (a real backtest-methodology decision, documented
+here rather than left implicit):
+- Spread + slippage are baked directly into the recorded ENTRY fill price
+  (`open + cost` for BUY, `open - cost` for SELL) -- that shift *is* the
+  price actually paid, so `gross_pnl` computed from it is already net of
+  spread/slippage (NOT net of commission), matching how "gross P&L" is
+  conventionally used in retail trading (before commission, after the
+  bid/ask you actually traded at). `cost` on the trade record is commission
+  only (`cost_model.commission_cost`) -- applying `cost_model.
+  round_trip_cost` (which bundles spread+slippage+commission) *again* at
+  trade close would double-count the spread/slippage already reflected in
+  the fill price. `round_trip_cost` exists for a different caller shape
+  (nominal, non-fill-adjusted prices) -- see its docstring. The currency
+  amount of that baked-in spread/slippage is not discarded, though: it is
+  captured separately on `ClosedTrade.spread_slippage_cost`, so a caller
+  wanting the *total* round-trip cost of a trade (spread + slippage +
+  commission) sums `cost + spread_slippage_cost` rather than reading `cost`
+  alone -- see `ClosedTrade`'s field docstrings.
+- Take-profit always fills at its nominal price, even if a bar gaps through
+  it favorably -- modeled as a resting limit order (no assumed positive
+  slippage), consistent with defaulting to the worse outcome whenever
+  intrabar/gap ordering is ambiguous.
+- Stop-loss fills at its nominal price UNLESS the bar's own OPEN has already
+  gapped past it (weekend gap or any other session gap) -- in that case the
+  exit fills at that bar's actual OPEN, the real, worse price, per spec.md
+  §6 Phase 4's explicit "including weekend gap bars" proof point. Modeled as
+  a stop/market order: genuinely subject to negative slippage through gaps.
+- Same-bar-touches-both (a bar's high/low range technically reaches both SL
+  and TP, with no gap-through-open): stop-loss takes priority. A real market
+  can't tell us which was touched first intrabar, so this assumes the worse
+  outcome for us rather than the better one.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable, Literal
+
+import pandas as pd
+
+from autotrade.backtest.clock import SimulatedClock
+from autotrade.backtest.cost_model import CostModelConfig, commission_cost, spread_slippage_price
+from autotrade.common.symbol_spec import SymbolSpec
+from autotrade.council.order_construction import OrderPlan
+from autotrade.council.trivial_signal import build_trade_idea
+from autotrade.risk.sizing import compute_lot_size
+
+SignalFn = Callable[..., "OrderPlan | None"]
+
+
+@dataclass(frozen=True)
+class ClosedTrade:
+    """See module docstring's "Cost-model convention" section for the full
+    rationale. In short: `gross_pnl` is NOT gross of all costs -- it is
+    computed from `entry_price`, which already has spread/slippage baked in,
+    so `gross_pnl` is only gross of commission. `cost` and
+    `spread_slippage_cost` are the two cost components tracked separately;
+    total round-trip cost for a trade is `cost + spread_slippage_cost`.
+    """
+
+    symbol: str
+    direction: Literal["BUY", "SELL"]
+    entry_time: pd.Timestamp
+    entry_price: float
+    exit_time: pd.Timestamp
+    exit_price: float
+    exit_reason: Literal["stop_loss", "take_profit", "end_of_data"]
+    lot_size: float
+    gross_pnl: float
+    """P&L from `entry_price` (already spread/slippage-adjusted) to
+    `exit_price`, before commission -- NOT gross of spread/slippage, only of
+    commission."""
+    cost: float
+    """Commission only (`cost_model.commission_cost`)."""
+    spread_slippage_cost: float
+    """Spread + slippage cost in currency, already folded into `entry_price`
+    (and thus into `gross_pnl`) at fill time -- tracked here separately so a
+    reader summing "total trading cost" doesn't silently miss it by reading
+    `cost` alone. Total round-trip cost = `cost + spread_slippage_cost`."""
+    net_pnl: float
+    r_multiple: float
+
+
+@dataclass(frozen=True)
+class BacktestConfig:
+    """Strategy/risk/cost parameters for one backtest run. `signal_fn`
+    defaults to the Phase-3 trivial signal but is injected so Phase 6's real
+    Council can replace it without touching this engine -- it must be
+    `build_trade_idea`-shaped: `(df, as_of_index, sl_buffer_atr=, sl_min_atr=,
+    sl_max_atr=, tp_r_multiple=, pivot_bars=) -> OrderPlan | None`.
+
+    `current_atr`/`avg_atr_20d` volatility dampening (risk/sizing.py §3.2) is
+    left disabled (both `None` at every `compute_lot_size` call), matching
+    `orchestrator/shadow_loop.py`'s documented Phase-3 simplification -- a
+    correct rolling 20-*trading*-day average ATR needs a bars-per-day
+    constant per timeframe, which is more machinery than this phase needs;
+    revisit together with that same shadow-loop simplification.
+    """
+
+    starting_equity: float
+    risk_per_trade_pct: float
+    cost_model: CostModelConfig
+    sl_buffer_atr: float = 0.2
+    sl_min_atr: float = 0.8
+    sl_max_atr: float = 2.5
+    tp_r_multiple: float = 2.0
+    pivot_bars: int = 3
+    signal_fn: SignalFn = build_trade_idea
+
+
+@dataclass
+class _PendingOrder:
+    plan: OrderPlan
+    lot_size: float
+
+
+@dataclass
+class _OpenPosition:
+    plan: OrderPlan
+    lot_size: float
+    entry_time: pd.Timestamp
+    entry_price: float
+    spread_slippage_price_delta: float
+    """The spread+slippage price-unit delta baked into `entry_price` at fill
+    time (see `_fill_entry_price`) -- kept around so `_close_trade` can
+    convert it to currency for `ClosedTrade.spread_slippage_cost`."""
+
+
+def _fill_entry_price(
+    direction: Literal["BUY", "SELL"],
+    bar_open: float,
+    bar_spread_points: float,
+    symbol: SymbolSpec,
+    cost_model: CostModelConfig,
+) -> tuple[float, float]:
+    """BUY fills at open+cost (pay more to buy), SELL fills at open-cost
+    (receive less to sell) -- spec.md §4's fill guardrail, sign convention
+    documented at module level. Returns `(entry_price, spread_slippage_price_
+    delta)`, the latter in price units (not currency) for the caller to
+    convert and record separately."""
+    cost = spread_slippage_price(bar_spread_points, symbol, cost_model)
+    entry_price = bar_open + cost if direction == "BUY" else bar_open - cost
+    return entry_price, cost
+
+
+def _check_exit(
+    direction: Literal["BUY", "SELL"],
+    stop_loss: float,
+    take_profit: float,
+    bar: "pd.Series",
+) -> tuple[float, Literal["stop_loss", "take_profit"]] | None:
+    """See module docstring for the documented SL/TP/gap priority convention."""
+    if direction == "BUY":
+        if bar["open"] <= stop_loss:
+            return bar["open"], "stop_loss"
+        sl_touched = bar["low"] <= stop_loss
+        tp_touched = bar["high"] >= take_profit
+    else:
+        if bar["open"] >= stop_loss:
+            return bar["open"], "stop_loss"
+        sl_touched = bar["high"] >= stop_loss
+        tp_touched = bar["low"] <= take_profit
+
+    if sl_touched:
+        return stop_loss, "stop_loss"
+    if tp_touched:
+        return take_profit, "take_profit"
+    return None
+
+
+def _close_trade(
+    symbol: str,
+    position: _OpenPosition,
+    exit_time: pd.Timestamp,
+    exit_price: float,
+    exit_reason: Literal["stop_loss", "take_profit", "end_of_data"],
+    point_value: float,
+    cost_model: CostModelConfig,
+) -> ClosedTrade:
+    sign = 1.0 if position.plan.direction == "BUY" else -1.0
+    gross_pnl = sign * (exit_price - position.entry_price) * point_value * position.lot_size
+    cost = commission_cost(position.lot_size, cost_model)
+    spread_slippage_cost = position.spread_slippage_price_delta * point_value * position.lot_size
+    net_pnl = gross_pnl - cost
+    risk_amount = position.plan.stop_distance * point_value * position.lot_size
+    r_multiple = net_pnl / risk_amount if risk_amount else 0.0
+
+    return ClosedTrade(
+        symbol=symbol,
+        direction=position.plan.direction,
+        entry_time=position.entry_time,
+        entry_price=position.entry_price,
+        exit_time=exit_time,
+        exit_price=exit_price,
+        exit_reason=exit_reason,
+        lot_size=position.lot_size,
+        gross_pnl=gross_pnl,
+        cost=cost,
+        spread_slippage_cost=spread_slippage_cost,
+        net_pnl=net_pnl,
+        r_multiple=r_multiple,
+    )
+
+
+def run_backtest(
+    df: pd.DataFrame,
+    symbol: str,
+    symbol_spec: SymbolSpec,
+    config: BacktestConfig,
+) -> list[ClosedTrade]:
+    """Walk `df` (columns: `time, open, high, low, close, spread`, contiguous
+    0..n-1 index) bar by bar, replaying `config.signal_fn` + `risk.sizing.
+    compute_lot_size` + this module's fill/exit simulation. Returns the raw
+    closed-trade list, including a final `exit_reason="end_of_data"` entry if
+    a position is still open when `df` runs out (never silently dropped).
+
+    Equity compounds: `compute_lot_size` is called with the running equity
+    (starting equity + realized net P&L of trades closed so far), not a
+    fixed starting value, so position sizing reflects the account's actual
+    trajectory through the backtest.
+    """
+    if len(df) < 2:
+        return []
+
+    point_value = symbol_spec.tick_value / symbol_spec.tick_size
+    equity = config.starting_equity
+    clock = SimulatedClock(pd.Timestamp(df["time"].iloc[0]).to_pydatetime())
+
+    pending: _PendingOrder | None = None
+    position: _OpenPosition | None = None
+    trades: list[ClosedTrade] = []
+
+    for i in range(len(df)):
+        bar = df.iloc[i]
+        clock.set(pd.Timestamp(bar["time"]).to_pydatetime())
+
+        if pending is not None:
+            entry_price, spread_slippage_price_delta = _fill_entry_price(
+                pending.plan.direction, bar["open"], bar["spread"], symbol_spec, config.cost_model
+            )
+            position = _OpenPosition(
+                plan=pending.plan,
+                lot_size=pending.lot_size,
+                entry_time=pd.Timestamp(bar["time"]),
+                entry_price=entry_price,
+                spread_slippage_price_delta=spread_slippage_price_delta,
+            )
+            pending = None
+
+        if position is not None:
+            exit_result = _check_exit(position.plan.direction, position.plan.stop_loss, position.plan.take_profit, bar)
+            if exit_result is not None:
+                exit_price, exit_reason = exit_result
+                trades.append(
+                    _close_trade(
+                        symbol, position, pd.Timestamp(bar["time"]), exit_price, exit_reason,
+                        point_value, config.cost_model,
+                    )
+                )
+                equity += trades[-1].net_pnl
+                position = None
+
+        if position is None and pending is None:
+            plan = config.signal_fn(
+                df, i,
+                sl_buffer_atr=config.sl_buffer_atr, sl_min_atr=config.sl_min_atr,
+                sl_max_atr=config.sl_max_atr, tp_r_multiple=config.tp_r_multiple,
+                pivot_bars=config.pivot_bars,
+            )
+            if plan is not None:
+                lot = compute_lot_size(
+                    equity=equity, risk_per_trade_pct=config.risk_per_trade_pct,
+                    entry=plan.entry, stop_loss=plan.stop_loss, point_value=point_value,
+                    volume_min=symbol_spec.volume_min, volume_max=symbol_spec.volume_max,
+                    volume_step=symbol_spec.volume_step,
+                )
+                if lot is not None and i + 1 < len(df):
+                    pending = _PendingOrder(plan=plan, lot_size=lot)
+                # else: below broker minimum, or no next bar to fill on --
+                # never becomes a trade, consistent with "not filled" rather
+                # than a silently-wrong same-bar fill.
+
+    if position is not None:
+        last_bar = df.iloc[-1]
+        trades.append(
+            _close_trade(
+                symbol, position, pd.Timestamp(last_bar["time"]), last_bar["close"], "end_of_data",
+                point_value, config.cost_model,
+            )
+        )
+
+    return trades

@@ -3,7 +3,7 @@
 
 Pure functions only: no I/O, no MT5, no Clock dependency. Broker-specific
 values (point/tick value, volume min/max/step) come from
-`common/symbols.SymbolSpec` — the caller resolves that and passes plain
+`common/symbol_spec.SymbolSpec` — the caller resolves that and passes plain
 floats in here, so this module stays decoupled from `common/` and `features/`
 per spec.md §2.3's dependency-direction invariant.
 

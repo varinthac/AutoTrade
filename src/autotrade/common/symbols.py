@@ -2,35 +2,25 @@
 
 Strategy code (council/, shield/, risk/, watchman/) only ever sees canonical
 names like "XAUUSD". This module is the one place broker-specific spellings
-("XAUUSD.a", "GOLD", etc.) and SYMBOL_INFO lookups happen.
+("XAUUSD.a", "GOLD", etc.) and SYMBOL_INFO lookups happen -- and thus the one
+place `MetaTrader5` is imported for symbol resolution. The `SymbolSpec` shape
+itself lives in `common/symbol_spec.py` (MT5-free) and is re-exported here
+for existing callers; MT5-free modules (e.g. `backtest/`) must import it from
+`common.symbol_spec` directly, not through this module (spec.md §2.3's
+dependency-direction invariant).
 """
 from __future__ import annotations
-
-from dataclasses import dataclass
 
 import MetaTrader5 as mt5
 
 from autotrade.common.config import load_yaml_config
+from autotrade.common.symbol_spec import SymbolSpec
+
+__all__ = ["SymbolSpec", "UnknownSymbolError", "to_broker_name", "get_symbol_spec"]
 
 
 class UnknownSymbolError(RuntimeError):
     pass
-
-
-@dataclass(frozen=True)
-class SymbolSpec:
-    canonical: str
-    broker_name: str
-    digits: int
-    point: float
-    tick_size: float
-    tick_value: float
-    contract_size: float
-    volume_min: float
-    volume_max: float
-    volume_step: float
-    trade_stops_level: int
-    freeze_level: int
 
 
 def _load_symbol_map() -> dict[str, str]:
