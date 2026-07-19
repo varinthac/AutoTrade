@@ -17,3 +17,11 @@ symbols:
 
 historical:
   default_days: 730 # ~2 years, enough for a first backtest pass in Phase 4
+
+# The CFO -- Money Manager (risk/), per trading_system_summary_v2.md
+# Appendix A §3 / §6. All values [adjustable] per the spec.
+cfo:
+  risk_per_trade_pct: 0.5
+  daily_loss_limit_pct: 2.0
+  max_consecutive_losses: 3
+  max_drawdown_halt_pct: 8.0
