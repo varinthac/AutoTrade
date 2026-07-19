@@ -12,6 +12,7 @@ here.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -36,8 +37,9 @@ class FixedClock:
 
 
 class FakeAdapter(BrokerAdapter):
-    def __init__(self, equity: float = 10_000.0):
+    def __init__(self, equity: float = 10_000.0, balance: float | None = None):
         self._equity = equity
+        self._balance = equity if balance is None else balance
         self.place_order_calls: list[TradeRequest] = []
 
     def place_order(self, request: TradeRequest) -> OrderResult:
@@ -49,6 +51,9 @@ class FakeAdapter(BrokerAdapter):
 
     def get_equity(self) -> float:
         return self._equity
+
+    def get_balance(self) -> float:
+        return self._balance
 
 
 def _fake_symbol_spec(symbol: str) -> SymbolSpec:
@@ -135,6 +140,22 @@ def test_circuit_breaker_tripped_blocks_adapter():
     assert len(loop._history["XAUUSD"]) == CROSS_INDEX
 
 
+def test_floating_pnl_from_equity_minus_balance_feeds_daily_loss_gate():
+    # equity - balance approximates floating P&L (no Watchman/position
+    # tracking exists yet to report it directly) -- confirms ShadowLoop
+    # actually wires this into record_equity() rather than defaulting to 0.0.
+    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
+    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+    adapter = FakeAdapter(equity=9_900.0, balance=10_000.0)  # -100 floating P&L
+    breaker = CircuitBreaker(daily_loss_limit_pct=1.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed)
+
+    new_bar = _bar_from_row(df, CROSS_INDEX)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert adapter.place_order_calls == []  # ~1.01% floating loss >= 1.0% limit
+
+
 def test_no_signal_does_not_call_adapter_or_raise():
     # Flat closes throughout -- no EMA crossover ever fires.
     times = [BASE_TIME + timedelta(hours=i) for i in range(60)]
@@ -173,6 +194,142 @@ def test_confirmed_crossover_and_swing_places_order_via_adapter():
     assert len(loop._history["XAUUSD"]) == CROSS_INDEX + 1
 
 
+def test_on_new_bar_raises_key_error_for_unseeded_symbol():
+    import pytest
+
+    seed = _flat_then_jump_df(100.0, 180.0).iloc[:CROSS_INDEX].reset_index(drop=True)
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed)  # only seeded for "XAUUSD"
+
+    bar = Bar(time=BASE_TIME, open=1.0, high=1.0, low=1.0, close=1.0, tick_volume=1, spread=1)
+    with pytest.raises(KeyError):
+        loop.on_new_bar(MarketSnapshot(symbol="EURUSD", timeframe="H1", bar=bar))
+
+
+def test_crossover_without_confirmed_swing_places_no_order_but_still_appends_bar():
+    # No swing_dip_index at all -- the crossover fires, but there is no
+    # fractal swing anywhere in the fixture, so build_trade_idea() has no
+    # stop-loss anchor and returns None. Distinct code path from
+    # "no EMA crossover at all" (test_no_signal_does_not_call_adapter_or_raise).
+    df = _flat_then_jump_df(100.0, 180.0)  # no swing_dip_index
+    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed)
+
+    new_bar = _bar_from_row(df, CROSS_INDEX)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert adapter.place_order_calls == []
+    assert len(loop._history["XAUUSD"]) == CROSS_INDEX + 1  # bar still appended
+
+
+def test_lot_size_below_broker_minimum_places_no_order():
+    # Tiny equity forces compute_lot_size() to return None (below
+    # volume_min) even though the signal + swing are both valid.
+    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
+    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+    adapter = FakeAdapter(equity=1.0)  # far too small to clear volume_min=0.01
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed)
+
+    new_bar = _bar_from_row(df, CROSS_INDEX)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert adapter.place_order_calls == []
+    assert len(loop._history["XAUUSD"]) == CROSS_INDEX + 1  # bar still appended
+
+
+def test_rejected_order_result_does_not_raise_and_leaves_history_appended():
+    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
+    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+
+    class RejectingAdapter(FakeAdapter):
+        def place_order(self, request: TradeRequest):
+            self.place_order_calls.append(request)
+            return OrderResult(
+                success=False, broker_ticket=None, filled_price=None,
+                filled_volume=None, retcode=99, message="rejected in test",
+            )
+
+    adapter = RejectingAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed)
+
+    new_bar = _bar_from_row(df, CROSS_INDEX)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))  # must not raise
+
+    assert len(adapter.place_order_calls) == 1
+    assert len(loop._history["XAUUSD"]) == CROSS_INDEX + 1
+
+
+def test_sell_signal_places_sell_order_with_stop_above_entry():
+    df = _flat_then_jump_df(100.0, 20.0, swing_dip_index=30, swing_is_high=True)
+    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed)
+
+    new_bar = _bar_from_row(df, CROSS_INDEX)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert len(adapter.place_order_calls) == 1
+    request = adapter.place_order_calls[0]
+    assert request.direction == "SELL"
+    assert request.take_profit < request.entry < request.stop_loss
+    assert request.lot_size > 0
+
+
+def test_multiple_symbols_are_tracked_and_processed_independently():
+    df_a = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
+    df_b = _flat_then_jump_df(50.0, 50.0)  # flat throughout -- never signals
+    seed_a = df_a.iloc[:CROSS_INDEX].reset_index(drop=True)
+    seed_b = df_b.iloc[:CROSS_INDEX].reset_index(drop=True)
+
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    cfg = ShadowLoopConfig(risk_per_trade_pct=1.0)
+    loop = ShadowLoop(
+        adapter=adapter, circuit_breaker=breaker, cfg=cfg,
+        initial_history={"XAUUSD": seed_a, "EURUSD": seed_b},
+        resolve_symbol_spec=_fake_symbol_spec, clock=FixedClock(BASE_TIME),
+    )
+
+    loop.on_new_bar(MarketSnapshot(symbol="EURUSD", timeframe="H1", bar=_bar_from_row(df_b, CROSS_INDEX)))
+    assert adapter.place_order_calls == []
+    assert len(loop._history["EURUSD"]) == CROSS_INDEX + 1
+    assert len(loop._history["XAUUSD"]) == CROSS_INDEX  # untouched by the EURUSD bar
+
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=_bar_from_row(df_a, CROSS_INDEX)))
+    assert len(adapter.place_order_calls) == 1
+    assert adapter.place_order_calls[0].symbol == "XAUUSD"
+
+
+def test_history_is_trimmed_to_max_history_bars_configured_limit():
+    df = _flat_then_jump_df(100.0, 100.0, post_bars=0)  # flat, never signals
+    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)  # 70 bars seeded
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    cfg = ShadowLoopConfig(risk_per_trade_pct=1.0, max_history_bars=71)
+    loop = ShadowLoop(
+        adapter=adapter, circuit_breaker=breaker, cfg=cfg,
+        initial_history={"XAUUSD": seed}, resolve_symbol_spec=_fake_symbol_spec,
+        clock=FixedClock(BASE_TIME),
+    )
+
+    # Feed 3 more distinct closed bars -- history would grow to 73, must be
+    # trimmed down to max_history_bars=71.
+    for i in range(3):
+        bar = Bar(
+            time=BASE_TIME + timedelta(hours=CROSS_INDEX + i), open=100.0, high=101.0,
+            low=99.0, close=100.0, tick_volume=10, spread=1,
+        )
+        loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=bar))
+
+    assert len(loop._history["XAUUSD"]) == 71
+
+
 def test_duplicate_bar_is_skipped_without_reevaluating():
     df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
     seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
@@ -187,3 +344,70 @@ def test_duplicate_bar_is_skipped_without_reevaluating():
 
     assert adapter.place_order_calls == []
     assert len(loop._history["XAUUSD"]) == CROSS_INDEX  # unchanged, not double-appended
+
+
+def test_transient_get_equity_error_skips_this_bar_but_loop_keeps_running(caplog):
+    # A transient MT5 hiccup (get_equity() raising, per demo_adapter.py's
+    # RuntimeError on account_info() failure) must skip only this bar -- not
+    # crash the loop or tear down monitoring entirely (spec.md §7).
+    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
+    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+
+    class FlakyAdapter(FakeAdapter):
+        def __init__(self):
+            super().__init__(equity=10_000.0)
+            self.get_equity_calls = 0
+
+        def get_equity(self) -> float:
+            self.get_equity_calls += 1
+            if self.get_equity_calls == 1:
+                raise RuntimeError("account_info() failed: transient MT5 hiccup")
+            return super().get_equity()
+
+    adapter = FlakyAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed)
+
+    new_bar = _bar_from_row(df, CROSS_INDEX)
+    with caplog.at_level(logging.ERROR):
+        loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))  # must not raise
+
+    assert adapter.place_order_calls == []
+    assert len(loop._history["XAUUSD"]) == CROSS_INDEX  # this bar's processing was skipped entirely
+    assert any("unhandled exception" in record.message for record in caplog.records)
+
+    # The loop keeps running -- retrying the same bar on the next poll now
+    # succeeds since the transient error has passed.
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert len(adapter.place_order_calls) == 1
+    assert len(loop._history["XAUUSD"]) == CROSS_INDEX + 1
+
+
+def test_keyboard_interrupt_during_bar_processing_is_not_swallowed():
+    # _process()'s `except Exception` must NOT be widened to `except
+    # BaseException` (accidentally or otherwise) -- a real Ctrl-C (or any
+    # other BaseException) raised mid-bar must still propagate out of
+    # on_new_bar()/run(), not be logged-and-ignored like a transient MT5
+    # hiccup. KeyboardInterrupt subclasses BaseException, not Exception, so
+    # it is the natural probe for this.
+    import pytest
+
+    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
+    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+
+    class InterruptingAdapter(FakeAdapter):
+        def get_equity(self) -> float:
+            raise KeyboardInterrupt()
+
+    adapter = InterruptingAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed)
+
+    new_bar = _bar_from_row(df, CROSS_INDEX)
+    with pytest.raises(KeyboardInterrupt):
+        loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    # And history must be left untouched -- the bar was never actually
+    # processed, not silently marked done.
+    assert len(loop._history["XAUUSD"]) == CROSS_INDEX

@@ -26,3 +26,9 @@ def test_place_order_always_succeeds_and_echoes_request():
 def test_get_equity_returns_configured_fixed_value():
     assert NoOpBrokerAdapter(fixed_equity=5_000.0).get_equity() == 5_000.0
     assert NoOpBrokerAdapter().get_equity() == 10_000.0
+
+
+def test_get_balance_returns_same_fixed_value_as_get_equity():
+    # No floating P&L in a dry run.
+    adapter = NoOpBrokerAdapter(fixed_equity=5_000.0)
+    assert adapter.get_balance() == adapter.get_equity() == 5_000.0

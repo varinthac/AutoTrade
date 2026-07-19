@@ -1,0 +1,175 @@
+"""Unit tests for scripts/run_shadow_loop.py -- the Phase 3d CLI entry point.
+MT5 is mocked (same pattern as tests/unit/test_kill_switch_script.py); no live
+terminal needed. scripts/ has no __init__.py, so the script is loaded
+directly via importlib.
+
+Prior to this test file, run_shadow_loop.py had zero direct test coverage --
+only its downstream collaborator (orchestrator/shadow_loop.py) was tested.
+"""
+from __future__ import annotations
+
+import importlib.util
+import sys
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from autotrade.common.clock import RealClock
+from autotrade.common.config import MT5Credentials
+from autotrade.common.mt5_time import ServerClock
+from autotrade.execution.demo_adapter import ThrottledDemoAdapter
+from autotrade.execution.noop_adapter import NoOpBrokerAdapter
+
+SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "run_shadow_loop.py"
+_spec = importlib.util.spec_from_file_location("run_shadow_loop_script", SCRIPT_PATH)
+run_shadow_loop = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = run_shadow_loop
+_spec.loader.exec_module(run_shadow_loop)
+
+mt5 = run_shadow_loop.mt5
+CREDS = MT5Credentials(login=1, password="pw", server="srv", terminal_path=None)
+
+
+# --- build_adapter() ------------------------------------------------------
+
+
+def test_build_adapter_noop_returns_noop_broker_adapter():
+    adapter = run_shadow_loop.build_adapter("noop", CREDS, RealClock())
+    assert isinstance(adapter, NoOpBrokerAdapter)
+
+
+def test_build_adapter_demo_returns_throttled_demo_adapter():
+    adapter = run_shadow_loop.build_adapter("demo", CREDS, RealClock())
+    assert isinstance(adapter, ThrottledDemoAdapter)
+
+
+def test_build_adapter_unknown_name_raises_value_error():
+    with pytest.raises(ValueError, match="unknown"):
+        run_shadow_loop.build_adapter("live", CREDS, RealClock())
+
+
+# --- seed_history() --------------------------------------------------------
+
+
+def _fake_rates(n: int, start_ts: int = 1_700_000_000):
+    dtype = np.dtype([
+        ("time", "i8"), ("open", "f8"), ("high", "f8"), ("low", "f8"),
+        ("close", "f8"), ("tick_volume", "i8"), ("spread", "i4"), ("real_volume", "i8"),
+    ])
+    rows = [
+        (start_ts + i * 3600, 100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i, 10, 1, 0)
+        for i in range(n)
+    ]
+    return np.array(rows, dtype=dtype)
+
+
+def test_seed_history_converts_rates_to_dataframe_with_datetime_time_column(monkeypatch):
+    monkeypatch.setattr(mt5, "copy_rates_from_pos", lambda symbol, tf, start, count: _fake_rates(5))
+
+    df = run_shadow_loop.seed_history("XAUUSD", "H1", 5, {"XAUUSD": "XAUUSD"})
+
+    assert len(df) == 5
+    assert pd.api.types.is_datetime64_any_dtype(df["time"])
+    assert list(df["close"]) == [100.5, 101.5, 102.5, 103.5, 104.5]
+
+
+def test_seed_history_raises_when_copy_rates_returns_none(monkeypatch):
+    monkeypatch.setattr(mt5, "copy_rates_from_pos", lambda symbol, tf, start, count: None)
+    monkeypatch.setattr(mt5, "last_error", lambda: (1, "no connection"))
+
+    with pytest.raises(RuntimeError, match="copy_rates_from_pos"):
+        run_shadow_loop.seed_history("XAUUSD", "H1", 5, {"XAUUSD": "XAUUSD"})
+
+
+def test_seed_history_raises_when_copy_rates_returns_empty(monkeypatch):
+    monkeypatch.setattr(mt5, "copy_rates_from_pos", lambda symbol, tf, start, count: _fake_rates(0))
+    monkeypatch.setattr(mt5, "last_error", lambda: (2, "no data"))
+
+    with pytest.raises(RuntimeError, match="copy_rates_from_pos"):
+        run_shadow_loop.seed_history("XAUUSD", "H1", 5, {"XAUUSD": "XAUUSD"})
+
+
+def test_seed_history_uses_broker_mapped_symbol_name(monkeypatch):
+    captured = {}
+
+    def fake_copy_rates(symbol, tf, start, count):
+        captured["symbol"] = symbol
+        return _fake_rates(3)
+
+    monkeypatch.setattr(mt5, "copy_rates_from_pos", fake_copy_rates)
+
+    run_shadow_loop.seed_history("XAUUSD", "H1", 3, {"XAUUSD": "XAUUSD.a"})
+
+    assert captured["symbol"] == "XAUUSD.a"
+
+
+# --- main() wiring ----------------------------------------------------------
+
+
+@contextmanager
+def _fake_session(creds):
+    yield
+
+
+def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(monkeypatch):
+    """Full integration of main()'s wiring, with MT5/credentials/config all
+    mocked -- verifies the CLI actually builds a ShadowLoop for every
+    configured symbol and calls .run() with the CLI's own args, rather than
+    silently doing nothing or crashing before it gets there."""
+    monkeypatch.setattr(sys, "argv", ["run_shadow_loop.py", "--adapter", "noop", "--max-iterations", "1"])
+    monkeypatch.setattr(run_shadow_loop, "load_mt5_credentials", lambda: CREDS)
+    monkeypatch.setattr(
+        run_shadow_loop, "load_yaml_config",
+        lambda name: {
+            "symbols": {"XAUUSD": "XAUUSD"},
+            "global": {"timeframe": "H1"},
+            "cfo": {
+                "risk_per_trade_pct": 0.5, "daily_loss_limit_pct": 2.0,
+                "max_consecutive_losses": 3, "max_drawdown_halt_pct": 8.0,
+            },
+            "order": {"sl_buffer_atr": 0.2, "sl_min_atr": 0.8, "sl_max_atr": 2.5, "tp_r_multiple": 2.0},
+        },
+    )
+    monkeypatch.setattr(run_shadow_loop, "mt5_session", _fake_session)
+    monkeypatch.setattr(run_shadow_loop, "seed_history", lambda symbol, timeframe, bars, symbol_map: pd.DataFrame({
+        "time": [datetime(2026, 1, 1, tzinfo=timezone.utc)],
+        "open": [100.0], "high": [101.0], "low": [99.0], "close": [100.0],
+    }))
+
+    run_calls = {}
+
+    class _FakeShadowLoop:
+        def __init__(self, **kwargs):
+            run_calls["init_kwargs"] = kwargs
+
+        def run(self, symbols, timeframe, poll_interval_sec, max_iterations):
+            run_calls["run_args"] = {
+                "symbols": symbols, "timeframe": timeframe,
+                "poll_interval_sec": poll_interval_sec, "max_iterations": max_iterations,
+            }
+
+    monkeypatch.setattr(run_shadow_loop, "ShadowLoop", _FakeShadowLoop)
+
+    exit_code = run_shadow_loop.main()
+
+    assert exit_code == 0
+    assert run_calls["run_args"]["symbols"] == ["XAUUSD"]
+    assert run_calls["run_args"]["timeframe"] == "H1"
+    assert run_calls["run_args"]["max_iterations"] == 1
+    assert isinstance(run_calls["init_kwargs"]["adapter"], NoOpBrokerAdapter)
+    # The clock fed to ShadowLoop (circuit-breaker/daily-loss reset) must be
+    # MT5 server time, not wall-clock RealClock (spec.md Appendix A §0).
+    assert isinstance(run_calls["init_kwargs"]["clock"], ServerClock)
+    assert run_calls["init_kwargs"]["clock"]._reference_symbol_broker_name == "XAUUSD"
+    assert run_calls["init_kwargs"]["circuit_breaker"]._state_path == run_shadow_loop.DEFAULT_STATE_PATH
+
+
+def test_main_unknown_adapter_choice_rejected_by_argparse(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["run_shadow_loop.py", "--adapter", "live"])
+
+    with pytest.raises(SystemExit):
+        run_shadow_loop.main()

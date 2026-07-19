@@ -181,6 +181,31 @@ def test_do_activate_succeeds_when_all_positions_close(flag_path, monkeypatch):
     assert kill_switch_flag.is_active(flag_path) is True
 
 
+def test_do_activate_reports_partial_failure_when_some_positions_fail_to_close(flag_path, monkeypatch):
+    monkeypatch.setattr(kill_switch, "load_mt5_credentials", lambda: CREDS)
+    monkeypatch.setattr(kill_switch, "mt5_session", _fake_session)
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda: (
+            _FakePosition(1, "XAUUSD", 0.1, mt5.POSITION_TYPE_BUY),
+            _FakePosition(2, "EURUSD", 0.2, mt5.POSITION_TYPE_SELL),
+        ),
+    )
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda symbol: _FakeTick())
+
+    def fake_order_send(request):
+        if request["symbol"] == "XAUUSD":
+            return _FakeSendResult(mt5.TRADE_RETCODE_DONE, volume=request["volume"])
+        return _FakeSendResult(mt5.TRADE_RETCODE_REJECT, comment="Rejected")
+
+    monkeypatch.setattr(mt5, "order_send", fake_order_send)
+
+    exit_code = kill_switch.do_activate("testing mixed results")
+
+    assert exit_code == 1  # one failure among two must still surface as overall failure
+    assert kill_switch_flag.is_active(flag_path) is True
+
+
 def test_do_activate_reports_connection_failure_loudly_without_pretending_success(flag_path, monkeypatch):
     def _raise_creds():
         raise RuntimeError("MT5_LOGIN not set")
@@ -222,3 +247,62 @@ def test_do_deactivate_clears_flag_when_confirmed(flag_path):
 def test_do_deactivate_is_clean_noop_when_not_active(flag_path):
     exit_code = kill_switch.do_deactivate(confirm=True)
     assert exit_code == 0
+
+
+# --- main() CLI dispatch -------------------------------------------------
+
+
+def test_main_dispatches_status_flag_to_do_status(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["kill_switch.py", "--status"])
+    called = {"called": False}
+
+    def fake_do_status():
+        called["called"] = True
+        return 0
+
+    monkeypatch.setattr(kill_switch, "do_status", fake_do_status)
+
+    assert kill_switch.main() == 0
+    assert called["called"] is True
+
+
+def test_main_dispatches_activate_flag_with_reason_to_do_activate(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["kill_switch.py", "--activate", "manual halt reason"])
+    captured = {}
+
+    def fake_do_activate(reason):
+        captured["reason"] = reason
+        return 0
+
+    monkeypatch.setattr(kill_switch, "do_activate", fake_do_activate)
+
+    assert kill_switch.main() == 0
+    assert captured["reason"] == "manual halt reason"
+
+
+def test_main_dispatches_deactivate_with_confirm_to_do_deactivate(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["kill_switch.py", "--deactivate", "--confirm"])
+    captured = {}
+
+    def fake_do_deactivate(confirm):
+        captured["confirm"] = confirm
+        return 0
+
+    monkeypatch.setattr(kill_switch, "do_deactivate", fake_do_deactivate)
+
+    assert kill_switch.main() == 0
+    assert captured["confirm"] is True
+
+
+def test_main_requires_one_of_the_mutually_exclusive_flags(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["kill_switch.py"])
+
+    with pytest.raises(SystemExit):
+        kill_switch.main()
+
+
+def test_main_rejects_activate_and_status_together(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["kill_switch.py", "--activate", "x", "--status"])
+
+    with pytest.raises(SystemExit):
+        kill_switch.main()

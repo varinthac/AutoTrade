@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import pytest
 
 from autotrade.common import mt5_time
-from autotrade.common.mt5_time import ServerTimeError, server_now
+from autotrade.common.mt5_time import ServerClock, ServerTimeError, server_now
 
 
 class _FakeTick:
@@ -41,3 +41,13 @@ def test_server_now_raises_on_zero_filled_placeholder_tick(monkeypatch):
 
     with pytest.raises(ServerTimeError, match="symbol_info_tick"):
         server_now("XAUUSD")
+
+
+def test_server_clock_now_matches_server_now_convention(monkeypatch):
+    monkeypatch.setattr(mt5_time.mt5, "symbol_info_tick", lambda symbol: _FakeTick(1_700_000_000))
+
+    clock = ServerClock("XAUUSD")
+    result = clock.now()
+
+    assert result == server_now("XAUUSD")
+    assert result.tzinfo is None

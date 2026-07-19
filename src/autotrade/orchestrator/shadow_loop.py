@@ -15,7 +15,8 @@ Known simplifications, documented rather than hidden:
 - `CircuitBreaker.record_trade_close()` is never called here -- there is no
   position-closing/Watchman loop yet to report closes, so the daily-loss and
   consecutive-loss gates only ever see the account-equity view fed by
-  `record_equity()` (via `BrokerAdapter.get_equity()`), never realized P&L
+  `record_equity()` (via `BrokerAdapter.get_equity()`/`get_balance()`, with
+  `floating_pnl` approximated as `equity - balance`), never realized P&L
   from an individual closed trade. This under-reacts to losses until the
   Watchman (Phase 7) exists to report them -- the equity-drawdown gate still
   works in the meantime since it's equity-based, not P&L-event-based.
@@ -129,9 +130,26 @@ class ShadowLoop:
         self._history[snapshot.symbol] = self._process(snapshot)
 
     def _process(self, snapshot: MarketSnapshot) -> pd.DataFrame:
+        """Wraps `_process_bar()` in a broad `except Exception` -- a transient
+        MT5 hiccup (get_equity()/place_order() raising, symbol spec lookup
+        failing, ...) must skip THIS bar's processing (log loudly, no new
+        entry attempted) and let the loop keep running to retry on the next
+        bar, per spec.md §7 ("halt new entries ... never silently continue",
+        not "tear down the whole loop"). Anything not a plain Exception
+        (KeyboardInterrupt, ...) still propagates."""
+        history = self._history[snapshot.symbol]
+        try:
+            return self._process_bar(snapshot, history)
+        except Exception:
+            logger.exception(
+                "%s %s: unhandled exception while processing this bar -- skipping, "
+                "no new entry attempted, loop continues", snapshot.symbol, snapshot.bar.time,
+            )
+            return history
+
+    def _process_bar(self, snapshot: MarketSnapshot, history: pd.DataFrame) -> pd.DataFrame:
         symbol = snapshot.symbol
         bar = snapshot.bar
-        history = self._history[symbol]
 
         # 1. Kill switch -- checked first, before anything else. Halted means
         # halted: no equity recording, no circuit-breaker check, no signal.
@@ -146,13 +164,17 @@ class ShadowLoop:
 
         # 2. Circuit breaker -- fed a fresh equity snapshot every bar close
         # (at least once per loop iteration), then checked before any entry.
+        # floating_pnl is approximated as equity - balance (no Watchman/
+        # position-tracking exists yet to report it directly).
         equity = self._adapter.get_equity()
+        balance = self._adapter.get_balance()
         self._peak_equity = equity if self._peak_equity is None else max(self._peak_equity, equity)
         if self._live_start_equity is None:
             self._live_start_equity = equity
         self._circuit_breaker.record_equity(
             equity=equity, peak_equity=self._peak_equity,
             live_start_equity=self._live_start_equity, as_of=self._clock.now(),
+            floating_pnl=equity - balance,
         )
 
         cb_state = self._circuit_breaker.check(self._clock)

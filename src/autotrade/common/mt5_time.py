@@ -33,3 +33,17 @@ def server_now(reference_symbol_broker_name: str) -> datetime:
             f"mt5.symbol_info_tick({reference_symbol_broker_name!r}) failed: [{code}] {desc}"
         )
     return datetime.fromtimestamp(tick.time, tz=timezone.utc).replace(tzinfo=None)
+
+
+class ServerClock:
+    """`common/clock.Clock` implementation backed by MT5 broker server time --
+    for anything that must be compared against server-time values (e.g.
+    `risk/circuit_breaker.py`'s daily-loss reset boundary, which is
+    server-day-based, not UTC-day-based). Requires an active mt5_session()
+    for the lifetime of any code calling `.now()`."""
+
+    def __init__(self, reference_symbol_broker_name: str) -> None:
+        self._reference_symbol_broker_name = reference_symbol_broker_name
+
+    def now(self) -> datetime:
+        return server_now(self._reference_symbol_broker_name)

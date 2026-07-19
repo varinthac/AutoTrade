@@ -31,3 +31,7 @@ class NoOpBrokerAdapter(BrokerAdapter):
 
     def get_equity(self) -> float:
         return self._fixed_equity
+
+    def get_balance(self) -> float:
+        # No floating P&L in a dry run -- same fixed value as get_equity().
+        return self._fixed_equity

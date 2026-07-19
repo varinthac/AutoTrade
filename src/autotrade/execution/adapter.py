@@ -46,3 +46,10 @@ class BrokerAdapter(ABC):
     @abstractmethod
     def get_equity(self) -> float:
         ...
+
+    @abstractmethod
+    def get_balance(self) -> float:
+        """Account balance, excluding any unrealized P&L of open positions
+        (unlike get_equity()) -- callers use `equity - balance` as a floating
+        P&L proxy (risk/circuit_breaker.py's daily-loss gate)."""
+        ...

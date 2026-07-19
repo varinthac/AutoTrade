@@ -77,6 +77,23 @@ def test_atr_matches_independent_exact_fraction_trace():
     assert result.tolist() == pytest.approx(expected)
 
 
+def test_rsi_is_100_when_every_bar_is_a_gain_no_losses_at_all():
+    # avg_loss stays exactly 0 throughout -- rs = avg_gain/0 = inf,
+    # 100 - 100/(1+inf) must evaluate to exactly 100, not NaN/error, despite
+    # the division by zero in the intermediate `rs` computation.
+    closes = pd.Series([10, 11, 12, 13, 14, 15, 16], dtype=float)
+    result = rsi(closes, period=3)
+
+    assert result.iloc[1:].tolist() == pytest.approx([100.0] * (len(closes) - 1))
+
+
+def test_rsi_is_0_when_every_bar_is_a_loss_no_gains_at_all():
+    closes = pd.Series([16, 15, 14, 13, 12, 11, 10], dtype=float)
+    result = rsi(closes, period=3)
+
+    assert result.iloc[1:].tolist() == pytest.approx([0.0] * (len(closes) - 1))
+
+
 def test_macd_histogram_matches_independent_from_scratch_loop():
     # 40-bar synthetic series; expected values from a standalone
     # plain-Python recursive-EMA loop (no pandas calls at all), not

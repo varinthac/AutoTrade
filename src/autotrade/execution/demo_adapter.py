@@ -184,3 +184,11 @@ class ThrottledDemoAdapter(BrokerAdapter):
                 code, desc = mt5.last_error()
                 raise RuntimeError(f"account_info() failed: [{code}] {desc}")
             return account.equity
+
+    def get_balance(self) -> float:
+        with mt5_session(self._creds):
+            account = mt5.account_info()
+            if account is None:
+                code, desc = mt5.last_error()
+                raise RuntimeError(f"account_info() failed: [{code}] {desc}")
+            return account.balance

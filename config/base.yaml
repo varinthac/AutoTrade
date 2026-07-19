@@ -33,3 +33,6 @@ order:
   sl_min_atr: 0.8
   sl_max_atr: 2.5
   tp_r_multiple: 2.0
+  max_retries: 2 # not yet consumed -- Watchman phase (Appendix A §4.8)
+  retry_delay_sec: 3 # not yet consumed -- Watchman phase (Appendix A §4.8)
+  max_entry_slippage_atr: 0.3 # not yet consumed -- Watchman phase (Appendix A §4.8)

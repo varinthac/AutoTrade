@@ -22,13 +22,14 @@ import pandas as pd
 from autotrade.common.clock import RealClock
 from autotrade.common.config import MT5Credentials, load_mt5_credentials, load_yaml_config
 from autotrade.common.mt5_connection import mt5_session
+from autotrade.common.mt5_time import ServerClock
 from autotrade.common.symbols import to_broker_name
 from autotrade.execution.adapter import BrokerAdapter
 from autotrade.execution.demo_adapter import ThrottledDemoAdapter
 from autotrade.execution.noop_adapter import NoOpBrokerAdapter
 from autotrade.feed.poller import TIMEFRAME_MAP
 from autotrade.orchestrator.shadow_loop import ShadowLoop, ShadowLoopConfig
-from autotrade.risk.circuit_breaker import CircuitBreaker
+from autotrade.risk.circuit_breaker import DEFAULT_STATE_PATH, CircuitBreaker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -86,17 +87,27 @@ def main() -> int:
     symbol_map = cfg["symbols"]
     timeframe = cfg["global"]["timeframe"]
 
-    clock = RealClock()
-    adapter = build_adapter(args.adapter, creds, clock)
+    # Adapter throttle timing only needs a monotonically-advancing clock, not
+    # server time specifically -- RealClock is fine here and avoids an extra
+    # MT5 round-trip per place_order() call.
+    adapter_clock = RealClock()
+    adapter = build_adapter(args.adapter, creds, adapter_clock)
     if args.adapter == "noop":
         logger.info("Using NoOpBrokerAdapter -- dry run, no orders will be sent to any broker.")
     else:
         logger.warning("Using ThrottledDemoAdapter -- REAL orders will be sent to the MT5 demo account.")
 
+    # CircuitBreaker/ShadowLoop need MT5 broker server time, not wall-clock
+    # UTC -- server_now()'s daily-loss reset boundary is server-day-based
+    # (see risk/circuit_breaker.py's module docstring).
+    reference_symbol_broker_name = to_broker_name(symbols[0], symbol_map)
+    loop_clock = ServerClock(reference_symbol_broker_name)
+
     circuit_breaker = CircuitBreaker(
         daily_loss_limit_pct=cfg["cfo"]["daily_loss_limit_pct"],
         max_consecutive_losses=cfg["cfo"]["max_consecutive_losses"],
         max_drawdown_halt_pct=cfg["cfo"]["max_drawdown_halt_pct"],
+        state_path=DEFAULT_STATE_PATH,
     )
     loop_cfg = ShadowLoopConfig(
         risk_per_trade_pct=cfg["cfo"]["risk_per_trade_pct"],
@@ -117,7 +128,7 @@ def main() -> int:
 
         shadow_loop = ShadowLoop(
             adapter=adapter, circuit_breaker=circuit_breaker, cfg=loop_cfg,
-            initial_history=initial_history, symbol_map=symbol_map, clock=clock,
+            initial_history=initial_history, symbol_map=symbol_map, clock=loop_clock,
         )
         logger.info(
             "Shadow loop starting: symbols=%s timeframe=%s adapter=%s -- waiting for next bar close",

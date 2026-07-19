@@ -13,10 +13,15 @@ break the daily-loss reset boundary.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from autotrade.common.clock import Clock
+from autotrade.common.config import REPO_ROOT
+
+DEFAULT_STATE_PATH = REPO_ROOT / "data" / "db" / "circuit_breaker_state.json"
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,12 @@ class CircuitBreaker:
       4. Equity far below the live-start baseline -- signals
          `should_downgrade_to_paper`; switching adapters is the
          orchestrator's job, this module only exposes the signal.
+
+    If `state_path` is given, state is persisted to that JSON file (same
+    plain-file-I/O pattern as `common/kill_switch_flag.py`) and reloaded on
+    construction -- critically so the drawdown halt (gate 3) survives a
+    process restart rather than silently clearing, which would defeat its
+    whole "requires manual restart" point.
     """
 
     def __init__(
@@ -59,12 +70,14 @@ class CircuitBreaker:
         max_drawdown_halt_pct: float,
         live_downgrade_pct: float = 15.0,
         consecutive_loss_halt_hours: float = 24.0,
+        state_path: Path | None = None,
     ) -> None:
         self._daily_loss_limit_pct = daily_loss_limit_pct
         self._max_consecutive_losses = max_consecutive_losses
         self._max_drawdown_halt_pct = max_drawdown_halt_pct
         self._live_downgrade_pct = live_downgrade_pct
         self._consecutive_loss_halt_hours = consecutive_loss_halt_hours
+        self._state_path = state_path
 
         self._current_server_day = None
         self._realized_pnl_today = 0.0
@@ -76,6 +89,53 @@ class CircuitBreaker:
         self._latest_peak_equity: float | None = None
         self._latest_live_start_equity: float | None = None
         self._latest_floating_pnl = 0.0
+
+        self._load_state()
+
+    def _load_state(self) -> None:
+        """Restore persisted state (if `state_path` is set and the file
+        exists) -- critically, `_drawdown_halted`, whose whole point is that
+        a crash/restart must NOT be how it gets cleared (Appendix A §3.3:
+        "ต้อง manual restart เท่านั้น")."""
+        if self._state_path is None or not self._state_path.exists():
+            return
+        try:
+            payload = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+
+        self._drawdown_halted = payload.get("drawdown_halted", False)
+        self._latest_peak_equity = payload.get("latest_peak_equity")
+        self._latest_live_start_equity = payload.get("latest_live_start_equity")
+        day = payload.get("current_server_day")
+        self._current_server_day = date.fromisoformat(day) if day else None
+        self._realized_pnl_today = payload.get("realized_pnl_today", 0.0)
+        self._consecutive_losses = payload.get("consecutive_losses", 0)
+        halt_until = payload.get("consecutive_loss_halt_until")
+        self._consecutive_loss_halt_until = (
+            datetime.fromisoformat(halt_until) if halt_until else None
+        )
+
+    def _save_state(self) -> None:
+        if self._state_path is None:
+            return
+        payload = {
+            "drawdown_halted": self._drawdown_halted,
+            "latest_peak_equity": self._latest_peak_equity,
+            "latest_live_start_equity": self._latest_live_start_equity,
+            "current_server_day": (
+                self._current_server_day.isoformat() if self._current_server_day else None
+            ),
+            "realized_pnl_today": self._realized_pnl_today,
+            "consecutive_losses": self._consecutive_losses,
+            "consecutive_loss_halt_until": (
+                self._consecutive_loss_halt_until.isoformat()
+                if self._consecutive_loss_halt_until
+                else None
+            ),
+        }
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        self._state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def record_trade_close(self, pnl: float, closed_at: datetime) -> None:
         """Feed a closed trade's realized P&L. `closed_at` must be server
@@ -94,6 +154,8 @@ class CircuitBreaker:
                 )
         else:
             self._consecutive_losses = 0
+
+        self._save_state()
 
     def record_equity(
         self,
@@ -116,11 +178,14 @@ class CircuitBreaker:
             if drawdown_pct >= self._max_drawdown_halt_pct:
                 self._drawdown_halted = True
 
+        self._save_state()
+
     def clear_drawdown_halt(self) -> None:
         """Manually clear the drawdown halt. Must only ever be called from an
         explicit human action (e.g. a restart script) -- never from timed or
         automatic logic. Appendix A §3.3: "ต้อง manual restart เท่านั้น"."""
         self._drawdown_halted = False
+        self._save_state()
 
     def check(self, clock: Clock) -> CircuitBreakerState:
         now = clock.now()

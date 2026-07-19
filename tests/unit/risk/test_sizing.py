@@ -137,6 +137,103 @@ def test_entry_equal_stop_loss_raises():
         )
 
 
+def test_equity_must_be_positive():
+    with pytest.raises(ValueError):
+        compute_lot_size(
+            equity=0,
+            risk_per_trade_pct=0.5,
+            entry=2000,
+            stop_loss=1990,
+            point_value=100,
+            volume_min=0.01,
+            volume_max=50,
+            volume_step=0.01,
+        )
+
+
+def test_risk_per_trade_pct_must_be_positive():
+    with pytest.raises(ValueError):
+        compute_lot_size(
+            equity=10000,
+            risk_per_trade_pct=0,
+            entry=2000,
+            stop_loss=1990,
+            point_value=100,
+            volume_min=0.01,
+            volume_max=50,
+            volume_step=0.01,
+        )
+
+
+def test_point_value_must_be_positive():
+    with pytest.raises(ValueError):
+        compute_lot_size(
+            equity=10000,
+            risk_per_trade_pct=0.5,
+            entry=2000,
+            stop_loss=1990,
+            point_value=0,
+            volume_min=0.01,
+            volume_max=50,
+            volume_step=0.01,
+        )
+
+
+def test_lot_exactly_at_volume_min_is_accepted_not_rejected():
+    # raw lot = (10000*0.001) / (10*100) = 0.01 -- exactly volume_min. The
+    # gate is "< volume_min", so an exact match must be accepted, not
+    # treated as "below minimum".
+    lot = compute_lot_size(
+        equity=10000,
+        risk_per_trade_pct=0.1,
+        entry=2000,
+        stop_loss=1990,
+        point_value=100,
+        volume_min=0.01,
+        volume_max=50,
+        volume_step=0.01,
+    )
+    assert lot == pytest.approx(0.01)
+
+
+def test_volatility_ratio_exactly_at_threshold_does_not_trigger_halving():
+    # current_atr / avg_atr_20d == 1.5 exactly -- the halving condition is
+    # a strict ">", so the exact threshold must NOT halve risk_per_trade.
+    lot = compute_lot_size(
+        equity=10000,
+        risk_per_trade_pct=1.0,
+        entry=2000,
+        stop_loss=1990,
+        point_value=100,
+        volume_min=0.01,
+        volume_max=50,
+        volume_step=0.01,
+        current_atr=15.0,
+        avg_atr_20d=10.0,  # ratio exactly 1.5
+        volatility_multiplier_threshold=1.5,
+    )
+    # No halving: lot = (10000*0.01) / (10*100) = 0.1
+    assert lot == pytest.approx(0.1)
+
+
+def test_avg_atr_20d_zero_is_treated_as_no_volatility_data_no_division_error():
+    # avg_atr_20d=0 must not raise ZeroDivisionError and must not trigger
+    # halving (guarded by the explicit `avg_atr_20d > 0` check).
+    lot = compute_lot_size(
+        equity=10000,
+        risk_per_trade_pct=1.0,
+        entry=2000,
+        stop_loss=1990,
+        point_value=100,
+        volume_min=0.01,
+        volume_max=50,
+        volume_step=0.01,
+        current_atr=5.0,
+        avg_atr_20d=0.0,
+    )
+    assert lot == pytest.approx(0.1)
+
+
 def test_sell_direction_stop_above_entry_uses_absolute_distance():
     # SELL: stop_loss above entry -- (entry - stop_loss) is negative, but
     # stop_distance must be treated as an absolute distance.

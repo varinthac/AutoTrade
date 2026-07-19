@@ -75,3 +75,42 @@ def test_is_near_key_level_true_within_half_atr():
 
 def test_is_near_key_level_false_outside_half_atr():
     assert is_near_key_level(4020.0, atr_value=1.0, levels=[4018.0, 4025.0], multiple=0.5) is False
+
+
+def test_is_near_key_level_true_at_exact_threshold_boundary():
+    # distance == multiple*atr exactly (0.5) -- rule is "<=", so this must be
+    # True, not False (off-by-one on the boundary comparison).
+    assert is_near_key_level(4018.5, atr_value=1.0, levels=[4018.0], multiple=0.5) is True
+
+
+def test_is_near_key_level_false_just_past_threshold_boundary():
+    assert is_near_key_level(4018.51, atr_value=1.0, levels=[4018.0], multiple=0.5) is False
+
+
+def test_is_near_key_level_false_with_empty_levels_list():
+    assert is_near_key_level(4018.0, atr_value=1.0, levels=[]) is False
+
+
+def test_prior_day_ohlc_raises_on_negative_as_of_index():
+    df = _two_day_h1_df()
+
+    with pytest.raises(ValueError):
+        prior_day_ohlc(df, as_of_index=-1)
+
+
+def test_prior_day_ohlc_raises_on_as_of_index_beyond_frame():
+    df = _two_day_h1_df()
+
+    with pytest.raises(ValueError):
+        prior_day_ohlc(df, as_of_index=len(df))
+
+
+def test_prior_day_ohlc_on_first_bar_of_new_day_still_excludes_that_day():
+    # as_of_index=24 is the FIRST bar of day 2 -- day 2 must still be
+    # excluded (it isn't "completed"), so the result is identical to
+    # as_of_index=29 (last bar of the still-partial day 2).
+    df = _two_day_h1_df()
+
+    high, low, close = prior_day_ohlc(df, as_of_index=24)
+
+    assert (high, low, close) == (110.0, 95.0, 108.0)

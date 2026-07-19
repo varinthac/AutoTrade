@@ -99,6 +99,44 @@ def test_sell_raw_distance_too_wide_clamped_down_to_sl_max_atr():
     assert plan.take_profit == 50.0
 
 
+def test_buy_raw_distance_exactly_at_sl_min_atr_boundary_uses_it_unclamped():
+    # raw_stop = 94 - 2 = 92; raw_distance = 100 - 92 = 8, exactly equal to
+    # the 8-point floor (min(max(8, 8), 25) = 8) -- boundary must resolve to
+    # 8, not be pushed to some other value by an off-by-one in the clamp.
+    plan = build_order_plan(
+        "BUY", ENTRY, swing_price=94.0, atr=ATR,
+        sl_buffer_atr=SL_BUFFER_ATR, sl_min_atr=SL_MIN_ATR,
+        sl_max_atr=SL_MAX_ATR, tp_r_multiple=TP_R_MULTIPLE,
+    )
+    assert plan.stop_distance == 8.0
+    assert plan.stop_loss == 92.0
+    assert plan.take_profit == 116.0
+
+
+def test_buy_raw_distance_exactly_at_sl_max_atr_boundary_uses_it_unclamped():
+    # raw_stop = 77 - 2 = 75; raw_distance = 100 - 75 = 25, exactly equal to
+    # the 25-point ceiling.
+    plan = build_order_plan(
+        "BUY", ENTRY, swing_price=77.0, atr=ATR,
+        sl_buffer_atr=SL_BUFFER_ATR, sl_min_atr=SL_MIN_ATR,
+        sl_max_atr=SL_MAX_ATR, tp_r_multiple=TP_R_MULTIPLE,
+    )
+    assert plan.stop_distance == 25.0
+    assert plan.stop_loss == 75.0
+    assert plan.take_profit == 150.0
+
+
+def test_invalid_direction_raises_value_error():
+    import pytest
+
+    with pytest.raises(ValueError):
+        build_order_plan(
+            "HOLD", ENTRY, swing_price=90.0, atr=ATR,  # type: ignore[arg-type]
+            sl_buffer_atr=SL_BUFFER_ATR, sl_min_atr=SL_MIN_ATR,
+            sl_max_atr=SL_MAX_ATR, tp_r_multiple=TP_R_MULTIPLE,
+        )
+
+
 def test_no_confirmed_swing_returns_none():
     plan = build_order_plan(
         "BUY", ENTRY, swing_price=None, atr=ATR,

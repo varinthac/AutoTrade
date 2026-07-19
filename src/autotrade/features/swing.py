@@ -62,6 +62,13 @@ def _confirmed_swing_indices(
     if as_of_index < 0 or as_of_index >= len(df):
         raise ValueError(f"as_of_index {as_of_index} is out of bounds for df of length {len(df)}")
 
+    if not (df.index == pd.RangeIndex(len(df))).all():
+        raise ValueError(
+            "df must have a contiguous 0..n-1 RangeIndex -- as_of_index is a "
+            "positional contract, and a non-contiguous index would silently "
+            "produce wrong swings"
+        )
+
     last_allowed = as_of_index - pivot_bars
     if last_allowed < pivot_bars:
         return []
