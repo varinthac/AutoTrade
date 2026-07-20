@@ -24,9 +24,12 @@ honesty-over-convenience placeholder pattern as `backtest/cost_model.py`'s
 `commission_per_lot=0.0` and `shield/correlation.py`'s illustrative
 correlation table -- a known, conservative gap, not a bug, consistent with
 this project's "ambiguous = no trade" philosophy (Appendix A's opening
-principle: "ก้ำกึ่ง = ไม่เทรด"). Candidates being considered for a real
-implementation (none integrated yet): Finnhub, Financial Modeling Prep,
-Trading Economics. This must be revisited before Phase 9 (paper trading)
+principle: "ก้ำกึ่ง = ไม่เทรด"). Candidates checked so far, all confirmed
+gated behind a paid plan on the currently-configured keys/tokens (none
+integrated yet): Finnhub (`council/finnhub_news_calendar.py` -- HTTP 403),
+Financial Modeling Prep (`common/config.load_fmp_api_key` -- HTTP 402),
+EODHD (`common/config.load_eodhd_api_token` -- HTTP 403). Trading Economics
+remains unchecked. This must be revisited before Phase 9 (paper trading)
 for the system to be practically testable at scale.
 """
 from __future__ import annotations

@@ -6,6 +6,7 @@ import pytest
 
 from autotrade.common.config import (
     MT5Credentials,
+    load_eodhd_api_token,
     load_finnhub_api_key,
     load_fmp_api_key,
     load_mt5_credentials,
@@ -139,6 +140,28 @@ def test_load_fmp_api_key_treats_blank_string_as_none(monkeypatch, clean_fmp_env
     monkeypatch.setenv("FMP_API_KEY", "")
 
     assert load_fmp_api_key(clean_fmp_env) is None
+
+
+@pytest.fixture
+def clean_eodhd_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("EODHD_API_TOKEN", raising=False)
+    return tmp_path / "does_not_exist.env"
+
+
+def test_load_eodhd_api_token_returns_token_when_set(monkeypatch, clean_eodhd_env):
+    monkeypatch.setenv("EODHD_API_TOKEN", "abc123")
+
+    assert load_eodhd_api_token(clean_eodhd_env) == "abc123"
+
+
+def test_load_eodhd_api_token_returns_none_when_unset(clean_eodhd_env):
+    assert load_eodhd_api_token(clean_eodhd_env) is None
+
+
+def test_load_eodhd_api_token_treats_blank_string_as_none(monkeypatch, clean_eodhd_env):
+    monkeypatch.setenv("EODHD_API_TOKEN", "")
+
+    assert load_eodhd_api_token(clean_eodhd_env) is None
 
 
 def test_load_yaml_config_reads_real_base_config():

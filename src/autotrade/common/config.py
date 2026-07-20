@@ -86,6 +86,28 @@ def load_fmp_api_key(env_file: Path | None = None) -> str | None:
     return key or None
 
 
+def load_eodhd_api_token(env_file: Path | None = None) -> str | None:
+    """EODHD API token (eodhd.com) for a prospective
+    `council/eodhd_news_calendar.py` economic-calendar provider. Same
+    optional/nullable pattern as `load_finnhub_api_key`/`load_fmp_api_key` --
+    a missing/blank token is not a hard error, just `None` for the caller to
+    act on.
+
+    As of 2026-07-20, EODHD's `/api/economic-events` endpoint was confirmed
+    live to return `HTTP 403` ("Only EOD data allowed for free users. Please,
+    contact our support team: support@eodhistoricaldata.com") on the
+    currently-configured `EODHD_API_TOKEN` -- the same token succeeds
+    (HTTP 200) against a known free-tier endpoint (`/api/eod/AAPL.US`),
+    confirming the token itself is valid and the 403 is specifically about
+    this endpoint's tier gating (EODHD's docs list it as included only in
+    the "All-In-One" and "Fundamentals Data Feed" plans). No
+    `EODHDNewsCalendarProvider` has been built against this token for that
+    reason -- see council/news_calendar.py's module docstring."""
+    load_dotenv(env_file or REPO_ROOT / ".env")
+    token = os.environ.get("EODHD_API_TOKEN")
+    return token or None
+
+
 def load_yaml_config(name: str) -> dict:
     """Load a YAML file from config/, e.g. load_yaml_config('base')."""
     path = CONFIG_DIR / f"{name}.yaml"
