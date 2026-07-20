@@ -78,3 +78,16 @@ risk_voice:
   session_end_hour: 18
   friday_close_hour: 20
   max_atr_panic_multiple: 3.0
+
+# The Watchman -- Position Monitor (watchman/), per trading_system_summary_v2.md
+# Appendix A §4 / §6. All values [adjustable]. `dead_trade_r_band` is not in
+# the spec's own §6 sample YAML block, but item 6's rule text ("กำไร/ขาดทุนอยู่
+# ระหว่าง ±0.3R") requires it as a configurable threshold -- added here to
+# match the codebase's established practice of keeping every threshold
+# configurable rather than hardcoding it.
+watchman:
+  breakeven_at_r: 1.0
+  trail_start_r: 1.5
+  trail_distance_atr: 1.0
+  time_stop_hours: 48
+  dead_trade_r_band: 0.3
