@@ -21,6 +21,7 @@ from pathlib import Path
 
 from autotrade.common.clock import Clock
 from autotrade.common.config import REPO_ROOT
+from autotrade.store import journal
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ class CircuitBreaker:
         live_downgrade_pct: float = 15.0,
         consecutive_loss_halt_hours: float = 24.0,
         state_path: Path | None = None,
+        journal_db_path: Path | None = None,
     ) -> None:
         self._daily_loss_limit_pct = daily_loss_limit_pct
         self._max_consecutive_losses = max_consecutive_losses
@@ -81,6 +83,7 @@ class CircuitBreaker:
         self._live_downgrade_pct = live_downgrade_pct
         self._consecutive_loss_halt_hours = consecutive_loss_halt_hours
         self._state_path = state_path
+        self._journal_db_path = journal_db_path
 
         self._current_server_day = None
         self._realized_pnl_today = 0.0
@@ -92,6 +95,19 @@ class CircuitBreaker:
         self._latest_peak_equity: float | None = None
         self._latest_live_start_equity: float | None = None
         self._latest_floating_pnl = 0.0
+
+        # Edge-trigger tracking for anomaly-event recording only (see
+        # `check()`'s "gate-trip anomaly events" note) -- NOT persisted
+        # across restarts, unlike `_drawdown_halted` itself, so a restart
+        # during an already-active daily-loss/consecutive-loss/downgrade
+        # condition can re-fire one anomaly event on the first `check()`
+        # call afterwards. Acceptable for a daily-report trigger COUNT
+        # (rare, restart-adjacent double-count) rather than worth the extra
+        # persisted-state machinery `_drawdown_halted` has for its
+        # genuinely one-way, manual-clear-only latch.
+        self._daily_loss_reported = False
+        self._consecutive_loss_reported = False
+        self._downgrade_reported = False
 
         self._load_state()
 
@@ -196,6 +212,15 @@ class CircuitBreaker:
         if peak_equity > 0:
             drawdown_pct = (peak_equity - equity) / peak_equity * 100
             if drawdown_pct >= self._max_drawdown_halt_pct:
+                if not self._drawdown_halted:
+                    journal.record_anomaly_event(
+                        timestamp=as_of, event_type="circuit_breaker_trigger",
+                        details=(
+                            f"drawdown halt: equity drawdown from peak {drawdown_pct:.2f}% >= "
+                            f"{self._max_drawdown_halt_pct}%; halted, requires manual restart"
+                        ),
+                        db_path=self._journal_db_path,
+                    )
                 self._drawdown_halted = True
 
         self._save_state()
@@ -206,6 +231,25 @@ class CircuitBreaker:
         automatic logic. Appendix A §3.3: "ต้อง manual restart เท่านั้น"."""
         self._drawdown_halted = False
         self._save_state()
+
+    def _record_gate_edge(
+        self, now: datetime, tripped: bool, already_reported_attr: str, event_type: str, reason: str | None,
+    ) -> None:
+        """Fires one `record_anomaly_event` the moment a gate transitions
+        from not-tripped to tripped, and re-arms once it clears -- same
+        "log once per event, not once per polling cycle" pattern
+        `watchman/connectivity_watchdog.py`'s `_alerted_since_last_good`
+        already uses, applied here to `check()`'s per-call-recomputed daily-
+        loss/consecutive-loss/downgrade gates."""
+        already_reported = getattr(self, already_reported_attr)
+        if tripped and not already_reported:
+            journal.record_anomaly_event(
+                timestamp=now, event_type="circuit_breaker_trigger",
+                details=f"{event_type}: {reason}", db_path=self._journal_db_path,
+            )
+            setattr(self, already_reported_attr, True)
+        elif not tripped and already_reported:
+            setattr(self, already_reported_attr, False)
 
     def check(self, clock: Clock) -> CircuitBreakerState:
         now = clock.now()
@@ -261,6 +305,13 @@ class CircuitBreaker:
                     f"equity {drop_pct:.2f}% below live-start baseline >= "
                     f"{self._live_downgrade_pct}%; downgrade to paper trading"
                 )
+
+        self._record_gate_edge(now, daily_loss_halted, "_daily_loss_reported", "daily_loss_halt", daily_loss_reason)
+        self._record_gate_edge(
+            now, consecutive_loss_halted, "_consecutive_loss_reported",
+            "consecutive_loss_halt", consecutive_loss_reason,
+        )
+        self._record_gate_edge(now, should_downgrade, "_downgrade_reported", "downgrade_to_paper", downgrade_reason)
 
         return CircuitBreakerState(
             daily_loss_halted=daily_loss_halted,

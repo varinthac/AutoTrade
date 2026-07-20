@@ -108,12 +108,24 @@ from autotrade.features.swing import latest_confirmed_swing_high, latest_confirm
 from autotrade.risk.circuit_breaker import CircuitBreaker
 from autotrade.risk.sizing import compute_lot_size
 from autotrade.shield.checkpoint import OpenPositionInfo, Shield
+from autotrade.store import journal
 from autotrade.watchman import position_metadata
 from autotrade.watchman.loop import WatchmanLoop
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_BORDERLINE_LOG_PATH = REPO_ROOT / "data" / "db" / "borderline_log.jsonl"
+
+# council/decision_matrix.py's four `borderline_reason` values, mapped to
+# store/journal.py's finer-grained BlockSource vocabulary -- fine enough to
+# distinguish Appendix A §5.1's "borderline no-trade" bucket into its actual
+# sub-cases for the daily report.
+_BORDERLINE_BLOCK_SOURCES: dict[str, journal.BlockSource] = {
+    "no conviction": "borderline_no_conviction",
+    "conflicting signals": "borderline_conflicting",
+    "strong-but-not-negated": "borderline_strong_not_negated",
+    "near-threshold": "borderline_near_threshold",
+}
 
 # H1 bars trade roughly 24 hours/day on weekdays (spec.md Appendix A §0 fixes
 # the system-wide timeframe to H1) -- so a "20 calendar day" rolling average
@@ -212,6 +224,7 @@ class ShadowLoop:
         borderline_log_path: Path | None = None,
         watchman_loop: WatchmanLoop | None = None,
         position_metadata_path: Path | None = None,
+        journal_db_path: Path | None = None,
     ) -> None:
         self._adapter = adapter
         self._circuit_breaker = circuit_breaker
@@ -227,6 +240,7 @@ class ShadowLoop:
         self._borderline_log_path = borderline_log_path or DEFAULT_BORDERLINE_LOG_PATH
         self._watchman_loop = watchman_loop
         self._position_metadata_path = position_metadata_path
+        self._journal_db_path = journal_db_path
         self._peak_equity: float | None = None
         self._live_start_equity: float | None = None
 
@@ -344,9 +358,14 @@ class ShadowLoop:
             )
 
         if council_decision.direction is None:
-            logger.info(
-                "%s %s: no council decision (%s)",
-                symbol, bar.time, council_decision.borderline_reason or "no conviction",
+            reason = council_decision.borderline_reason or "no conviction"
+            logger.info("%s %s: no council decision (%s)", symbol, bar.time, reason)
+            journal.record_blocked_signal(
+                timestamp=bar.time, symbol=symbol,
+                block_source=_BORDERLINE_BLOCK_SOURCES.get(reason, "borderline_no_conviction"),
+                reason=reason,
+                direction=borderline_case.hypothetical_direction if borderline_case is not None else None,
+                db_path=self._journal_db_path,
             )
             return history
 
@@ -372,6 +391,11 @@ class ShadowLoop:
                 "%s %s: Risk Voice vetoed %s trade -- %s",
                 symbol, bar.time, plan.direction, "; ".join(risk_voice_decision.reasons),
             )
+            journal.record_blocked_signal(
+                timestamp=bar.time, symbol=symbol, block_source="risk_voice",
+                reason="; ".join(risk_voice_decision.reasons), direction=plan.direction,
+                db_path=self._journal_db_path,
+            )
             return history
 
         # 5. Shield -- portfolio-level checkpoint, before CFO sizing (spec.md
@@ -396,6 +420,11 @@ class ShadowLoop:
             logger.warning(
                 "%s %s: Shield blocked %s trade -- %s",
                 symbol, bar.time, plan.direction, "; ".join(shield_decision.reasons),
+            )
+            journal.record_blocked_signal(
+                timestamp=bar.time, symbol=symbol, block_source="shield",
+                reason="; ".join(shield_decision.reasons), direction=plan.direction,
+                db_path=self._journal_db_path,
             )
             return history
 
@@ -429,6 +458,11 @@ class ShadowLoop:
             logger.warning(
                 "%s %s: stale_signal -- Risk Voice re-check failed immediately before "
                 "order placement -- %s", symbol, bar.time, "; ".join(recheck_decision.reasons),
+            )
+            journal.record_blocked_signal(
+                timestamp=bar.time, symbol=symbol, block_source="risk_voice",
+                reason="stale_signal: " + "; ".join(recheck_decision.reasons), direction=plan.direction,
+                db_path=self._journal_db_path,
             )
             return history
 
@@ -468,11 +502,23 @@ class ShadowLoop:
         # with any broker) or when the position was actually closed (a
         # normal rejection, or a slippage-close that DID succeed).
         if result.broker_ticket is not None and (result.success or result.position_still_open):
+            # entry_spread_points/actual_slippage (Appendix A §5.1's daily-
+            # report fields) -- entry_spread_points reuses the same
+            # bar-close spread reading the immediately-preceding Risk Voice
+            # re-check just computed (no live tick-level spread source
+            # exists in this pipeline yet, see _risk_voice_inputs's
+            # docstring); actual_slippage is the ACTUAL fill vs. the
+            # intended entry price, `None` if no fill price is known.
+            actual_slippage = (
+                abs(result.filled_price - plan.entry) if result.filled_price is not None else None
+            )
             position_metadata.record_position_opened(
                 ticket=result.broker_ticket, symbol=symbol, direction=plan.direction,
                 entry_price=result.filled_price, initial_stop_distance=plan.stop_distance,
                 entry_swing_index=swing_index, opened_at=opened_at,
                 state_path=self._position_metadata_path,
+                entry_spread_points=recheck_inputs["current_spread_points"],
+                actual_slippage=actual_slippage,
             )
 
         return history

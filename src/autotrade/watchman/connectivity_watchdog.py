@@ -18,14 +18,29 @@ is already known). The alert re-arms the next time `record_connected()` is
 called after a fresh success.
 
 Injected `Clock`, never reads the OS clock directly (spec.md §2.3).
+
+**Two clocks, deliberately separate.** `clock` drives the watchdog's own
+elapsed-duration/reconnect-detection math (`record_connected()`/`check()`'s
+`timeout_minutes` comparison) -- this can be wall-clock (`RealClock`), since
+it only measures "how long has it actually been", not a server-day boundary.
+`journal_clock` (defaults to `clock` if not given) is the clock whose
+`.now()` is written into `AnomalyEventRecord.timestamp` -- `store/journal.py`'s
+day-boundary queries bucket by MT5 SERVER day and interleave/order against
+server-time rows from other tables in the same daily report, so this MUST be
+server time (see `store/models.py`'s module docstring), not UTC/wall-clock,
+even though the watchdog's own internal math is fine staying wall-clock-based.
+`scripts/run_shadow_loop.py` passes the same `ServerClock` instance already
+wired for `CircuitBreaker`/`ShadowLoop`/`WatchmanLoop` as `journal_clock`.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from autotrade.common.clock import Clock
+from autotrade.store import journal
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +54,17 @@ class ConnectivityWatchdogConfig:
 
 
 class ConnectivityWatchdog:
-    def __init__(self, clock: Clock, config: ConnectivityWatchdogConfig | None = None) -> None:
+    def __init__(
+        self,
+        clock: Clock,
+        config: ConnectivityWatchdogConfig | None = None,
+        journal_db_path: Path | None = None,
+        journal_clock: Clock | None = None,
+    ) -> None:
         self._clock = clock
         self._config = config or ConnectivityWatchdogConfig()
+        self._journal_db_path = journal_db_path
+        self._journal_clock = journal_clock or clock
         self._last_known_good: datetime | None = None
         self._alerted_since_last_good = False
 
@@ -68,12 +91,21 @@ class ConnectivityWatchdog:
             return False
 
         if not self._alerted_since_last_good:
+            elapsed_minutes = elapsed.total_seconds() / 60.0
             logger.critical(
                 "MT5 CONNECTIVITY LOST for %.1f minutes (timeout=%.1f min) -- ALERTING. "
                 "This system is not currently monitoring open positions, but existing "
                 "positions remain protected by their own broker-side hard stop-loss, "
                 "independent of this system's monitoring (Appendix A §4.7).",
-                elapsed.total_seconds() / 60.0, self._config.timeout_minutes,
+                elapsed_minutes, self._config.timeout_minutes,
+            )
+            journal.record_anomaly_event(
+                timestamp=self._journal_clock.now(), event_type="reconnect",
+                details=(
+                    f"MT5 connectivity lost for {elapsed_minutes:.1f} minutes "
+                    f"(timeout={self._config.timeout_minutes:.1f} min)"
+                ),
+                db_path=self._journal_db_path,
             )
             self._alerted_since_last_good = True
         return True

@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Literal
 
 import MetaTrader5 as mt5
@@ -49,8 +49,15 @@ import MetaTrader5 as mt5
 from autotrade.common.clock import Clock
 from autotrade.common.config import MT5Credentials, load_yaml_config
 from autotrade.common.mt5_connection import mt5_session
-from autotrade.common.symbols import get_symbol_spec
-from autotrade.execution.adapter import BrokerAdapter, BrokerPosition, OrderResult, TradeRequest
+from autotrade.common.symbols import SymbolSpec, get_symbol_spec
+from autotrade.execution.adapter import (
+    BrokerAdapter,
+    BrokerPosition,
+    ClosedTradeInfo,
+    OrderResult,
+    TradeRequest,
+)
+from autotrade.store import journal
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +96,26 @@ _TERMINAL_RETCODES = frozenset({
 # Ambiguous: we don't know whether the broker actually executed the order --
 # only safe to retry for an idempotent action (see module docstring).
 _AMBIGUOUS_RETCODES = frozenset({mt5.TRADE_RETCODE_TIMEOUT, mt5.TRADE_RETCODE_CONNECTION})
+
+# get_closed_trade_info() -- MT5's own DEAL_REASON for a closing deal,
+# mapped to execution.adapter.ClosedTradeInfo's exit_reason vocabulary.
+# DEAL_REASON_SL/DEAL_REASON_TP are the genuine broker-side hard-stop hits
+# this reconciliation path exists to catch. DEAL_REASON_CLIENT/MOBILE/WEB/
+# EXPERT all mean something OTHER than the broker's own SL/TP closed it
+# (a human via the terminal, or an API/EA call -- including this system's
+# own close_position(), though that path removes metadata immediately and so
+# should never actually reach reconciliation) -- bucketed as "manual".
+# Anything else (e.g. DEAL_REASON_SO, a stop-out/margin-call liquidation) is
+# deliberately NOT guessed into "stop_loss" -- it is a materially different,
+# rarer situation worth surfacing as "unknown" for manual investigation
+# rather than silently conflated with a normal SL hit.
+_SL_TP_DEAL_REASONS: dict[int, Literal["stop_loss", "take_profit"]] = {
+    mt5.DEAL_REASON_SL: "stop_loss",
+    mt5.DEAL_REASON_TP: "take_profit",
+}
+_MANUAL_DEAL_REASONS = frozenset({
+    mt5.DEAL_REASON_CLIENT, mt5.DEAL_REASON_MOBILE, mt5.DEAL_REASON_WEB, mt5.DEAL_REASON_EXPERT,
+})
 
 
 def _is_retryable_outcome(send_result, is_idempotent: bool) -> bool:
@@ -144,6 +171,7 @@ class ThrottledDemoAdapter(BrokerAdapter):
         sleep_fn: Callable[[float], None] | None = None,
         max_entry_slippage_atr: float = 0.3,
         min_rr_after_slippage: float = 1.3,
+        journal_db_path: str | None = None,
     ) -> None:
         self._creds = creds
         self._clock = clock
@@ -157,7 +185,56 @@ class ThrottledDemoAdapter(BrokerAdapter):
         self._sleep_fn = sleep_fn or time.sleep
         self._max_entry_slippage_atr = max_entry_slippage_atr
         self._min_rr_after_slippage = min_rr_after_slippage
+        self._journal_db_path = journal_db_path
         self._last_placed_at: datetime | None = None
+
+    def _record_anomaly(self, event_type: str, details: str) -> None:
+        journal.record_anomaly_event(
+            timestamp=self._clock.now(), event_type=event_type, details=details,
+            db_path=self._journal_db_path,
+        )
+
+    def _record_slippage_close_trade(
+        self, request: TradeRequest, ticket: int, entry_price: float, entry_time: datetime,
+        lot_size: float, spec: SymbolSpec,
+        entry_spread_points: float | None = None, actual_slippage: float | None = None,
+    ) -> None:
+        """Writes the trade-journal record for a self-close triggered by
+        abnormal slippage (Appendix A §4.8 items 3-4) -- called right
+        alongside the `abnormal_slippage` anomaly event, in the same code
+        path, so one can never happen without the other. This is a real,
+        P&L-bearing trade that would otherwise never appear in the trade
+        journal: `orchestrator/shadow_loop.py` only records Watchman
+        metadata (not a TradeRecord) when `result.success or
+        result.position_still_open`, and this path returns
+        `success=False, position_still_open=False`. Queries
+        `get_closed_trade_info` for the ACTUAL close price/time/commission/
+        swap -- same ground-truth convention `watchman/loop.py`'s
+        reconciliation path uses -- rather than approximating from the
+        close `OrderResult`."""
+        info = self.get_closed_trade_info(ticket)
+        if info is None:
+            logger.warning(
+                "abnormal_slippage: ticket=%s %s closed but MT5 history has no closing deal for "
+                "it yet -- trade-journal record not written this cycle (the anomaly event above "
+                "was still recorded regardless).", ticket, request.symbol,
+            )
+            return
+
+        point_value = spec.tick_value / spec.tick_size if spec.tick_size else 0.0
+        initial_stop_distance = abs(request.entry - request.stop_loss)
+        risk_amount = initial_stop_distance * point_value * lot_size
+        net_pnl = info.gross_pnl - info.cost
+        r_multiple = net_pnl / risk_amount if risk_amount else 0.0
+
+        journal.record_closed_trade(
+            symbol=request.symbol, direction=request.direction, entry_time=entry_time,
+            entry_price=entry_price, exit_time=info.close_time, exit_price=info.close_price,
+            exit_reason="abnormal_slippage", lot_size=info.closed_volume,
+            gross_pnl=info.gross_pnl, cost=info.cost, net_pnl=net_pnl, r_multiple=r_multiple,
+            entry_spread_points=entry_spread_points, actual_slippage=actual_slippage,
+            recorded_at=self._clock.now(), broker_ticket=ticket, db_path=self._journal_db_path,
+        )
 
     def place_order(self, request: TradeRequest, current_atr: float | None = None) -> OrderResult:
         now = self._clock.now()
@@ -228,6 +305,7 @@ class ThrottledDemoAdapter(BrokerAdapter):
                 code, desc = mt5.last_error()
                 message = f"order_send() returned None after {self._max_retries} retries: [{code}] {desc}"
                 logger.error("execution_failed: %s", message)
+                self._record_anomaly("execution_failed", message)
                 return OrderResult(
                     success=False, broker_ticket=None, filled_price=None,
                     filled_volume=None, retcode=None, message=message,
@@ -240,22 +318,26 @@ class ThrottledDemoAdapter(BrokerAdapter):
                     f"retcode={send_result.retcode} comment={send_result.comment!r}"
                 )
                 logger.error("execution_failed: %s", message)
+                self._record_anomaly("order_reject", message)
                 return OrderResult(
                     success=False, broker_ticket=None, filled_price=None,
                     filled_volume=None, retcode=send_result.retcode, message=message,
                 )
 
             partial_fill = abs(send_result.volume - request.lot_size) > 1e-9
+            entry_time = self._clock.now()
+            entry_spread_points = (tick.ask - tick.bid) / spec.point if spec.point else None
             abnormal_slippage = self._reconcile_fill(request, send_result, spec.point, current_atr)
 
             if abnormal_slippage:
                 price_diff = abs(send_result.price - request.entry)
-                logger.warning(
-                    "abnormal_slippage: ticket=%s %s filled at %.5f, intended entry %.5f -- "
-                    "drift %.5f > %.2fx ATR (%.5f)",
-                    send_result.order, request.symbol, send_result.price, request.entry,
-                    price_diff, self._max_entry_slippage_atr, current_atr,
+                slippage_message = (
+                    f"abnormal_slippage: ticket={send_result.order} {request.symbol} filled at "
+                    f"{send_result.price:.5f}, intended entry {request.entry:.5f} -- drift "
+                    f"{price_diff:.5f} > {self._max_entry_slippage_atr:.2f}x ATR ({current_atr:.5f})"
                 )
+                logger.warning(slippage_message)
+                self._record_anomaly("abnormal_slippage", slippage_message)
                 realized_rr = _realized_rr(request, send_result.price)
                 if realized_rr is not None and realized_rr < self._min_rr_after_slippage:
                     logger.error(
@@ -280,6 +362,11 @@ class ThrottledDemoAdapter(BrokerAdapter):
                             f"({close_result.message})"
                         )
                         logger.error(message)
+                        self._record_slippage_close_trade(
+                            request=request, ticket=send_result.order, entry_price=send_result.price,
+                            entry_time=entry_time, lot_size=send_result.volume, spec=spec,
+                            entry_spread_points=entry_spread_points, actual_slippage=price_diff,
+                        )
                         return OrderResult(
                             success=False, broker_ticket=send_result.order, filled_price=send_result.price,
                             filled_volume=send_result.volume, retcode=send_result.retcode, message=message,
@@ -303,6 +390,7 @@ class ThrottledDemoAdapter(BrokerAdapter):
                         send_result.order, request.symbol, realized_rr, self._min_rr_after_slippage,
                         close_result.message,
                     )
+                    self._record_anomaly("execution_failed", message)
                     return OrderResult(
                         success=False, broker_ticket=send_result.order, filled_price=send_result.price,
                         filled_volume=send_result.volume, retcode=send_result.retcode, message=message,
@@ -472,6 +560,7 @@ class ThrottledDemoAdapter(BrokerAdapter):
                     )
                     retcode = send_result.retcode
                 logger.error("execution_failed: %s", message)
+                self._record_anomaly("execution_failed" if send_result is None else "order_reject", message)
                 return OrderResult(
                     success=False, broker_ticket=ticket, filled_price=None,
                     filled_volume=None, retcode=retcode, message=message,
@@ -551,6 +640,7 @@ class ThrottledDemoAdapter(BrokerAdapter):
                     )
                     retcode = send_result.retcode
                 logger.error("execution_failed: %s", message)
+                self._record_anomaly("execution_failed" if send_result is None else "order_reject", message)
                 return OrderResult(
                     success=False, broker_ticket=ticket, filled_price=None,
                     filled_volume=None, retcode=retcode, message=message,
@@ -664,6 +754,78 @@ class ThrottledDemoAdapter(BrokerAdapter):
                 ))
 
             return result
+
+    def get_closed_trade_info(self, ticket: int) -> ClosedTradeInfo | None:
+        """`mt5.history_deals_get(position=ticket)` -- confirmed against the
+        real installed `MetaTrader5` package (its `position=` filter needs
+        no `date_from`/`date_to` range, unlike its other overloads) that
+        this returns every deal belonging to position `ticket` (both the
+        entry deal and every partial/full exit deal), or an empty tuple
+        `()` if `ticket` has no history at all yet -- `None` only on a
+        genuine query failure. See `ClosedTradeInfo`'s docstring for the
+        aggregation/sign convention this builds."""
+        with mt5_session(self._creds):
+            deals = mt5.history_deals_get(position=ticket)
+            if deals is None:
+                code, desc = mt5.last_error()
+                logger.warning(
+                    "get_closed_trade_info: history_deals_get(position=%s) failed: [%d] %s",
+                    ticket, code, desc,
+                )
+                return None
+            if not deals:
+                logger.warning(
+                    "get_closed_trade_info: no deals found in MT5 history for position=%s yet -- "
+                    "it may have closed too recently for the deal to be visible; caller should "
+                    "retry next cycle rather than treat this as never having closed.",
+                    ticket,
+                )
+                return None
+
+            exit_deals = [d for d in deals if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY)]
+            if not exit_deals:
+                logger.warning(
+                    "get_closed_trade_info: position=%s has %d deal(s) in history but none is an "
+                    "exit deal (DEAL_ENTRY_OUT/OUT_BY) -- it may not actually be fully closed yet; "
+                    "caller should retry next cycle.",
+                    ticket, len(deals),
+                )
+                return None
+
+            # MT5 reports commission/swap as negative-when-charged (a debit)
+            # -- `cost` here is a POSITIVE number to subtract, matching
+            # store/models.py's TradeRecord.cost convention, so negate the
+            # sum. `gross_pnl` is deal.profit only (pure price P&L, already
+            # excludes commission/swap). Summed across EVERY deal for this
+            # position (entry + every partial/full exit), not just the
+            # final exit, so a position with an earlier partial close still
+            # gets its full lifetime P&L in one record.
+            gross_pnl = sum(d.profit for d in deals)
+            cost = -sum(d.commission + d.swap for d in deals)
+            closed_volume = sum(d.volume for d in exit_deals)
+
+            last_exit = max(exit_deals, key=lambda d: d.time)
+            exit_reason = _SL_TP_DEAL_REASONS.get(last_exit.reason)
+            if exit_reason is None:
+                if last_exit.reason in _MANUAL_DEAL_REASONS:
+                    exit_reason = "manual"
+                else:
+                    exit_reason = "unknown"
+                    logger.warning(
+                        "get_closed_trade_info: position=%s closed with DEAL_REASON=%s, not "
+                        "recognized as SL/TP/manual (e.g. a stop-out/margin-call liquidation) -- "
+                        "classified as 'unknown', worth manual investigation.",
+                        ticket, last_exit.reason,
+                    )
+
+            return ClosedTradeInfo(
+                close_price=last_exit.price,
+                close_time=datetime.fromtimestamp(last_exit.time, tz=timezone.utc).replace(tzinfo=None),
+                closed_volume=closed_volume,
+                gross_pnl=gross_pnl,
+                cost=cost,
+                exit_reason=exit_reason,
+            )
 
 
 def _realized_rr(request: TradeRequest, fill_price: float) -> float | None:

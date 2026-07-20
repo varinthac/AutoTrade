@@ -4,7 +4,7 @@ terminal needed."""
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -13,6 +13,7 @@ from autotrade.council.order_construction import OrderPlan
 from autotrade.execution.adapter import TradeRequest
 from autotrade.execution.demo_adapter import ThrottledDemoAdapter, mt5
 from autotrade.shield.checkpoint import OpenPositionInfo, Shield
+from autotrade.store import journal
 
 CREDS = MT5Credentials(login=123, password="pw", server="ICMarketsSC-Demo", terminal_path=None)
 SYMBOL_MAP = {"XAUUSD": "XAUUSD"}
@@ -768,6 +769,72 @@ def test_abnormal_slippage_below_rr_floor_closes_position_immediately(monkeypatc
     assert any("abnormal_slippage" in record.message for record in caplog.records)
 
 
+def test_abnormal_slippage_self_close_writes_trade_record(monkeypatch, caplog):
+    # Regression test (code-reviewer + test-engineer confirmed): an
+    # abnormal-slippage self-close is a real, P&L-bearing trade -- it must
+    # land in the trade journal alongside the AnomalyEventRecord, not just
+    # log an anomaly, otherwise Phase 8b's Auditor never sees these
+    # worst-execution trades in its win-rate/profit-factor stats.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2401.9, ask=2402.0))
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2402.0, volume=0.1,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=77, tp=2405.0),
+        ) if kwargs.get("ticket") == 77 else (),
+    )
+
+    def routed_order_send(request):
+        if "position" in request:
+            return _FakeSendResult(retcode=mt5.TRADE_RETCODE_DONE, order=77, price=2402.0, volume=0.1)
+        return _FakeSendResult(retcode=mt5.TRADE_RETCODE_DONE, order=77, price=2402.0, volume=0.1)
+
+    monkeypatch.setattr(mt5, "order_send", routed_order_send)
+
+    deals = (
+        # Unix timestamps for 2026-07-19 10:00/10:01 UTC -- matching the
+        # FakeClock's day below, so get_trades_for_day(2026-07-19) finds it.
+        _FakeDeal(entry=mt5.DEAL_ENTRY_IN, reason=mt5.DEAL_REASON_CLIENT, profit=0.0,
+                  price=2402.0, time=1_784_455_200, volume=0.1),
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_CLIENT, profit=-5.0,
+                  commission=-1.0, swap=0.0, price=2401.5, time=1_784_455_260, volume=0.1),
+    )
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals if kwargs.get("position") == 77 else ())
+
+    # entry intended 2400.0, filled 2402.0 -> slippage=2.0 > 0.3*ATR(5.0)=1.5.
+    # SL=2395, TP=2401.5 -> risk=|2402-2395|=7, reward=|2401.5-2402|=0.5 -> R:R=0.07 < 1.3.
+    request = TradeRequest(
+        symbol="XAUUSD", direction="BUY", lot_size=0.1,
+        entry=2400.0, stop_loss=2395.0, take_profit=2401.5,
+    )
+    clock = FakeClock(datetime(2026, 7, 19, 10, 0))
+    adapter = _adapter(clock=clock)
+    with caplog.at_level(logging.ERROR):
+        result = adapter.place_order(request, current_atr=5.0)
+
+    assert result.success is False
+    assert result.closed_due_to_slippage is True
+
+    trades = journal.get_trades_for_day(date(2026, 7, 19))
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.broker_ticket == 77
+    assert trade.exit_reason == "abnormal_slippage"
+    assert trade.exit_price == 2401.5
+    assert trade.gross_pnl == pytest.approx(-5.0)
+    assert trade.cost == pytest.approx(1.0)
+    assert trade.net_pnl == pytest.approx(-6.0)
+    # Appendix A §5.1 daily-report fields (should-fix #5) -- spread at entry
+    # (bid=2401.9/ask=2402.0 -> 0.1 price / 0.01 point = 10.0 points) and the
+    # ACTUAL fill-vs-intended slippage (filled 2402.0 vs intended entry 2400.0).
+    assert trade.entry_spread_points == pytest.approx(10.0)
+    assert trade.actual_slippage == pytest.approx(2.0)
+
+    events = journal.get_anomaly_events_for_day(date(2026, 7, 19))
+    assert any(e.event_type == "abnormal_slippage" for e in events)
+
+
 def test_place_order_retry_request_identical_across_all_three_attempts(monkeypatch):
     # test_place_order_retry_never_varies_request_between_attempts (above)
     # only compares 2 of the up-to-3 requests actually sent (it succeeds on
@@ -1263,3 +1330,174 @@ def test_close_position_exhausts_retries_and_logs_execution_failed(monkeypatch, 
     assert result.success is False
     assert len(send_calls) == 3
     assert any("execution_failed" in record.message for record in caplog.records)
+
+
+# --- get_closed_trade_info() (Phase 8a reconciliation) ----------------------
+
+
+class _FakeDeal:
+    def __init__(self, entry, reason, profit=0.0, commission=0.0, swap=0.0, price=0.0, time=0, volume=0.0):
+        self.entry = entry
+        self.reason = reason
+        self.profit = profit
+        self.commission = commission
+        self.swap = swap
+        self.price = price
+        self.time = time
+        self.volume = volume
+
+
+def test_get_closed_trade_info_sl_hit_maps_to_stop_loss(monkeypatch):
+    _patch_mt5_boilerplate(monkeypatch)
+    deals = (
+        _FakeDeal(entry=mt5.DEAL_ENTRY_IN, reason=mt5.DEAL_REASON_CLIENT, profit=0.0, price=2400.0, time=1_700_000_000, volume=0.1),
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_SL, profit=-50.0, commission=-2.0, swap=-0.5,
+                  price=2395.0, time=1_700_003_600, volume=0.1),
+    )
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals if kwargs.get("position") == 8 else ())
+
+    adapter = _adapter()
+    info = adapter.get_closed_trade_info(8)
+
+    assert info is not None
+    assert info.exit_reason == "stop_loss"
+    assert info.close_price == 2395.0
+    assert info.closed_volume == pytest.approx(0.1)
+    assert info.gross_pnl == pytest.approx(-50.0)
+    assert info.cost == pytest.approx(2.5)  # -(sum of commission+swap) = -(-2.0 + -0.5) = 2.5
+    assert info.close_time == datetime.fromtimestamp(1_700_003_600, tz=timezone.utc).replace(tzinfo=None)
+
+
+def test_get_closed_trade_info_tp_hit_maps_to_take_profit(monkeypatch):
+    _patch_mt5_boilerplate(monkeypatch)
+    deals = (
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_TP, profit=80.0, price=2410.0,
+                  time=1_700_003_600, volume=0.1),
+    )
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals)
+
+    info = _adapter().get_closed_trade_info(8)
+
+    assert info.exit_reason == "take_profit"
+
+
+def test_get_closed_trade_info_expert_closed_maps_to_manual(monkeypatch):
+    _patch_mt5_boilerplate(monkeypatch)
+    deals = (
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_EXPERT, profit=10.0, price=2401.0,
+                  time=1_700_003_600, volume=0.1),
+    )
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals)
+
+    info = _adapter().get_closed_trade_info(8)
+
+    assert info.exit_reason == "manual"
+
+
+def test_get_closed_trade_info_stop_out_maps_to_unknown_and_logs_warning(monkeypatch, caplog):
+    _patch_mt5_boilerplate(monkeypatch)
+    deals = (
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_SO, profit=-500.0, price=2300.0,
+                  time=1_700_003_600, volume=0.1),
+    )
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals)
+
+    with caplog.at_level(logging.WARNING):
+        info = _adapter().get_closed_trade_info(8)
+
+    assert info.exit_reason == "unknown"
+    assert any("not recognized as SL/TP/manual" in r.message for r in caplog.records)
+
+
+def test_get_closed_trade_info_aggregates_gross_pnl_and_cost_across_all_deals(monkeypatch):
+    # An earlier partial close (news protection half-close) plus the final
+    # full close -- both exit deals' profit/commission/swap must be summed,
+    # not just the final one's.
+    _patch_mt5_boilerplate(monkeypatch)
+    deals = (
+        _FakeDeal(entry=mt5.DEAL_ENTRY_IN, reason=mt5.DEAL_REASON_CLIENT, profit=0.0, commission=-1.0,
+                  price=2400.0, time=1_700_000_000, volume=0.2),
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_CLIENT, profit=40.0, commission=-1.0,
+                  price=2410.0, time=1_700_003_600, volume=0.1),
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_SL, profit=-20.0, commission=-1.0, swap=-0.5,
+                  price=2395.0, time=1_700_007_200, volume=0.1),
+    )
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals)
+
+    info = _adapter().get_closed_trade_info(8)
+
+    assert info.gross_pnl == pytest.approx(20.0)  # 0 + 40 + -20
+    assert info.cost == pytest.approx(3.5)  # -(-1 + -1 + -1 + -0.5)
+    assert info.closed_volume == pytest.approx(0.2)  # 0.1 + 0.1, the two exit deals
+    # last exit deal chronologically is the SL hit -- close price/time/reason come from it
+    assert info.exit_reason == "stop_loss"
+    assert info.close_price == 2395.0
+
+
+def test_get_closed_trade_info_no_deals_in_history_returns_none(monkeypatch, caplog):
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: ())
+
+    with caplog.at_level(logging.WARNING):
+        info = _adapter().get_closed_trade_info(8)
+
+    assert info is None
+    assert any("no deals found in MT5 history" in r.message for r in caplog.records)
+
+
+def test_get_closed_trade_info_only_entry_deal_no_exit_yet_returns_none(monkeypatch, caplog):
+    _patch_mt5_boilerplate(monkeypatch)
+    deals = (_FakeDeal(entry=mt5.DEAL_ENTRY_IN, reason=mt5.DEAL_REASON_CLIENT, price=2400.0, time=1_700_000_000, volume=0.1),)
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals)
+
+    with caplog.at_level(logging.WARNING):
+        info = _adapter().get_closed_trade_info(8)
+
+    assert info is None
+    assert any("none is an exit deal" in r.message for r in caplog.records)
+
+
+def test_get_closed_trade_info_query_failure_returns_none(monkeypatch, caplog):
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: None)
+    monkeypatch.setattr(mt5, "last_error", lambda: (1, "some MT5 error"))
+
+    with caplog.at_level(logging.WARNING):
+        info = _adapter().get_closed_trade_info(8)
+
+    assert info is None
+    assert any("history_deals_get" in r.message for r in caplog.records)
+
+
+# --- anomaly-event recording alongside execution_failed/abnormal_slippage --
+
+
+def test_execution_failed_on_rejected_order_records_anomaly_event(monkeypatch):
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send", lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_REJECT),
+    )
+
+    clock = FakeClock(datetime(2026, 7, 19, 10, 0))
+    adapter = _adapter(clock=clock, max_retries=0)
+    adapter.place_order(_request())
+
+    events = journal.get_anomaly_events_for_day(date(2026, 7, 19))
+    assert any(e.event_type == "order_reject" for e in events)
+
+
+def test_abnormal_slippage_records_anomaly_event(monkeypatch):
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2450.0))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_DONE, order=1, price=2450.0, volume=0.1),
+    )
+
+    clock = FakeClock(datetime(2026, 7, 19, 10, 0))
+    adapter = _adapter(clock=clock, max_entry_slippage_atr=0.3, min_rr_after_slippage=100.0)
+    adapter.place_order(_request(entry=2400.0), current_atr=1.0)
+
+    events = journal.get_anomaly_events_for_day(date(2026, 7, 19))
+    assert any(e.event_type == "abnormal_slippage" for e in events)

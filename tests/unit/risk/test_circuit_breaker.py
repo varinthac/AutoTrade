@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from autotrade.risk.circuit_breaker import CircuitBreaker, DEFAULT_STATE_PATH
+from autotrade.store import journal
 
 
 class FixedClock:
@@ -445,3 +446,78 @@ def test_full_state_round_trip_preserves_every_persisted_field(tmp_path):
     # real gate logic, not just being an inert round-tripped number.
     restarted.record_trade_close(pnl=-5, closed_at=t0 + timedelta(minutes=2))
     assert restarted.check(FixedClock(t0 + timedelta(minutes=3))).consecutive_loss_halted
+
+
+# --- Phase 8a: anomaly events recorded at gate-trip points ------------------
+
+
+def test_daily_loss_halt_records_one_anomaly_event():
+    breaker = _breaker()
+    t0 = datetime(2026, 7, 19, 9, 0)
+    breaker.record_equity(equity=10000, peak_equity=10000, live_start_equity=10000, as_of=t0)
+    breaker.record_trade_close(pnl=-250, closed_at=t0)
+
+    breaker.check(FixedClock(t0))
+    breaker.check(FixedClock(t0 + timedelta(minutes=1)))  # still halted -- must not re-fire
+
+    events = journal.get_anomaly_events_for_day(t0.date())
+    triggers = [e for e in events if e.event_type == "circuit_breaker_trigger"]
+    assert len(triggers) == 1
+    assert "daily_loss_halt" in triggers[0].details
+
+
+def test_consecutive_loss_halt_records_one_anomaly_event():
+    breaker = _breaker()
+    t0 = datetime(2026, 7, 19, 9, 0)
+    for i in range(3):
+        breaker.record_trade_close(pnl=-10, closed_at=t0 + timedelta(minutes=5 * i))
+
+    breaker.check(FixedClock(t0 + timedelta(minutes=11)))
+    breaker.check(FixedClock(t0 + timedelta(minutes=12)))  # still halted -- must not re-fire
+
+    events = journal.get_anomaly_events_for_day(t0.date())
+    triggers = [e for e in events if "consecutive_loss_halt" in e.details]
+    assert len(triggers) == 1
+
+
+def test_drawdown_halt_records_one_anomaly_event_even_across_repeated_record_equity_calls():
+    breaker = _breaker()
+    t0 = datetime(2026, 7, 19, 9, 0)
+    breaker.record_equity(equity=9100, peak_equity=10000, live_start_equity=10000, as_of=t0)
+    breaker.record_equity(equity=9050, peak_equity=10000, live_start_equity=10000, as_of=t0)  # still halted
+
+    events = journal.get_anomaly_events_for_day(t0.date())
+    triggers = [e for e in events if "drawdown halt" in e.details]
+    assert len(triggers) == 1
+
+
+def test_downgrade_signal_records_one_anomaly_event():
+    breaker = _breaker(live_downgrade_pct=15.0)
+    t0 = datetime(2026, 7, 19, 9, 0)
+    breaker.record_equity(equity=8400, peak_equity=10000, live_start_equity=10000, as_of=t0)  # 16% drop
+
+    breaker.check(FixedClock(t0))
+    breaker.check(FixedClock(t0 + timedelta(minutes=1)))  # still tripped -- must not re-fire
+
+    events = journal.get_anomaly_events_for_day(t0.date())
+    triggers = [e for e in events if "downgrade_to_paper" in e.details]
+    assert len(triggers) == 1
+
+
+def test_gate_edge_re_reports_after_clearing_and_re_tripping():
+    breaker = _breaker()
+    t0 = datetime(2026, 7, 19, 9, 0)
+    breaker.record_equity(equity=10000, peak_equity=10000, live_start_equity=10000, as_of=t0)
+    breaker.record_trade_close(pnl=-250, closed_at=t0)  # trips daily loss halt
+    breaker.check(FixedClock(t0))
+
+    day2 = datetime(2026, 7, 20, 1, 0)  # new server day -- daily loss gate clears
+    breaker.check(FixedClock(day2))
+
+    breaker.record_equity(equity=9900, peak_equity=9900, live_start_equity=10000, as_of=day2)
+    breaker.record_trade_close(pnl=-250, closed_at=day2)  # trips again on the new day
+    breaker.check(FixedClock(day2))
+
+    events_day2 = journal.get_anomaly_events_for_day(day2.date())
+    triggers = [e for e in events_day2 if "daily_loss_halt" in e.details]
+    assert len(triggers) == 1  # re-armed and re-fired on the new day's trip

@@ -5,7 +5,13 @@ from __future__ import annotations
 
 import logging
 
-from autotrade.execution.adapter import BrokerAdapter, BrokerPosition, OrderResult, TradeRequest
+from autotrade.execution.adapter import (
+    BrokerAdapter,
+    BrokerPosition,
+    ClosedTradeInfo,
+    OrderResult,
+    TradeRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,3 +67,8 @@ class NoOpBrokerAdapter(BrokerAdapter):
     def get_open_positions(self) -> list[BrokerPosition]:
         # A dry run never actually opens a position with any broker.
         return []
+
+    def get_closed_trade_info(self, ticket: int) -> ClosedTradeInfo | None:
+        # A dry run never actually opens/closes anything with any broker --
+        # there is no history to query.
+        return None

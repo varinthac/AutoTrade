@@ -24,17 +24,25 @@ import logging
 from datetime import datetime, timedelta
 
 import pandas as pd
+import pytest
 
 from autotrade.common.symbols import SymbolSpec
 from autotrade.council.news_calendar import NewsEvent
 from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.council.scoring import BullBearScore
-from autotrade.execution.adapter import BrokerAdapter, BrokerPosition, OrderResult, TradeRequest
+from autotrade.execution.adapter import (
+    BrokerAdapter,
+    BrokerPosition,
+    ClosedTradeInfo,
+    OrderResult,
+    TradeRequest,
+)
 from autotrade.feed.snapshot import Bar, MarketSnapshot
 from autotrade.orchestrator import shadow_loop as shadow_loop_module
 from autotrade.orchestrator.shadow_loop import ShadowLoop, ShadowLoopConfig
 from autotrade.risk.circuit_breaker import CircuitBreaker
 from autotrade.shield.checkpoint import Shield
+from autotrade.store import journal
 from autotrade.watchman import position_metadata
 
 N = 40
@@ -83,6 +91,9 @@ class FakeAdapter(BrokerAdapter):
 
     def get_open_positions(self) -> list[BrokerPosition]:
         return self._open_positions
+
+    def get_closed_trade_info(self, ticket: int) -> ClosedTradeInfo | None:
+        raise NotImplementedError("not exercised by these wiring tests")
 
 
 def _fake_symbol_spec(symbol: str) -> SymbolSpec:
@@ -212,21 +223,25 @@ class SpyShield(Shield):
 def _default_loop(
     adapter, circuit_breaker, seed_history, clock=None, shield=None,
     news_provider=None, risk_voice_cfg=None, borderline_log_path=None,
-    watchman_loop=None, position_metadata_path=None,
+    watchman_loop=None, position_metadata_path=None, journal_db_path=None,
 ) -> ShadowLoop:
     cfg = ShadowLoopConfig(risk_per_trade_pct=1.0)
-    # position_metadata_path defaults alongside borderline_log_path -- both
-    # are test-scoped tmp_path files, never the repo's real default state
-    # files, so a test that reaches a successful place_order() never writes
-    # to data/db/position_metadata.json.
+    # position_metadata_path/journal_db_path default alongside
+    # borderline_log_path -- all test-scoped tmp_path files, never the
+    # repo's real default state files, so a test that reaches a successful
+    # place_order()/blocked-signal point never writes to
+    # data/db/position_metadata.json or data/db/trade_journal.sqlite.
     if position_metadata_path is None and borderline_log_path is not None:
         position_metadata_path = borderline_log_path.parent / "position_metadata.json"
+    if journal_db_path is None and borderline_log_path is not None:
+        journal_db_path = borderline_log_path.parent / "trade_journal.sqlite"
     return ShadowLoop(
         adapter=adapter, circuit_breaker=circuit_breaker, shield=shield or _default_shield(), cfg=cfg,
         initial_history={"XAUUSD": seed_history}, resolve_symbol_spec=_fake_symbol_spec,
         clock=clock or FixedClock(BASE_TIME),
         news_provider=news_provider or AllClearNewsProvider(),
         risk_voice_cfg=risk_voice_cfg or _permissive_risk_voice_cfg(),
+        journal_db_path=journal_db_path,
         borderline_log_path=borderline_log_path,
         watchman_loop=watchman_loop, position_metadata_path=position_metadata_path,
     )
@@ -537,6 +552,7 @@ def test_multiple_symbols_are_tracked_and_processed_independently(monkeypatch, t
         news_provider=AllClearNewsProvider(), risk_voice_cfg=_permissive_risk_voice_cfg(),
         borderline_log_path=tmp_path / "borderline.jsonl",
         position_metadata_path=tmp_path / "position_metadata.json",
+        journal_db_path=tmp_path / "trade_journal.sqlite",
     )
 
     loop.on_new_bar(MarketSnapshot(symbol="EURUSD", timeframe="H1", bar=_bar_from_row(df_b, AS_OF)))
@@ -562,6 +578,7 @@ def test_history_is_trimmed_to_max_history_bars_configured_limit(monkeypatch, tm
         clock=FixedClock(BASE_TIME), news_provider=AllClearNewsProvider(),
         risk_voice_cfg=_permissive_risk_voice_cfg(), borderline_log_path=tmp_path / "borderline.jsonl",
         position_metadata_path=tmp_path / "position_metadata.json",
+        journal_db_path=tmp_path / "trade_journal.sqlite",
     )
 
     # Feed 3 more distinct closed bars -- history would grow to 73, must be
@@ -832,6 +849,7 @@ def test_default_news_provider_is_stub_and_vetoes_every_trade(monkeypatch, tmp_p
         clock=FixedClock(datetime(2026, 1, 1, 15, 0)),  # Thursday, inside default [14,18) session
         borderline_log_path=tmp_path / "borderline.jsonl",
         position_metadata_path=tmp_path / "position_metadata.json",
+        journal_db_path=tmp_path / "trade_journal.sqlite",
     )
 
     new_bar = _bar_from_row(df, AS_OF)
@@ -896,6 +914,8 @@ def test_successful_trade_records_position_metadata(monkeypatch, tmp_path):
     assert recorded.initial_stop_distance > 0
     assert recorded.entry_swing_index == SWING_LOW_INDEX
     assert recorded.opened_at == BASE_TIME
+    assert recorded.entry_spread_points is not None  # Appendix A §5.1 daily-report field
+    assert recorded.actual_slippage == pytest.approx(0.0)  # FakeAdapter fills exactly at request.entry
 
 
 def test_place_order_receives_current_atr_kwarg(monkeypatch, tmp_path):
@@ -974,6 +994,7 @@ def test_run_wires_watchman_cycle_as_on_iteration_end_hook_when_given(monkeypatc
         clock=FixedClock(BASE_TIME), news_provider=AllClearNewsProvider(),
         risk_voice_cfg=_permissive_risk_voice_cfg(), borderline_log_path=tmp_path / "borderline.jsonl",
         position_metadata_path=tmp_path / "position_metadata.json", watchman_loop=watchman_loop,
+        journal_db_path=tmp_path / "trade_journal.sqlite",
     )
 
     captured_kwargs = {}
@@ -1008,3 +1029,77 @@ def test_run_passes_none_on_iteration_end_when_no_watchman_loop_given(monkeypatc
     loop.run(["XAUUSD"], "H1", poll_interval_sec=0.0, max_iterations=1)
 
     assert captured_kwargs["on_iteration_end"] is None
+
+
+# --- Phase 8a: blocked-signal recording (store/journal.py) ------------------
+
+
+def test_no_conviction_records_blocked_signal(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=20, bear_total=20)  # neither near threshold nor conflicting
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    borderline_log_path = tmp_path / "borderline.jsonl"
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=borderline_log_path)
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    counts = journal.count_blocked_signals_for_day(
+        new_bar.time.date(), db_path=borderline_log_path.parent / "trade_journal.sqlite",
+    )
+    assert counts == {"borderline_no_conviction": 1}
+
+
+def test_risk_voice_veto_records_blocked_signal(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    risk_voice_cfg = RiskVoiceConfig(
+        max_spread_multiple=100.0, max_spread_points_xauusd=1000.0,
+        news_blackout_before_min=45.0, news_blackout_after_min=30.0,
+        max_stop_atr_multiple=100.0, session_start_hour=14, session_end_hour=18,
+        friday_close_hour=20, max_atr_panic_multiple=100.0,
+    )
+    borderline_log_path = tmp_path / "borderline.jsonl"
+    loop = _default_loop(
+        adapter, breaker, seed, risk_voice_cfg=risk_voice_cfg, borderline_log_path=borderline_log_path,
+    )
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    counts = journal.count_blocked_signals_for_day(
+        new_bar.time.date(), db_path=borderline_log_path.parent / "trade_journal.sqlite",
+    )
+    assert counts == {"risk_voice": 1}
+
+
+def test_shield_blocked_trade_records_blocked_signal(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    open_positions = [
+        BrokerPosition(ticket=101, symbol="EURUSD", direction="SELL", risk_pct=0.1, current_sl=1.10, current_price=1.09, volume=0.1),
+        BrokerPosition(ticket=102, symbol="GBPUSD", direction="SELL", risk_pct=0.1, current_sl=1.30, current_price=1.29, volume=0.1),
+        BrokerPosition(ticket=103, symbol="USDJPY", direction="SELL", risk_pct=0.1, current_sl=150.0, current_price=149.0, volume=0.1),
+    ]
+    adapter = FakeAdapter(equity=10_000.0, open_positions=open_positions)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    shield = Shield(
+        min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=1,
+        max_positions_total=3, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
+    )
+    borderline_log_path = tmp_path / "borderline.jsonl"
+    loop = _default_loop(adapter, breaker, seed, shield=shield, borderline_log_path=borderline_log_path)
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    counts = journal.count_blocked_signals_for_day(
+        new_bar.time.date(), db_path=borderline_log_path.parent / "trade_journal.sqlite",
+    )
+    assert counts == {"shield": 1}

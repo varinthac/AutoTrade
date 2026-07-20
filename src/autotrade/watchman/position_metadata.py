@@ -97,6 +97,17 @@ class PositionMetadata:
     # the full mechanism. Once past this timestamp, a NEW high-impact event
     # can trigger protection again -- this is NOT a permanent one-shot flag.
     news_protected_until: datetime | None = None
+    # Phase 8a (trading_system_summary_v2.md Appendix A §5.1's daily-report
+    # fields): the entry-time spread (in points) and the fill-vs-intended
+    # entry-price slippage, both already computed at order-send time by
+    # `execution/demo_adapter.py`'s `_send_order`/`_reconcile_fill` but
+    # otherwise lost once that call returns -- recorded here so
+    # `watchman/loop.py`'s trade-journal writes can carry them through onto
+    # `TradeRecord` at close time instead of always leaving them `None`.
+    # `None` for callers that never computed them (e.g. NoOpBrokerAdapter
+    # dry runs, or no `current_atr` supplied to `place_order`).
+    entry_spread_points: float | None = None
+    actual_slippage: float | None = None
 
 
 def _load_all(state_path: Path) -> dict:
@@ -137,6 +148,8 @@ def record_position_opened(
     entry_swing_index: int,
     opened_at: datetime,
     state_path: Path | None = None,
+    entry_spread_points: float | None = None,
+    actual_slippage: float | None = None,
 ) -> None:
     """Record entry-time context for a newly opened position, keyed by
     broker `ticket`. Overwrites any existing record for the same ticket."""
@@ -150,6 +163,8 @@ def record_position_opened(
         "entry_swing_index": entry_swing_index,
         "opened_at": opened_at.isoformat(),
         "news_protected_until": None,
+        "entry_spread_points": entry_spread_points,
+        "actual_slippage": actual_slippage,
     }
     _save_all(path, all_positions)
 
@@ -174,6 +189,8 @@ def get_position_metadata(ticket: int, state_path: Path | None = None) -> Positi
         news_protected_until=(
             datetime.fromisoformat(news_protected_until_raw) if news_protected_until_raw else None
         ),
+        entry_spread_points=record.get("entry_spread_points"),
+        actual_slippage=record.get("actual_slippage"),
     )
 
 
@@ -196,6 +213,17 @@ def update_news_protected_until(
         news_protected_until.isoformat() if news_protected_until is not None else None
     )
     _save_all(path, all_positions)
+
+
+def get_all_tracked_tickets(state_path: Path | None = None) -> list[int]:
+    """Every ticket this system currently has recorded metadata for --
+    `watchman/loop.py`'s reconciliation path uses this to find tickets that
+    have DISAPPEARED from `BrokerAdapter.get_open_positions()` (closed,
+    whether via this system's own `close_position()` call or a broker-side
+    SL/TP hit) without going through the explicit-close path first."""
+    path = state_path or DEFAULT_STATE_PATH
+    all_positions = _load_all(path)
+    return [int(t) for t in all_positions.keys()]
 
 
 def remove_position_metadata(ticket: int, state_path: Path | None = None) -> None:

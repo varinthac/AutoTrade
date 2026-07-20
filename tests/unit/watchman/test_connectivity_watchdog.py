@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from autotrade.store import journal
 from autotrade.watchman.connectivity_watchdog import ConnectivityWatchdog, ConnectivityWatchdogConfig
 
 
@@ -127,3 +128,52 @@ def test_record_connected_resets_and_rearms_the_alert(caplog):
     assert result is True
     critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
     assert len(critical_records) == 1
+
+
+def test_check_records_one_anomaly_event_per_outage_not_every_call():
+    clock = FakeClock(BASE_TIME)
+    watchdog = ConnectivityWatchdog(clock, ConnectivityWatchdogConfig(timeout_minutes=5.0))
+
+    watchdog.record_connected()
+    clock.advance(minutes=10)
+    watchdog.check()
+    watchdog.check()
+    watchdog.check()
+
+    events = journal.get_anomaly_events_for_day(BASE_TIME.date())
+    assert len(events) == 1
+    assert events[0].event_type == "reconnect"
+
+
+def test_journal_timestamp_uses_journal_clock_not_the_elapsed_duration_clock():
+    # Regression test: the journal write must use journal_clock (server
+    # time), independently of whatever clock drives the watchdog's own
+    # elapsed-duration math -- a reconnect anomaly near server-time midnight
+    # must not be filed under the wrong report day just because it shares
+    # the wall-clock/UTC clock used for timeout detection.
+    elapsed_clock = FakeClock(BASE_TIME)
+    journal_clock = FakeClock(datetime(2099, 6, 15, tzinfo=timezone.utc))
+    watchdog = ConnectivityWatchdog(
+        elapsed_clock, ConnectivityWatchdogConfig(timeout_minutes=5.0), journal_clock=journal_clock,
+    )
+
+    watchdog.record_connected()
+    elapsed_clock.advance(minutes=10)  # timeout detection still driven by elapsed_clock
+    result = watchdog.check()
+
+    assert result is True
+    events = journal.get_anomaly_events_for_day(datetime(2099, 6, 15).date())
+    assert len(events) == 1
+    assert events[0].timestamp == journal_clock.now().replace(tzinfo=None)
+
+
+def test_journal_clock_defaults_to_the_main_clock_when_not_given():
+    clock = FakeClock(BASE_TIME)
+    watchdog = ConnectivityWatchdog(clock, ConnectivityWatchdogConfig(timeout_minutes=5.0))
+
+    watchdog.record_connected()
+    clock.advance(minutes=10)
+    watchdog.check()
+
+    events = journal.get_anomaly_events_for_day(BASE_TIME.date())
+    assert len(events) == 1

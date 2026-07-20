@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 
 
@@ -74,6 +75,40 @@ class BrokerPosition:
     current_sl: float
     current_price: float
     volume: float
+
+
+@dataclass(frozen=True)
+class ClosedTradeInfo:
+    """Ground-truth close details for a position that is no longer open,
+    read from MT5's own trade history -- `watchman/loop.py`'s
+    reconciliation path uses this to build a trade-journal record for a
+    position that closed WITHOUT this system ever calling `close_position()`
+    itself (overwhelmingly a broker-side hard SL/TP hit).
+
+    `close_price`/`close_time`/`closed_volume` come from the LAST exit deal
+    chronologically (the one that finished closing the position).
+    `gross_pnl`/`cost` are summed across EVERY deal belonging to this
+    position (the entry deal and every partial/full exit deal), so a
+    position that had an earlier partial close (e.g. Watchman's
+    news-protection half-close) still gets its FULL lifetime P&L captured
+    in one record here. `cost` is commission + swap combined, as a POSITIVE
+    number to subtract (mirrors `store/models.py`'s `TradeRecord.cost`
+    convention) -- MT5 reports both as negative-when-charged, so `cost` is
+    `-(sum of commission + swap)`.
+
+    `exit_reason` is derived from the closing deal's own MT5 `reason` field
+    (`DEAL_REASON_SL`/`DEAL_REASON_TP` for a genuine broker-side stop/target
+    hit; anything else -- client/mobile/web/expert-initiated, or a stop-out
+    margin call -- maps to `"manual"`/`"unknown"`, see
+    `execution/demo_adapter.py`'s `get_closed_trade_info` for the exact
+    mapping)."""
+
+    close_price: float
+    close_time: datetime
+    closed_volume: float
+    gross_pnl: float
+    cost: float
+    exit_reason: Literal["stop_loss", "take_profit", "manual", "unknown"]
 
 
 class BrokerAdapter(ABC):
@@ -140,4 +175,16 @@ class BrokerAdapter(ABC):
         """Every currently-open position on the account, for Shield's
         portfolio-level checks (shield/checkpoint.py rules 2-5) and
         Watchman's per-position loop (watchman/loop.py)."""
+        ...
+
+    @abstractmethod
+    def get_closed_trade_info(self, ticket: int) -> ClosedTradeInfo | None:
+        """Ground-truth close details for `ticket` (a position ticket, same
+        numbering as `BrokerPosition.ticket`) that is no longer open -- used
+        by `watchman/loop.py`'s reconciliation path (see `ClosedTradeInfo`'s
+        docstring). Returns `None` if no closing deal is found yet (e.g. a
+        brief lag between the position disappearing from
+        `get_open_positions()` and its closing deal landing in history) --
+        callers must treat this as "retry next cycle", never as "this
+        position never closed"."""
         ...

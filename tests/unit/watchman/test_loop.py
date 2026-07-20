@@ -11,7 +11,8 @@ import pandas as pd
 import pytest
 
 from autotrade.common.symbol_spec import SymbolSpec
-from autotrade.execution.adapter import BrokerAdapter, BrokerPosition, OrderResult
+from autotrade.execution.adapter import BrokerAdapter, BrokerPosition, ClosedTradeInfo, OrderResult
+from autotrade.store import journal
 from autotrade.watchman import loop as loop_module
 from autotrade.watchman import position_metadata
 from autotrade.watchman.connectivity_watchdog import ConnectivityWatchdog, ConnectivityWatchdogConfig
@@ -35,6 +36,8 @@ class SpyAdapter(BrokerAdapter):
         self._open_positions = open_positions
         self.close_calls: list[tuple] = []
         self.modify_calls: list[tuple] = []
+        self.get_closed_trade_info_calls: list[int] = []
+        self.closed_trade_info: dict[int, ClosedTradeInfo | None] = {}
         self.close_result = OrderResult(
             success=True, broker_ticket=None, filled_price=2400.0, filled_volume=0.05,
             retcode=None, message="closed",
@@ -63,6 +66,10 @@ class SpyAdapter(BrokerAdapter):
 
     def get_open_positions(self):
         return self._open_positions
+
+    def get_closed_trade_info(self, ticket):
+        self.get_closed_trade_info_calls.append(ticket)
+        return self.closed_trade_info.get(ticket)
 
 
 class RaisingAdapter(SpyAdapter):
@@ -102,6 +109,7 @@ def _loop(adapter, tmp_path, watchdog=None, news_provider=None) -> WatchmanLoop:
         connectivity_watchdog=watchdog or ConnectivityWatchdog(FakeClock(NOW)),
         resolve_symbol_spec=lambda symbol: _symbol_spec(symbol),
         state_path=tmp_path / "position_metadata.json",
+        journal_db_path=tmp_path / "trade_journal.sqlite",
     )
 
 
@@ -110,11 +118,15 @@ class _AllClearNewsProvider:
         return []
 
 
-def _record_metadata(tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0):
+def _record_metadata(
+    tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0,
+    entry_spread_points=None, actual_slippage=None,
+):
     position_metadata.record_position_opened(
         ticket=ticket, symbol=symbol, direction=direction, entry_price=entry_price,
         initial_stop_distance=stop_distance, entry_swing_index=0, opened_at=NOW,
         state_path=tmp_path / "position_metadata.json",
+        entry_spread_points=entry_spread_points, actual_slippage=actual_slippage,
     )
 
 
@@ -524,6 +536,9 @@ class DrainableAdapter(BrokerAdapter):
             current_sl=self._current_sl, current_price=self._current_price, volume=self._volume,
         )]
 
+    def get_closed_trade_info(self, ticket):
+        raise NotImplementedError("not exercised by this test")
+
 
 def test_news_protection_close_half_fires_once_then_suppressed_for_remainder_of_window(tmp_path, monkeypatch):
     # Third issue the code-reviewer separately flagged as should-fix, now
@@ -569,3 +584,230 @@ def test_news_protection_close_half_fires_once_then_suppressed_for_remainder_of_
 
     assert len(adapter.close_calls) == 2
     assert adapter.close_calls[1][0] == 1
+
+
+# --- Phase 8a: trade-journal reconciliation (two-path design) --------------
+
+
+def test_reconciliation_writes_trade_record_for_ticket_gone_from_open_positions(tmp_path):
+    _record_metadata(
+        tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0,
+        entry_spread_points=12.0, actual_slippage=0.3,
+    )
+    adapter = SpyAdapter([])  # ticket=1 is no longer open -- broker-side close
+    adapter.closed_trade_info[1] = ClosedTradeInfo(
+        close_price=2410.0, close_time=NOW, closed_volume=0.1,
+        gross_pnl=150.0, cost=3.0, exit_reason="take_profit",
+    )
+    wl = _loop(adapter, tmp_path)
+
+    wl.run_cycle({}, NOW)
+
+    assert adapter.get_closed_trade_info_calls == [1]
+    assert position_metadata.get_position_metadata(1, tmp_path / "position_metadata.json") is None
+
+    trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.symbol == "XAUUSD"
+    assert trade.exit_reason == "take_profit"
+    assert trade.broker_ticket == 1
+    assert trade.gross_pnl == 150.0
+    assert trade.cost == 3.0
+    assert trade.net_pnl == 147.0
+    # Appendix A §5.1 daily-report fields -- carried through from the
+    # PositionMetadata recorded at entry, not left None (should-fix #5).
+    assert trade.entry_spread_points == 12.0
+    assert trade.actual_slippage == 0.3
+
+
+def test_reconciliation_no_history_found_yet_retains_metadata_and_does_not_crash(tmp_path):
+    _record_metadata(tmp_path, ticket=1)
+    adapter = SpyAdapter([])  # ticket=1 gone, but no closing deal in MT5 history yet
+    wl = _loop(adapter, tmp_path)
+
+    wl.run_cycle({}, NOW)  # must not raise
+
+    assert adapter.get_closed_trade_info_calls == [1]
+    assert position_metadata.get_position_metadata(1, tmp_path / "position_metadata.json") is not None
+    assert journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite") == []
+
+
+def test_reconciliation_skips_tickets_still_open(tmp_path, monkeypatch):
+    _record_metadata(tmp_path, ticket=1)
+    adapter = SpyAdapter([_position(ticket=1)])
+    wl = _loop(adapter, tmp_path)
+
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(action="NO_ACTION", new_stop_loss=None, reason="no change"),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    assert adapter.get_closed_trade_info_calls == []  # still open -- reconciliation never looks at it
+    assert position_metadata.get_position_metadata(1, tmp_path / "position_metadata.json") is not None
+
+
+def test_partial_close_does_not_trigger_reconciliation_or_remove_metadata(tmp_path, monkeypatch):
+    # A news-protection half-close leaves the SAME ticket in
+    # get_open_positions() (just smaller) -- reconciliation must not treat
+    # it as closed, must not query history for it, and must not write a
+    # trade record or remove metadata.
+    _record_metadata(tmp_path, ticket=1, entry_price=2395.0)
+    adapter = SpyAdapter([_position(ticket=1, volume=0.10)])
+    wl = _loop(adapter, tmp_path)
+
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(action="NO_ACTION", new_stop_loss=None, reason="no change"),
+    )
+    monkeypatch.setattr(
+        loop_module, "check_news_protection",
+        lambda **kwargs: NewsProtectionDecision(action="CLOSE_HALF_AND_BREAKEVEN", reason="news incoming"),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    assert adapter.close_calls == [(1, 0.05)]  # the partial close itself did happen
+    assert adapter.get_closed_trade_info_calls == []  # ticket=1 still "open" per SpyAdapter's static list
+    assert position_metadata.get_position_metadata(1, tmp_path / "position_metadata.json") is not None
+    assert journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite") == []
+
+
+def test_explicit_close_writes_trade_record_immediately_without_history_query(tmp_path, monkeypatch):
+    _record_metadata(
+        tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0,
+        entry_spread_points=8.0, actual_slippage=0.2,
+    )
+    adapter = SpyAdapter([_position(ticket=1, symbol="XAUUSD", direction="BUY")])
+    adapter.close_result = OrderResult(
+        success=True, broker_ticket=1, filled_price=2410.0, filled_volume=0.1,
+        retcode=None, message="closed",
+    )
+    wl = _loop(adapter, tmp_path)
+
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(
+            action="CLOSE", new_stop_loss=None,
+            reason="structure invalidation: entry swing has been violated by a closed-bar close",
+        ),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    assert adapter.close_calls == [(1, None)]
+    assert adapter.get_closed_trade_info_calls == []  # explicit-close path never queries MT5 history
+    assert position_metadata.get_position_metadata(1, tmp_path / "position_metadata.json") is None
+
+    trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "structure_invalidation"
+    assert trade.broker_ticket == 1
+    assert trade.exit_price == 2410.0
+    assert trade.lot_size == 0.1
+    assert trade.cost == 0.0  # no live commission data without a history query, see loop.py docstring
+    # Appendix A §5.1 daily-report fields -- carried through from the
+    # PositionMetadata recorded at entry, not left None (should-fix #5).
+    assert trade.entry_spread_points == 8.0
+    assert trade.actual_slippage == 0.2
+
+
+def test_explicit_close_is_not_double_counted_by_reconciliation_same_or_later_cycle(tmp_path, monkeypatch):
+    _record_metadata(tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0)
+    # SpyAdapter's open_positions list is static -- ticket=1 stays "open" in
+    # it even after close_position() is called, same as the existing
+    # CLOSE-decision tests above. This deliberately proves the SAME-cycle
+    # non-double-counting guarantee: reconciliation (which runs after the
+    # open-positions loop, in the same run_cycle() call) must see ticket=1's
+    # metadata already gone (removed by the explicit-close path moments
+    # earlier) and so never call get_closed_trade_info for it at all.
+    adapter = SpyAdapter([_position(ticket=1, symbol="XAUUSD", direction="BUY")])
+    adapter.close_result = OrderResult(
+        success=True, broker_ticket=1, filled_price=2410.0, filled_volume=0.1,
+        retcode=None, message="closed",
+    )
+    wl = _loop(adapter, tmp_path)
+
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(
+            action="CLOSE", new_stop_loss=None,
+            reason="structure invalidation: entry swing has been violated by a closed-bar close",
+        ),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+    assert adapter.get_closed_trade_info_calls == []
+
+    # A later cycle: ticket=1 has no metadata anymore, so neither the
+    # per-position management loop (no recorded metadata -> skip) nor
+    # reconciliation (nothing tracked for it anymore) re-process it.
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    assert adapter.close_calls == [(1, None)]  # never closed a second time
+    assert adapter.get_closed_trade_info_calls == []
+    trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert len(trades) == 1  # exactly one record total, no double-counting
+
+
+def test_remove_position_metadata_failure_after_explicit_close_does_not_double_write(
+    tmp_path, monkeypatch, caplog,
+):
+    # Regression test: if remove_position_metadata() throws right after
+    # _record_explicit_close() already wrote a TradeRecord, the ticket stays
+    # tracked (removal never completed) -- a LATER cycle's reconciliation
+    # then re-observes the same now-closed ticket and tries to record it a
+    # SECOND time. TradeRecord.broker_ticket's UNIQUE constraint plus
+    # record_closed_trade's IntegrityError handling must ensure exactly ONE
+    # TradeRecord survives and that no exception ever escapes run_cycle.
+    _record_metadata(tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0)
+    adapter = SpyAdapter([_position(ticket=1, symbol="XAUUSD", direction="BUY")])
+    adapter.close_result = OrderResult(
+        success=True, broker_ticket=1, filled_price=2410.0, filled_volume=0.1,
+        retcode=None, message="closed",
+    )
+    wl = _loop(adapter, tmp_path)
+
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(
+            action="CLOSE", new_stop_loss=None,
+            reason="structure invalidation: entry swing has been violated by a closed-bar close",
+        ),
+    )
+
+    real_remove_position_metadata = position_metadata.remove_position_metadata
+
+    def _simulate_crash_after_explicit_close_write(ticket, state_path=None):
+        raise RuntimeError("simulated crash between explicit-close write and metadata removal")
+
+    monkeypatch.setattr(loop_module, "remove_position_metadata", _simulate_crash_after_explicit_close_write)
+
+    with caplog.at_level(logging.ERROR):
+        wl.run_cycle({"XAUUSD": _history()}, NOW)  # must not raise
+
+    # The explicit-close path's TradeRecord write already succeeded before
+    # the simulated crash -- but metadata removal never completed, so the
+    # ticket is still tracked.
+    assert position_metadata.get_position_metadata(1, tmp_path / "position_metadata.json") is not None
+    trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert len(trades) == 1
+
+    # A later cycle: the position has genuinely closed (gone from
+    # get_open_positions()), so reconciliation re-observes the still-tracked
+    # ticket and attempts to record it again.
+    monkeypatch.setattr(loop_module, "remove_position_metadata", real_remove_position_metadata)
+    adapter._open_positions = []
+    adapter.closed_trade_info[1] = ClosedTradeInfo(
+        close_price=2410.0, close_time=NOW, closed_volume=0.1,
+        gross_pnl=150.0, cost=3.0, exit_reason="take_profit",
+    )
+
+    wl.run_cycle({}, NOW)  # must not raise despite the duplicate broker_ticket
+
+    trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert len(trades) == 1  # still exactly one -- the duplicate write was rejected, not appended
+    assert position_metadata.get_position_metadata(1, tmp_path / "position_metadata.json") is None

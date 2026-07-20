@@ -237,11 +237,18 @@ def main() -> int:
             profit_threshold_r=cfg["watchman"]["news_profit_threshold_r"],
             close_mode=cfg["watchman"]["news_close_mode"],
         )
-        # Connectivity is a wall-clock-elapsed-time question ("how long has
-        # it actually been"), not a server-day-boundary one -- RealClock,
-        # same rationale as adapter_clock/news_provider's clock above.
+        # Connectivity's own elapsed-duration/reconnect-detection math is a
+        # wall-clock-elapsed-time question ("how long has it actually
+        # been"), not a server-day-boundary one -- RealClock, same rationale
+        # as adapter_clock/news_provider's clock above. The journal write
+        # (AnomalyEventRecord.timestamp) is different: store/journal.py's
+        # day-boundary queries bucket by MT5 SERVER day, so that timestamp
+        # must come from loop_clock (the same ServerClock already wired for
+        # CircuitBreaker/ShadowLoop/WatchmanLoop) instead, per
+        # connectivity_watchdog.py's module docstring.
         connectivity_watchdog = ConnectivityWatchdog(
             adapter_clock, ConnectivityWatchdogConfig(timeout_minutes=cfg["watchman"]["connectivity_timeout_minutes"]),
+            journal_clock=loop_clock,
         )
         watchman_loop = WatchmanLoop(
             adapter=adapter, watchman_config=watchman_config, news_provider=news_provider,
