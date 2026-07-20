@@ -39,6 +39,15 @@ cfo:
   max_consecutive_losses: 3
   max_drawdown_halt_pct: 8.0
 
+# Council Bull/Bear scoring + Decision Matrix (council/scoring.py,
+# council/decision_matrix.py), per trading_system_summary_v2.md Appendix A
+# §1.1/§1.2/§1.3. All values [adjustable]. `conflict_threshold` is also the
+# floor for the "conflicting signals" borderline case (§1.3's note).
+council:
+  bull_threshold: 70
+  bear_threshold: 70
+  conflict_threshold: 55
+
 # Council order construction (council/order_construction.py), per
 # trading_system_summary_v2.md Appendix A §1.4 / §6. All values [adjustable].
 order:
