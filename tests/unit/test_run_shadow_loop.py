@@ -205,9 +205,9 @@ def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(mon
 
 
 def test_main_uses_finnhub_provider_when_api_key_configured(monkeypatch):
-    """When FINNHUB_API_KEY is set, main() wires in FinnhubNewsCalendarProvider
-    instead of the always-vetoing stub -- this is the whole point of
-    build_news_provider()."""
+    """When FINNHUB_API_KEY is set (and the MQL5 calendar path can't be
+    resolved -- no active MT5 session in this test), main() wires in
+    FinnhubNewsCalendarProvider instead of the always-vetoing stub."""
     _patch_common_main_wiring(monkeypatch)
     monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: "fake-key")
 
@@ -226,6 +226,85 @@ def test_main_uses_finnhub_provider_when_api_key_configured(monkeypatch):
 
     assert exit_code == 0
     assert isinstance(run_calls["init_kwargs"]["news_provider"], run_shadow_loop.FinnhubNewsCalendarProvider)
+
+
+def test_main_prefers_mql5_provider_over_finnhub_when_commondata_path_resolves(monkeypatch):
+    """MQL5CalendarProvider is the top-priority candidate (see
+    build_news_provider's docstring) -- even with FINNHUB_API_KEY also
+    configured, main() wires in MQL5CalendarProvider whenever
+    resolve_commondata_path() (an active MT5 session) succeeds."""
+    _patch_common_main_wiring(monkeypatch)
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: "fake-key")
+    monkeypatch.setattr(run_shadow_loop, "resolve_commondata_path", lambda: r"C:\fake\Terminal\Common")
+
+    run_calls = {}
+
+    class _FakeShadowLoop:
+        def __init__(self, **kwargs):
+            run_calls["init_kwargs"] = kwargs
+
+        def run(self, symbols, timeframe, poll_interval_sec, max_iterations):
+            pass
+
+    monkeypatch.setattr(run_shadow_loop, "ShadowLoop", _FakeShadowLoop)
+
+    exit_code = run_shadow_loop.main()
+
+    assert exit_code == 0
+    assert isinstance(run_calls["init_kwargs"]["news_provider"], run_shadow_loop.MQL5CalendarProvider)
+
+
+# --- build_news_provider() -- direct, isolated tests of the priority chain -
+
+
+def test_build_news_provider_selects_mql5_even_when_export_file_not_yet_written(monkeypatch, tmp_path):
+    """The exact intermediate case flagged for review: `resolve_commondata_path()`
+    resolves (an MT5 session is active) but the `NewsCalendarExporter.mq5`
+    Service hasn't been started yet, so no export file exists under
+    `tmp_path/Files/` at all. Per `build_news_provider`'s own docstring,
+    MQL5CalendarProvider must still be SELECTED (not skipped in favor of
+    Finnhub/stub) -- it fails safe (None) on every call until the Service
+    starts, which is the intended "select now, it may start working later"
+    semantics, not "select only once proven to already have data". This
+    uses a real tmp_path (not a fake nonexistent Windows path) so the
+    "file genuinely absent" condition is real filesystem behavior, not an
+    assumption."""
+    monkeypatch.setattr(run_shadow_loop, "resolve_commondata_path", lambda: str(tmp_path))
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
+
+    provider = run_shadow_loop.build_news_provider(RealClock())
+
+    assert isinstance(provider, run_shadow_loop.MQL5CalendarProvider)
+    # And it genuinely fails safe (None), not an exception or stale/empty data,
+    # confirming "selected" does not mean "already functional".
+    assert provider.get_high_impact_events(
+        "USD", datetime(2026, 1, 1), datetime(2026, 1, 2),
+    ) is None
+
+
+def test_build_news_provider_selects_mql5_over_finnhub_even_without_finnhub_key(monkeypatch, tmp_path):
+    """MQL5's priority over Finnhub must not depend on whether a Finnhub key
+    happens to be configured at all -- distinct from
+    test_main_prefers_mql5_provider_over_finnhub_when_commondata_path_resolves
+    (which only covers the "Finnhub key IS configured" combination); this
+    covers the remaining combination (commondata_path resolves, no Finnhub
+    key present) directly against build_news_provider(), without needing
+    the full main() wiring."""
+    monkeypatch.setattr(run_shadow_loop, "resolve_commondata_path", lambda: str(tmp_path))
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
+
+    provider = run_shadow_loop.build_news_provider(RealClock())
+
+    assert isinstance(provider, run_shadow_loop.MQL5CalendarProvider)
+
+
+def test_build_news_provider_falls_back_to_stub_when_neither_mql5_nor_finnhub_available(monkeypatch):
+    monkeypatch.setattr(run_shadow_loop, "resolve_commondata_path", lambda: None)
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
+
+    provider = run_shadow_loop.build_news_provider(RealClock())
+
+    assert isinstance(provider, run_shadow_loop.StubNewsCalendarProvider)
 
 
 def test_main_unknown_adapter_choice_rejected_by_argparse(monkeypatch, capsys):

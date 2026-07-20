@@ -30,6 +30,7 @@ from autotrade.common.mt5_connection import mt5_session
 from autotrade.common.mt5_time import ServerClock
 from autotrade.common.symbols import to_broker_name
 from autotrade.council.finnhub_news_calendar import FinnhubNewsCalendarProvider
+from autotrade.council.mql5_calendar_provider import MQL5CalendarProvider, resolve_commondata_path
 from autotrade.council.news_calendar import NewsCalendarProvider, StubNewsCalendarProvider
 from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.execution.adapter import BrokerAdapter
@@ -88,18 +89,49 @@ def build_adapter(
 
 
 def build_news_provider(clock: RealClock) -> NewsCalendarProvider:
-    """`FinnhubNewsCalendarProvider` if `FINNHUB_API_KEY` is set in `.env`,
-    else `StubNewsCalendarProvider` -- see council/news_calendar.py's module
-    docstring for why the stub means every trade gets vetoed on the news
-    condition until a real key is configured."""
+    """Provider priority order (highest first) -- must be called from
+    inside an active `mt5_session()` for (1) to ever be selected (see
+    `main()`'s wiring):
+
+      1. `MQL5CalendarProvider` -- MT5's own free, built-in economic
+         calendar, exported to a CSV by `mql5/NewsCalendarExporter.mq5` (an
+         MQL5 Service running inside the terminal) and read here via
+         `resolve_commondata_path()`. The only genuinely-working candidate
+         found so far -- `council/news_calendar.py`'s module docstring has
+         the full history of why every paid-API candidate below it was
+         rejected. Selected whenever `mt5.terminal_info()` resolves a
+         `commondata_path`, i.e. whenever an MT5 session is actually
+         active, regardless of whether the exporting Service has been
+         started in the terminal yet -- if it hasn't,
+         `MQL5CalendarProvider` itself fails safe (returns `None` on every
+         call) until it is, per its own module docstring.
+      2. `FinnhubNewsCalendarProvider` -- fallback if `FINNHUB_API_KEY` is
+         set, though currently gated behind a paid plan (HTTP 403) on
+         every key tried so far -- see `finnhub_news_calendar.py`'s module
+         docstring.
+      3. `StubNewsCalendarProvider` -- always returns `None`; see
+         `council/news_calendar.py`'s module docstring for why the stub
+         means every trade gets vetoed on the news condition.
+    """
+    commondata_path = resolve_commondata_path()
+    if commondata_path:
+        logger.info(
+            "Using MQL5CalendarProvider -- MT5 terminal_info() resolved commondata_path=%s "
+            "(still fails safe to None on every call until NewsCalendarExporter.mq5's Service "
+            "is started in the terminal's Navigator panel).",
+            commondata_path,
+        )
+        return MQL5CalendarProvider(commondata_path, clock=clock)
+
     api_key = load_finnhub_api_key()
     if api_key:
         logger.info("Using FinnhubNewsCalendarProvider -- FINNHUB_API_KEY is configured.")
         return FinnhubNewsCalendarProvider(api_key, clock=clock)
     logger.warning(
-        "FINNHUB_API_KEY not set in .env -- falling back to StubNewsCalendarProvider. Per Risk "
-        "Voice's fail-safe rule (Appendix A §1.5), this means EVERY trade will be vetoed on the "
-        "news condition until a real FINNHUB_API_KEY is configured (see council/news_calendar.py)."
+        "MQL5 calendar unavailable (no active MT5 session?) and FINNHUB_API_KEY not set in .env -- "
+        "falling back to StubNewsCalendarProvider. Per Risk Voice's fail-safe rule (Appendix A "
+        "§1.5), this means EVERY trade will be vetoed on the news condition until a real provider "
+        "is available (see council/news_calendar.py)."
     )
     return StubNewsCalendarProvider()
 
@@ -178,36 +210,45 @@ def main() -> int:
         friday_close_hour=cfg["risk_voice"]["friday_close_hour"],
         max_atr_panic_multiple=cfg["risk_voice"]["max_atr_panic_multiple"],
     )
-    # RealClock is fine here too -- the Finnhub provider's cache TTL only
-    # needs monotonically-advancing wall-clock time, not server time (same
-    # rationale as adapter_clock above).
-    news_provider = build_news_provider(adapter_clock)
-
-    watchman_config = WatchmanConfig(
-        breakeven_at_r=cfg["watchman"]["breakeven_at_r"],
-        trail_start_r=cfg["watchman"]["trail_start_r"],
-        trail_distance_atr=cfg["watchman"]["trail_distance_atr"],
-        time_stop_hours=cfg["watchman"]["time_stop_hours"],
-        dead_trade_r_band=cfg["watchman"]["dead_trade_r_band"],
-    )
-    news_protection_cfg = NewsProtectionConfig(
-        news_window_minutes=cfg["watchman"]["news_window_minutes"],
-        profit_threshold_r=cfg["watchman"]["news_profit_threshold_r"],
-        close_mode=cfg["watchman"]["news_close_mode"],
-    )
-    # Connectivity is a wall-clock-elapsed-time question ("how long has it
-    # actually been"), not a server-day-boundary one -- RealClock, same
-    # rationale as adapter_clock/news_provider's clock above.
-    connectivity_watchdog = ConnectivityWatchdog(
-        adapter_clock, ConnectivityWatchdogConfig(timeout_minutes=cfg["watchman"]["connectivity_timeout_minutes"]),
-    )
-    watchman_loop = WatchmanLoop(
-        adapter=adapter, watchman_config=watchman_config, news_provider=news_provider,
-        news_protection_config=news_protection_cfg, connectivity_watchdog=connectivity_watchdog,
-        symbol_map=symbol_map, state_path=DEFAULT_POSITION_METADATA_PATH,
-    )
-
+    # build_news_provider() must run inside an active mt5_session() --
+    # MQL5CalendarProvider (its top-priority candidate) needs
+    # mt5.terminal_info() to resolve where to read the calendar export from
+    # (see build_news_provider's own docstring) -- so this whole tail of
+    # main() (news provider, Watchman wiring, seeding, and the run loop
+    # itself) now lives inside one `with mt5_session(creds):` block instead
+    # of opening a second, separate session further down. mt5_session() is
+    # reentrant (common/mt5_connection.py), so this is just a scope widening,
+    # not a behavior change for anything that was already inside it.
     with mt5_session(creds):
+        # RealClock is fine here too -- the Finnhub provider's cache TTL
+        # only needs monotonically-advancing wall-clock time, not server
+        # time (same rationale as adapter_clock above).
+        news_provider = build_news_provider(adapter_clock)
+
+        watchman_config = WatchmanConfig(
+            breakeven_at_r=cfg["watchman"]["breakeven_at_r"],
+            trail_start_r=cfg["watchman"]["trail_start_r"],
+            trail_distance_atr=cfg["watchman"]["trail_distance_atr"],
+            time_stop_hours=cfg["watchman"]["time_stop_hours"],
+            dead_trade_r_band=cfg["watchman"]["dead_trade_r_band"],
+        )
+        news_protection_cfg = NewsProtectionConfig(
+            news_window_minutes=cfg["watchman"]["news_window_minutes"],
+            profit_threshold_r=cfg["watchman"]["news_profit_threshold_r"],
+            close_mode=cfg["watchman"]["news_close_mode"],
+        )
+        # Connectivity is a wall-clock-elapsed-time question ("how long has
+        # it actually been"), not a server-day-boundary one -- RealClock,
+        # same rationale as adapter_clock/news_provider's clock above.
+        connectivity_watchdog = ConnectivityWatchdog(
+            adapter_clock, ConnectivityWatchdogConfig(timeout_minutes=cfg["watchman"]["connectivity_timeout_minutes"]),
+        )
+        watchman_loop = WatchmanLoop(
+            adapter=adapter, watchman_config=watchman_config, news_provider=news_provider,
+            news_protection_config=news_protection_cfg, connectivity_watchdog=connectivity_watchdog,
+            symbol_map=symbol_map, state_path=DEFAULT_POSITION_METADATA_PATH,
+        )
+
         initial_history = {
             symbol: seed_history(symbol, timeframe, args.seed_bars, symbol_map) for symbol in symbols
         }

@@ -33,9 +33,20 @@ EODHD (`common/config.load_eodhd_api_token` -- HTTP 403), RapidAPI's
 "DEPLOYMENT_DISABLED" on the documented `/economic-events/tradingview`
 endpoint, confirmed to be the endpoint's own backend being disabled by the
 provider rather than a bad key -- other endpoints on the same host return a
-normal RapidAPI-gateway 404). Trading Economics remains unchecked. This must
-be revisited before Phase 9 (paper trading) for the system to be practically
-testable at scale.
+normal RapidAPI-gateway 404). Trading Economics remains unchecked.
+
+**Resolved, 2026-07-20:** `council/mql5_calendar_provider.MQL5CalendarProvider`
+is a real, working implementation -- MT5's own terminal ships a free,
+built-in economic calendar that the official `MetaTrader5` Python package
+doesn't expose directly, so `mql5/NewsCalendarExporter.mq5` (an MQL5 Service
+running inside the terminal) exports it to a CSV file that
+`MQL5CalendarProvider` reads. See that module's own docstring for the full
+design, and `scripts/run_shadow_loop.py`'s `build_news_provider` for the
+current provider-priority order (MQL5 first, ahead of all the paid/gated
+candidates above and the stub). The MQL5 Service must actually be started
+from within the MT5 terminal's Navigator panel for this to be live -- see
+`mql5/NewsCalendarExporter.mq5`'s docstring / the deployment notes wherever
+this was last set up for the exact manual step.
 """
 from __future__ import annotations
 
