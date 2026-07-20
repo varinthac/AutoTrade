@@ -20,11 +20,17 @@ import MetaTrader5 as mt5
 import pandas as pd
 
 from autotrade.common.clock import RealClock
-from autotrade.common.config import MT5Credentials, load_mt5_credentials, load_yaml_config
+from autotrade.common.config import (
+    MT5Credentials,
+    load_finnhub_api_key,
+    load_mt5_credentials,
+    load_yaml_config,
+)
 from autotrade.common.mt5_connection import mt5_session
 from autotrade.common.mt5_time import ServerClock
 from autotrade.common.symbols import to_broker_name
-from autotrade.council.news_calendar import StubNewsCalendarProvider
+from autotrade.council.finnhub_news_calendar import FinnhubNewsCalendarProvider
+from autotrade.council.news_calendar import NewsCalendarProvider, StubNewsCalendarProvider
 from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.execution.adapter import BrokerAdapter
 from autotrade.execution.demo_adapter import ThrottledDemoAdapter
@@ -65,6 +71,23 @@ def build_adapter(name: str, creds: MT5Credentials, clock: RealClock) -> BrokerA
     if name == "demo":
         return ThrottledDemoAdapter(creds, clock)
     raise ValueError(f"unknown --adapter {name!r}")
+
+
+def build_news_provider(clock: RealClock) -> NewsCalendarProvider:
+    """`FinnhubNewsCalendarProvider` if `FINNHUB_API_KEY` is set in `.env`,
+    else `StubNewsCalendarProvider` -- see council/news_calendar.py's module
+    docstring for why the stub means every trade gets vetoed on the news
+    condition until a real key is configured."""
+    api_key = load_finnhub_api_key()
+    if api_key:
+        logger.info("Using FinnhubNewsCalendarProvider -- FINNHUB_API_KEY is configured.")
+        return FinnhubNewsCalendarProvider(api_key, clock=clock)
+    logger.warning(
+        "FINNHUB_API_KEY not set in .env -- falling back to StubNewsCalendarProvider. Per Risk "
+        "Voice's fail-safe rule (Appendix A §1.5), this means EVERY trade will be vetoed on the "
+        "news condition until a real FINNHUB_API_KEY is configured (see council/news_calendar.py)."
+    )
+    return StubNewsCalendarProvider()
 
 
 def main() -> int:
@@ -141,16 +164,10 @@ def main() -> int:
         friday_close_hour=cfg["risk_voice"]["friday_close_hour"],
         max_atr_panic_multiple=cfg["risk_voice"]["max_atr_panic_multiple"],
     )
-    # StubNewsCalendarProvider always reports "calendar unavailable" ->
-    # Risk Voice's fail-safe rule vetoes on the news condition every time --
-    # see council/news_calendar.py's module docstring. Until a real provider
-    # replaces it, this loop will not approve any trade.
-    news_provider = StubNewsCalendarProvider()
-    logger.warning(
-        "Using StubNewsCalendarProvider -- news calendar is NOT connected. Per Risk Voice's "
-        "fail-safe rule (Appendix A §1.5), this means EVERY trade will be vetoed on the news "
-        "condition until a real NewsCalendarProvider is wired in (see council/news_calendar.py)."
-    )
+    # RealClock is fine here too -- the Finnhub provider's cache TTL only
+    # needs monotonically-advancing wall-clock time, not server time (same
+    # rationale as adapter_clock above).
+    news_provider = build_news_provider(adapter_clock)
 
     with mt5_session(creds):
         initial_history = {

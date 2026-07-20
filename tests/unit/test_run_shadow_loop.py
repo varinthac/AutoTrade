@@ -115,42 +115,50 @@ def _fake_session(creds):
     yield
 
 
-def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(monkeypatch):
-    """Full integration of main()'s wiring, with MT5/credentials/config all
-    mocked -- verifies the CLI actually builds a ShadowLoop for every
-    configured symbol and calls .run() with the CLI's own args, rather than
-    silently doing nothing or crashing before it gets there."""
+_BASE_CFG = {
+    "symbols": {"XAUUSD": "XAUUSD"},
+    "global": {"timeframe": "H1"},
+    "cfo": {
+        "risk_per_trade_pct": 0.5, "daily_loss_limit_pct": 2.0,
+        "max_consecutive_losses": 3, "max_drawdown_halt_pct": 8.0,
+    },
+    "order": {"sl_buffer_atr": 0.2, "sl_min_atr": 0.8, "sl_max_atr": 2.5, "tp_r_multiple": 2.0},
+    "shield": {
+        "min_rr": 1.5, "max_correlation": 0.7, "max_positions_per_symbol": 1,
+        "max_positions_total": 3, "total_risk_ceiling_pct": 3.0,
+        "duplicate_signal_cooldown_hours": 4.0,
+    },
+    "council": {"bull_threshold": 70, "bear_threshold": 70, "conflict_threshold": 55},
+    "risk_voice": {
+        "max_spread_multiple": 1.5, "max_spread_points_xauusd": 35,
+        "news_blackout_before_min": 45, "news_blackout_after_min": 30,
+        "max_stop_atr_multiple": 2.5, "session_start_hour": 14, "session_end_hour": 18,
+        "friday_close_hour": 20, "max_atr_panic_multiple": 3.0,
+    },
+}
+
+
+def _patch_common_main_wiring(monkeypatch) -> None:
+    """Everything test_main_*() needs mocked EXCEPT load_finnhub_api_key
+    (each test controls that one directly, since it's what decides which
+    news_provider gets wired in)."""
     monkeypatch.setattr(sys, "argv", ["run_shadow_loop.py", "--adapter", "noop", "--max-iterations", "1"])
     monkeypatch.setattr(run_shadow_loop, "load_mt5_credentials", lambda: CREDS)
-    monkeypatch.setattr(
-        run_shadow_loop, "load_yaml_config",
-        lambda name: {
-            "symbols": {"XAUUSD": "XAUUSD"},
-            "global": {"timeframe": "H1"},
-            "cfo": {
-                "risk_per_trade_pct": 0.5, "daily_loss_limit_pct": 2.0,
-                "max_consecutive_losses": 3, "max_drawdown_halt_pct": 8.0,
-            },
-            "order": {"sl_buffer_atr": 0.2, "sl_min_atr": 0.8, "sl_max_atr": 2.5, "tp_r_multiple": 2.0},
-            "shield": {
-                "min_rr": 1.5, "max_correlation": 0.7, "max_positions_per_symbol": 1,
-                "max_positions_total": 3, "total_risk_ceiling_pct": 3.0,
-                "duplicate_signal_cooldown_hours": 4.0,
-            },
-            "council": {"bull_threshold": 70, "bear_threshold": 70, "conflict_threshold": 55},
-            "risk_voice": {
-                "max_spread_multiple": 1.5, "max_spread_points_xauusd": 35,
-                "news_blackout_before_min": 45, "news_blackout_after_min": 30,
-                "max_stop_atr_multiple": 2.5, "session_start_hour": 14, "session_end_hour": 18,
-                "friday_close_hour": 20, "max_atr_panic_multiple": 3.0,
-            },
-        },
-    )
+    monkeypatch.setattr(run_shadow_loop, "load_yaml_config", lambda name: _BASE_CFG)
     monkeypatch.setattr(run_shadow_loop, "mt5_session", _fake_session)
     monkeypatch.setattr(run_shadow_loop, "seed_history", lambda symbol, timeframe, bars, symbol_map: pd.DataFrame({
         "time": [datetime(2026, 1, 1, tzinfo=timezone.utc)],
         "open": [100.0], "high": [101.0], "low": [99.0], "close": [100.0],
     }))
+
+
+def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(monkeypatch):
+    """Full integration of main()'s wiring, with MT5/credentials/config all
+    mocked -- verifies the CLI actually builds a ShadowLoop for every
+    configured symbol and calls .run() with the CLI's own args, rather than
+    silently doing nothing or crashing before it gets there."""
+    _patch_common_main_wiring(monkeypatch)
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
 
     run_calls = {}
 
@@ -179,14 +187,40 @@ def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(mon
     assert run_calls["init_kwargs"]["clock"]._reference_symbol_broker_name == "XAUUSD"
     assert run_calls["init_kwargs"]["circuit_breaker"]._state_path == run_shadow_loop.DEFAULT_STATE_PATH
     assert isinstance(run_calls["init_kwargs"]["shield"], run_shadow_loop.Shield)
-    # Phase 6b: news_provider/risk_voice_cfg are wired in too -- the stub
-    # provider (news calendar not connected yet) is what actually gets used.
+    # Phase 6b: news_provider/risk_voice_cfg are wired in too -- with no
+    # FINNHUB_API_KEY configured (mocked as None above), build_news_provider()
+    # falls back to the stub. See test_main_uses_finnhub_provider_when_api_key_configured
+    # below for the FINNHUB_API_KEY-set path.
     assert isinstance(run_calls["init_kwargs"]["news_provider"], run_shadow_loop.StubNewsCalendarProvider)
     risk_voice_cfg = run_calls["init_kwargs"]["risk_voice_cfg"]
     assert isinstance(risk_voice_cfg, run_shadow_loop.RiskVoiceConfig)
     assert risk_voice_cfg.session_start_hour == 14
     assert risk_voice_cfg.session_end_hour == 18
     assert run_calls["init_kwargs"]["cfg"].bull_threshold == 70
+
+
+def test_main_uses_finnhub_provider_when_api_key_configured(monkeypatch):
+    """When FINNHUB_API_KEY is set, main() wires in FinnhubNewsCalendarProvider
+    instead of the always-vetoing stub -- this is the whole point of
+    build_news_provider()."""
+    _patch_common_main_wiring(monkeypatch)
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: "fake-key")
+
+    run_calls = {}
+
+    class _FakeShadowLoop:
+        def __init__(self, **kwargs):
+            run_calls["init_kwargs"] = kwargs
+
+        def run(self, symbols, timeframe, poll_interval_sec, max_iterations):
+            pass
+
+    monkeypatch.setattr(run_shadow_loop, "ShadowLoop", _FakeShadowLoop)
+
+    exit_code = run_shadow_loop.main()
+
+    assert exit_code == 0
+    assert isinstance(run_calls["init_kwargs"]["news_provider"], run_shadow_loop.FinnhubNewsCalendarProvider)
 
 
 def test_main_unknown_adapter_choice_rejected_by_argparse(monkeypatch, capsys):

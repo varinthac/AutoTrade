@@ -54,6 +54,18 @@ def load_mt5_credentials(env_file: Path | None = None) -> MT5Credentials:
     )
 
 
+def load_finnhub_api_key(env_file: Path | None = None) -> str | None:
+    """Finnhub API key (finnhub.io) for `council/finnhub_news_calendar.py`'s
+    real economic-calendar provider. Unlike `load_mt5_credentials`, this key
+    is OPTIONAL -- `council/news_calendar.StubNewsCalendarProvider` remains a
+    valid (if conservative) fallback, so a missing/blank key is not a hard
+    error, just `None` for the caller to act on (e.g. `scripts/run_shadow_loop.py`
+    falls back to the stub with a warning)."""
+    load_dotenv(env_file or REPO_ROOT / ".env")
+    key = os.environ.get("FINNHUB_API_KEY")
+    return key or None
+
+
 def load_yaml_config(name: str) -> dict:
     """Load a YAML file from config/, e.g. load_yaml_config('base')."""
     path = CONFIG_DIR / f"{name}.yaml"

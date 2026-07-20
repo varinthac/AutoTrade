@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from autotrade.common.config import MT5Credentials, load_mt5_credentials, load_yaml_config
+from autotrade.common.config import (
+    MT5Credentials,
+    load_finnhub_api_key,
+    load_mt5_credentials,
+    load_yaml_config,
+)
 
 # A path that doesn't exist: load_dotenv() on a missing file is a documented
 # safe no-op, so these tests are isolated from the repo's real .env and from
@@ -89,6 +94,28 @@ def test_mt5_credentials_repr_masks_password():
     assert "password='***'" in repr(creds)
     assert "login=1" in repr(creds)
     assert "server='srv'" in repr(creds)
+
+
+@pytest.fixture
+def clean_finnhub_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
+    return tmp_path / "does_not_exist.env"
+
+
+def test_load_finnhub_api_key_returns_key_when_set(monkeypatch, clean_finnhub_env):
+    monkeypatch.setenv("FINNHUB_API_KEY", "abc123")
+
+    assert load_finnhub_api_key(clean_finnhub_env) == "abc123"
+
+
+def test_load_finnhub_api_key_returns_none_when_unset(clean_finnhub_env):
+    assert load_finnhub_api_key(clean_finnhub_env) is None
+
+
+def test_load_finnhub_api_key_treats_blank_string_as_none(monkeypatch, clean_finnhub_env):
+    monkeypatch.setenv("FINNHUB_API_KEY", "")
+
+    assert load_finnhub_api_key(clean_finnhub_env) is None
 
 
 def test_load_yaml_config_reads_real_base_config():
