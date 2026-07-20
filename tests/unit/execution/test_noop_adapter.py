@@ -32,3 +32,15 @@ def test_get_balance_returns_same_fixed_value_as_get_equity():
     # No floating P&L in a dry run.
     adapter = NoOpBrokerAdapter(fixed_equity=5_000.0)
     assert adapter.get_balance() == adapter.get_equity() == 5_000.0
+
+
+def test_get_open_positions_always_returns_empty_list():
+    # A dry run never actually opens a position with any broker.
+    adapter = NoOpBrokerAdapter()
+    assert adapter.get_open_positions() == []
+
+    adapter.place_order(TradeRequest(
+        symbol="XAUUSD", direction="BUY", lot_size=0.1,
+        entry=2400.0, stop_loss=2395.0, take_profit=2410.0,
+    ))
+    assert adapter.get_open_positions() == []

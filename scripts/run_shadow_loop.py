@@ -30,6 +30,7 @@ from autotrade.execution.noop_adapter import NoOpBrokerAdapter
 from autotrade.feed.poller import TIMEFRAME_MAP
 from autotrade.orchestrator.shadow_loop import ShadowLoop, ShadowLoopConfig
 from autotrade.risk.circuit_breaker import DEFAULT_STATE_PATH, CircuitBreaker
+from autotrade.shield.checkpoint import Shield
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -109,6 +110,14 @@ def main() -> int:
         max_drawdown_halt_pct=cfg["cfo"]["max_drawdown_halt_pct"],
         state_path=DEFAULT_STATE_PATH,
     )
+    shield = Shield(
+        min_rr=cfg["shield"]["min_rr"],
+        max_correlation=cfg["shield"]["max_correlation"],
+        max_positions_per_symbol=cfg["shield"]["max_positions_per_symbol"],
+        max_positions_total=cfg["shield"]["max_positions_total"],
+        total_risk_ceiling_pct=cfg["shield"]["total_risk_ceiling_pct"],
+        duplicate_signal_cooldown_hours=cfg["shield"]["duplicate_signal_cooldown_hours"],
+    )
     loop_cfg = ShadowLoopConfig(
         risk_per_trade_pct=cfg["cfo"]["risk_per_trade_pct"],
         sl_buffer_atr=cfg["order"]["sl_buffer_atr"],
@@ -127,7 +136,7 @@ def main() -> int:
             )
 
         shadow_loop = ShadowLoop(
-            adapter=adapter, circuit_breaker=circuit_breaker, cfg=loop_cfg,
+            adapter=adapter, circuit_breaker=circuit_breaker, shield=shield, cfg=loop_cfg,
             initial_history=initial_history, symbol_map=symbol_map, clock=loop_clock,
         )
         logger.info(

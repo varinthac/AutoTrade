@@ -17,12 +17,13 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
-from autotrade.execution.adapter import BrokerAdapter, OrderResult, TradeRequest
+from autotrade.execution.adapter import BrokerAdapter, BrokerPosition, OrderResult, TradeRequest
 from autotrade.common.symbols import SymbolSpec
 from autotrade.feed.snapshot import Bar, MarketSnapshot
 from autotrade.orchestrator import shadow_loop as shadow_loop_module
 from autotrade.orchestrator.shadow_loop import ShadowLoop, ShadowLoopConfig
 from autotrade.risk.circuit_breaker import CircuitBreaker
+from autotrade.shield.checkpoint import Shield
 
 CROSS_INDEX = 70
 BASE_TIME = datetime(2026, 1, 1)
@@ -37,9 +38,13 @@ class FixedClock:
 
 
 class FakeAdapter(BrokerAdapter):
-    def __init__(self, equity: float = 10_000.0, balance: float | None = None):
+    def __init__(
+        self, equity: float = 10_000.0, balance: float | None = None,
+        open_positions: list[BrokerPosition] | None = None,
+    ):
         self._equity = equity
         self._balance = equity if balance is None else balance
+        self._open_positions = open_positions or []
         self.place_order_calls: list[TradeRequest] = []
 
     def place_order(self, request: TradeRequest) -> OrderResult:
@@ -54,6 +59,9 @@ class FakeAdapter(BrokerAdapter):
 
     def get_balance(self) -> float:
         return self._balance
+
+    def get_open_positions(self) -> list[BrokerPosition]:
+        return self._open_positions
 
 
 def _fake_symbol_spec(symbol: str) -> SymbolSpec:
@@ -90,10 +98,37 @@ def _bar_from_row(df: pd.DataFrame, index: int) -> Bar:
     )
 
 
-def _default_loop(adapter, circuit_breaker, seed_history, clock=None) -> ShadowLoop:
+def _default_shield() -> Shield:
+    # Production-matching defaults from config/base.yaml's `shield:` block --
+    # the trivial signal's OrderPlan is always R:R=2.0 (fixed 2R take-profit,
+    # order_construction.py), so min_rr=1.5 never blocks these fixtures on
+    # its own, and with no seeded open positions rules 2-6 stay clean too.
+    return Shield(
+        min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=1,
+        max_positions_total=3, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
+    )
+
+
+class SpyShield(Shield):
+    """Records every record_trade_opened() call, on top of Shield's real
+    check()/record_trade_opened() behavior -- same "subclass + record calls"
+    spy pattern as FlakyAdapter/InterruptingAdapter below."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.record_trade_opened_calls: list[dict] = []
+
+    def record_trade_opened(self, symbol, direction, opened_at, swing_index) -> None:
+        self.record_trade_opened_calls.append(
+            {"symbol": symbol, "direction": direction, "opened_at": opened_at, "swing_index": swing_index}
+        )
+        super().record_trade_opened(symbol, direction, opened_at, swing_index)
+
+
+def _default_loop(adapter, circuit_breaker, seed_history, clock=None, shield=None) -> ShadowLoop:
     cfg = ShadowLoopConfig(risk_per_trade_pct=1.0)
     return ShadowLoop(
-        adapter=adapter, circuit_breaker=circuit_breaker, cfg=cfg,
+        adapter=adapter, circuit_breaker=circuit_breaker, shield=shield or _default_shield(), cfg=cfg,
         initial_history={"XAUUSD": seed_history}, resolve_symbol_spec=_fake_symbol_spec,
         clock=clock or FixedClock(BASE_TIME),
     )
@@ -194,6 +229,121 @@ def test_confirmed_crossover_and_swing_places_order_via_adapter():
     assert len(loop._history["XAUUSD"]) == CROSS_INDEX + 1
 
 
+def test_shield_blocked_trade_never_reaches_cfo_sizing_or_place_order():
+    # 3 existing open positions (on other symbols) already at
+    # max_positions_total=3 -- Shield's rule 4 blocks before CFO sizing.
+    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
+    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+    open_positions = [
+        BrokerPosition(symbol="EURUSD", direction="SELL", risk_pct=0.1),
+        BrokerPosition(symbol="GBPUSD", direction="SELL", risk_pct=0.1),
+        BrokerPosition(symbol="USDJPY", direction="SELL", risk_pct=0.1),
+    ]
+    adapter = FakeAdapter(equity=10_000.0, open_positions=open_positions)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    shield = SpyShield(
+        min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=1,
+        max_positions_total=3, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
+    )
+    loop = _default_loop(adapter, breaker, seed, shield=shield)
+
+    new_bar = _bar_from_row(df, CROSS_INDEX)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert adapter.place_order_calls == []
+    assert shield.record_trade_opened_calls == []
+    assert len(loop._history["XAUUSD"]) == CROSS_INDEX + 1  # bar still appended
+
+
+def test_shield_blocked_trade_logs_warning_with_reason(caplog):
+    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
+    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+    open_positions = [
+        BrokerPosition(symbol="EURUSD", direction="SELL", risk_pct=0.1),
+        BrokerPosition(symbol="GBPUSD", direction="SELL", risk_pct=0.1),
+        BrokerPosition(symbol="USDJPY", direction="SELL", risk_pct=0.1),
+    ]
+    adapter = FakeAdapter(equity=10_000.0, open_positions=open_positions)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed)
+
+    new_bar = _bar_from_row(df, CROSS_INDEX)
+    with caplog.at_level(logging.WARNING):
+        loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert any("Shield blocked" in record.message for record in caplog.records)
+
+
+def test_shield_approved_trade_proceeds_to_cfo_sizing_and_records_trade_opened():
+    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
+    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    shield = SpyShield(
+        min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=1,
+        max_positions_total=3, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
+    )
+    loop = _default_loop(adapter, breaker, seed, shield=shield)
+
+    new_bar = _bar_from_row(df, CROSS_INDEX)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert len(adapter.place_order_calls) == 1  # reached CFO sizing + placement
+    assert len(shield.record_trade_opened_calls) == 1
+    call = shield.record_trade_opened_calls[0]
+    assert call["symbol"] == "XAUUSD"
+    assert call["direction"] == "BUY"
+    assert call["opened_at"] == BASE_TIME  # from the FixedClock used by _default_loop
+    assert call["swing_index"] == 30  # the swing_dip_index seeded into the fixture
+
+
+def test_shield_approved_but_lot_size_below_minimum_does_not_record_trade_opened():
+    # Approved by Shield, but CFO sizing returns None (tiny equity) -- Shield
+    # must not be told a trade was opened when none actually was.
+    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
+    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+    adapter = FakeAdapter(equity=1.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    shield = SpyShield(
+        min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=1,
+        max_positions_total=3, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
+    )
+    loop = _default_loop(adapter, breaker, seed, shield=shield)
+
+    new_bar = _bar_from_row(df, CROSS_INDEX)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert adapter.place_order_calls == []
+    assert shield.record_trade_opened_calls == []
+
+
+def test_shield_record_trade_opened_not_called_when_order_rejected():
+    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
+    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+
+    class RejectingAdapter(FakeAdapter):
+        def place_order(self, request: TradeRequest):
+            self.place_order_calls.append(request)
+            return OrderResult(
+                success=False, broker_ticket=None, filled_price=None,
+                filled_volume=None, retcode=99, message="rejected in test",
+            )
+
+    adapter = RejectingAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    shield = SpyShield(
+        min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=1,
+        max_positions_total=3, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
+    )
+    loop = _default_loop(adapter, breaker, seed, shield=shield)
+
+    new_bar = _bar_from_row(df, CROSS_INDEX)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert len(adapter.place_order_calls) == 1
+    assert shield.record_trade_opened_calls == []
+
+
 def test_on_new_bar_raises_key_error_for_unseeded_symbol():
     import pytest
 
@@ -291,7 +441,7 @@ def test_multiple_symbols_are_tracked_and_processed_independently():
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
     cfg = ShadowLoopConfig(risk_per_trade_pct=1.0)
     loop = ShadowLoop(
-        adapter=adapter, circuit_breaker=breaker, cfg=cfg,
+        adapter=adapter, circuit_breaker=breaker, shield=_default_shield(), cfg=cfg,
         initial_history={"XAUUSD": seed_a, "EURUSD": seed_b},
         resolve_symbol_spec=_fake_symbol_spec, clock=FixedClock(BASE_TIME),
     )
@@ -313,7 +463,7 @@ def test_history_is_trimmed_to_max_history_bars_configured_limit():
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
     cfg = ShadowLoopConfig(risk_per_trade_pct=1.0, max_history_bars=71)
     loop = ShadowLoop(
-        adapter=adapter, circuit_breaker=breaker, cfg=cfg,
+        adapter=adapter, circuit_breaker=breaker, shield=_default_shield(), cfg=cfg,
         initial_history={"XAUUSD": seed}, resolve_symbol_spec=_fake_symbol_spec,
         clock=FixedClock(BASE_TIME),
     )

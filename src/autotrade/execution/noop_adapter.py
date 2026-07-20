@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 
-from autotrade.execution.adapter import BrokerAdapter, OrderResult, TradeRequest
+from autotrade.execution.adapter import BrokerAdapter, BrokerPosition, OrderResult, TradeRequest
 
 logger = logging.getLogger(__name__)
 
@@ -35,3 +35,7 @@ class NoOpBrokerAdapter(BrokerAdapter):
     def get_balance(self) -> float:
         # No floating P&L in a dry run -- same fixed value as get_equity().
         return self._fixed_equity
+
+    def get_open_positions(self) -> list[BrokerPosition]:
+        # A dry run never actually opens a position with any broker.
+        return []

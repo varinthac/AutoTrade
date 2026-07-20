@@ -18,6 +18,19 @@ symbols:
 historical:
   default_days: 730 # ~2 years, enough for a first backtest pass in Phase 4
 
+# The Shield -- Portfolio Checkpoint (shield/), per
+# trading_system_summary_v2.md Appendix A §2 / §6. All values [adjustable]
+# per the spec. `max_positions_per_symbol` is called out as
+# "[adjustable: เพิ่มเป็น 2 ได้หลัง live 3 เดือน]" -- raise to 2 only after
+# 3 months of live results support it, not before.
+shield:
+  min_rr: 1.5
+  max_correlation: 0.7
+  max_positions_per_symbol: 1
+  max_positions_total: 3
+  total_risk_ceiling_pct: 3.0
+  duplicate_signal_cooldown_hours: 4.0
+
 # The CFO -- Money Manager (risk/), per trading_system_summary_v2.md
 # Appendix A §3 / §6. All values [adjustable] per the spec.
 cfo:

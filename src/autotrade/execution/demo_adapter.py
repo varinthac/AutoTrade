@@ -11,14 +11,15 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import Literal
 
 import MetaTrader5 as mt5
 
 from autotrade.common.clock import Clock
-from autotrade.common.config import MT5Credentials
+from autotrade.common.config import MT5Credentials, load_yaml_config
 from autotrade.common.mt5_connection import mt5_session
 from autotrade.common.symbols import get_symbol_spec
-from autotrade.execution.adapter import BrokerAdapter, OrderResult, TradeRequest
+from autotrade.execution.adapter import BrokerAdapter, BrokerPosition, OrderResult, TradeRequest
 
 logger = logging.getLogger(__name__)
 
@@ -192,3 +193,80 @@ class ThrottledDemoAdapter(BrokerAdapter):
                 code, desc = mt5.last_error()
                 raise RuntimeError(f"account_info() failed: [{code}] {desc}")
             return account.balance
+
+    def get_open_positions(self) -> list[BrokerPosition]:
+        """Every open position on the account (not filtered to this
+        adapter's own `magic` -- Shield's portfolio checks need the full
+        picture of what's actually exposed, including anything opened
+        manually or by another process).
+
+        `risk_pct` is a pragmatic APPROXIMATION, not the position's
+        originally-intended risk at open time: MT5 doesn't retain that, so
+        this instead uses the position's CURRENT distance-to-stop and
+        CURRENT equity --
+            risk_pct = |current_price - sl| * point_value * volume / equity * 100
+        which drifts from the true "at risk" fraction as price moves toward
+        or away from the stop, or as equity changes. Good enough for
+        Shield's rule 5 ceiling check; not a substitute for a real
+        per-position risk ledger.
+        """
+        with mt5_session(self._creds):
+            positions = mt5.positions_get()
+            if positions is None:
+                code, desc = mt5.last_error()
+                raise RuntimeError(f"positions_get() failed: [{code}] {desc}")
+
+            account = mt5.account_info()
+            if account is None:
+                code, desc = mt5.last_error()
+                raise RuntimeError(f"account_info() failed: [{code}] {desc}")
+            equity = account.equity
+
+            symbol_map = self._symbol_map or load_yaml_config("base")["symbols"]
+            broker_to_canonical = {broker: canonical for canonical, broker in symbol_map.items()}
+
+            result: list[BrokerPosition] = []
+            for pos in positions:
+                canonical = broker_to_canonical.get(pos.symbol)
+                if canonical is None:
+                    logger.warning(
+                        "get_open_positions(): broker symbol %r has no canonical mapping in "
+                        "config/base.yaml symbols -- skipping (Shield needs canonical names)",
+                        pos.symbol,
+                    )
+                    continue
+
+                info = mt5.symbol_info(pos.symbol)
+                if info is None or info.trade_tick_size <= 0:
+                    logger.warning(
+                        "get_open_positions(): symbol_info(%r) unavailable/invalid -- "
+                        "skipping this position", pos.symbol,
+                    )
+                    continue
+                point_value = info.trade_tick_value / info.trade_tick_size
+
+                if pos.sl == 0:
+                    logger.warning(
+                        "get_open_positions(): position %s on %s has no stop-loss set -- "
+                        "treating as unbounded risk, will force Shield's risk ceiling to "
+                        "block new entries",
+                        pos.ticket, pos.symbol,
+                    )
+                    risk_pct = float("inf")
+                elif equity <= 0:
+                    logger.warning(
+                        "get_open_positions(): position %s on %s -- equity is non-positive, "
+                        "risk_pct cannot be computed, treating as 0.0",
+                        pos.ticket, pos.symbol,
+                    )
+                    risk_pct = 0.0
+                else:
+                    distance = abs(pos.price_current - pos.sl)
+                    risk_pct = distance * point_value * pos.volume / equity * 100
+
+                direction: Literal["BUY", "SELL"] = (
+                    "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"
+                )
+                result.append(BrokerPosition(symbol=canonical, direction=direction, risk_pct=risk_pct))
+
+            return result

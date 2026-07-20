@@ -132,6 +132,11 @@ def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(mon
                 "max_consecutive_losses": 3, "max_drawdown_halt_pct": 8.0,
             },
             "order": {"sl_buffer_atr": 0.2, "sl_min_atr": 0.8, "sl_max_atr": 2.5, "tp_r_multiple": 2.0},
+            "shield": {
+                "min_rr": 1.5, "max_correlation": 0.7, "max_positions_per_symbol": 1,
+                "max_positions_total": 3, "total_risk_ceiling_pct": 3.0,
+                "duplicate_signal_cooldown_hours": 4.0,
+            },
         },
     )
     monkeypatch.setattr(run_shadow_loop, "mt5_session", _fake_session)
@@ -166,6 +171,7 @@ def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(mon
     assert isinstance(run_calls["init_kwargs"]["clock"], ServerClock)
     assert run_calls["init_kwargs"]["clock"]._reference_symbol_broker_name == "XAUUSD"
     assert run_calls["init_kwargs"]["circuit_breaker"]._state_path == run_shadow_loop.DEFAULT_STATE_PATH
+    assert isinstance(run_calls["init_kwargs"]["shield"], run_shadow_loop.Shield)
 
 
 def test_main_unknown_adapter_choice_rejected_by_argparse(monkeypatch, capsys):

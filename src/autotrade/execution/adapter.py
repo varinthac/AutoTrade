@@ -34,6 +34,21 @@ class OrderResult:
     message: str
 
 
+@dataclass(frozen=True)
+class BrokerPosition:
+    """An open position, as seen from execution/'s side of the fence.
+    Deliberately shaped the same as `shield.checkpoint.OpenPositionInfo`
+    (symbol/direction/risk_pct) but defined independently here rather than
+    imported from shield/ -- same "define our own plain dataclass instead of
+    importing an upstream module's" pattern this file already uses for
+    `TradeRequest` vs. `council.order_construction.OrderPlan`. The caller
+    (orchestrator/) converts one into the other."""
+
+    symbol: str
+    direction: Literal["BUY", "SELL"]
+    risk_pct: float
+
+
 class BrokerAdapter(ABC):
     """Minimal interface every execution backend implements. Kept deliberately
     small — close_position/modify_stop_loss belong to the Watchman phase,
@@ -52,4 +67,10 @@ class BrokerAdapter(ABC):
         """Account balance, excluding any unrealized P&L of open positions
         (unlike get_equity()) -- callers use `equity - balance` as a floating
         P&L proxy (risk/circuit_breaker.py's daily-loss gate)."""
+        ...
+
+    @abstractmethod
+    def get_open_positions(self) -> list[BrokerPosition]:
+        """Every currently-open position on the account, for Shield's
+        portfolio-level checks (shield/checkpoint.py rules 2-5)."""
         ...

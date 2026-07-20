@@ -1,9 +1,10 @@
-"""Continuous demo shadow-running loop (Phase 3d) -- the orchestrator wiring
-that turns each newly-closed bar into, at most, one placed order via the
-Phase-3 pipeline: `feed -> features(inside council/risk) -> council
-(trivial_signal) -> risk (CFO sizing + circuit breaker) -> execution`
-(spec.md §2.2). Shield/Watchman/Auditor don't exist yet (later phases) --
-this loop simply never calls them, rather than stubbing them out.
+"""Continuous demo shadow-running loop (Phase 3d/5) -- the orchestrator
+wiring that turns each newly-closed bar into, at most, one placed order via
+the pipeline: `feed -> features(inside council/risk) -> council
+(trivial_signal) -> shield (portfolio checkpoint) -> risk (CFO sizing +
+circuit breaker) -> execution` (spec.md §2.2). Watchman/Auditor don't exist
+yet (later phases) -- this loop simply never calls them, rather than
+stubbing them out.
 
 Known simplifications, documented rather than hidden:
 - `risk.sizing.compute_lot_size`'s volatility dampening (`current_atr` /
@@ -20,6 +21,11 @@ Known simplifications, documented rather than hidden:
   from an individual closed trade. This under-reacts to losses until the
   Watchman (Phase 7) exists to report them -- the equity-drawdown gate still
   works in the meantime since it's equity-based, not P&L-event-based.
+- Shield's `open_positions` risk_pct comes from `BrokerAdapter.get_open_positions()`,
+  which for `ThrottledDemoAdapter` approximates each position's risk using
+  its CURRENT distance-to-stop and CURRENT equity, not the risk actually
+  intended when it was opened (MT5 doesn't retain that) -- see
+  execution/demo_adapter.py's docstring for the exact formula/caveat.
 """
 from __future__ import annotations
 
@@ -36,8 +42,10 @@ from autotrade.council.trivial_signal import build_trade_idea, generate_trivial_
 from autotrade.execution.adapter import BrokerAdapter, TradeRequest
 from autotrade.feed.poller import poll_new_bars
 from autotrade.feed.snapshot import Bar, MarketSnapshot
+from autotrade.features.swing import latest_confirmed_swing_high, latest_confirmed_swing_low
 from autotrade.risk.circuit_breaker import CircuitBreaker
 from autotrade.risk.sizing import compute_lot_size
+from autotrade.shield.checkpoint import OpenPositionInfo, Shield
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +98,7 @@ class ShadowLoop:
         self,
         adapter: BrokerAdapter,
         circuit_breaker: CircuitBreaker,
+        shield: Shield,
         cfg: ShadowLoopConfig,
         initial_history: dict[str, pd.DataFrame],
         resolve_symbol_spec: Callable[[str], SymbolSpec] | None = None,
@@ -98,6 +107,7 @@ class ShadowLoop:
     ) -> None:
         self._adapter = adapter
         self._circuit_breaker = circuit_breaker
+        self._shield = shield
         self._cfg = cfg
         self._history = {symbol: df.reset_index(drop=True) for symbol, df in initial_history.items()}
         self._resolve_symbol_spec = resolve_symbol_spec or (
@@ -214,7 +224,32 @@ class ShadowLoop:
             )
             return history
 
-        # 4. CFO sizing, then place (or skip below broker minimum).
+        # 4. Shield -- portfolio-level checkpoint, before CFO sizing (spec.md
+        # §2.2: council -> shield -> risk). Re-derives the same swing
+        # build_trade_idea() used internally -- cheap, and build_trade_idea()
+        # doesn't currently expose the swing index it found.
+        if plan.direction == "BUY":
+            swing = latest_confirmed_swing_low(history, as_of_index, pivot_bars=self._cfg.pivot_bars)
+        else:
+            swing = latest_confirmed_swing_high(history, as_of_index, pivot_bars=self._cfg.pivot_bars)
+        swing_index = swing[0]
+
+        open_positions = [
+            OpenPositionInfo(symbol=pos.symbol, direction=pos.direction, risk_pct=pos.risk_pct)
+            for pos in self._adapter.get_open_positions()
+        ]
+        decision = self._shield.check(
+            order_plan=plan, symbol=symbol, open_positions=open_positions,
+            new_trade_risk_pct=self._cfg.risk_per_trade_pct, swing_index=swing_index, clock=self._clock,
+        )
+        if decision.blocked:
+            logger.warning(
+                "%s %s: Shield blocked %s trade -- %s",
+                symbol, bar.time, plan.direction, "; ".join(decision.reasons),
+            )
+            return history
+
+        # 5. CFO sizing, then place (or skip below broker minimum).
         spec = self._resolve_symbol_spec(symbol)
         point_value = spec.tick_value / spec.tick_size
         lot = compute_lot_size(
@@ -238,6 +273,9 @@ class ShadowLoop:
             logger.info(
                 "%s %s: order PLACED %s lot=%.2f entry=%.5f sl=%.5f tp=%.5f -- %s",
                 symbol, bar.time, plan.direction, lot, plan.entry, plan.stop_loss, plan.take_profit, result.message,
+            )
+            self._shield.record_trade_opened(
+                symbol=symbol, direction=plan.direction, opened_at=self._clock.now(), swing_index=swing_index,
             )
         else:
             logger.warning("%s %s: order REJECTED -- %s", symbol, bar.time, result.message)

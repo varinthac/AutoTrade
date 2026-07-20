@@ -9,8 +9,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from autotrade.common.config import MT5Credentials
+from autotrade.council.order_construction import OrderPlan
 from autotrade.execution.adapter import TradeRequest
 from autotrade.execution.demo_adapter import ThrottledDemoAdapter, mt5
+from autotrade.shield.checkpoint import OpenPositionInfo, Shield
 
 CREDS = MT5Credentials(login=123, password="pw", server="ICMarketsSC-Demo", terminal_path=None)
 SYMBOL_MAP = {"XAUUSD": "XAUUSD"}
@@ -35,6 +37,16 @@ class _FakeSymbolInfo:
     volume_step = 0.01
     trade_stops_level = 30
     trade_freeze_level = 10
+
+
+class _FakePosition:
+    def __init__(self, symbol, sl, price_current, volume, type_, ticket=1):
+        self.symbol = symbol
+        self.sl = sl
+        self.price_current = price_current
+        self.volume = volume
+        self.type = type_
+        self.ticket = ticket
 
 
 class _FakeTick:
@@ -352,6 +364,180 @@ def test_fill_volume_mismatch_beyond_tolerance_logs_warning_but_still_succeeds(m
 
     assert result.success is True
     assert any("differs from requested lot_size" in record.message for record in caplog.records)
+
+
+def test_get_open_positions_returns_empty_list_when_no_open_positions(monkeypatch):
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "positions_get", lambda: ())
+
+    adapter = ThrottledDemoAdapter(CREDS, FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc)), symbol_map=SYMBOL_MAP)
+    assert adapter.get_open_positions() == []
+
+
+def test_get_open_positions_maps_broker_symbol_and_computes_risk_pct(monkeypatch):
+    _patch_mt5_boilerplate(monkeypatch)
+    # equity=1234.5 (from _FakeAccount). distance=|2400-2395|=5, point_value=1.0/0.01=100,
+    # volume=0.1 -> risk_amount=5*100*0.1=50 -> risk_pct=50/1234.5*100.
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda: (_FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.1, type_=mt5.POSITION_TYPE_BUY),),
+    )
+
+    adapter = ThrottledDemoAdapter(CREDS, FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc)), symbol_map=SYMBOL_MAP)
+    positions = adapter.get_open_positions()
+
+    assert len(positions) == 1
+    assert positions[0].symbol == "XAUUSD"
+    assert positions[0].direction == "BUY"
+    assert positions[0].risk_pct == pytest.approx(50.0 / 1234.5 * 100)
+
+
+def test_get_open_positions_maps_sell_type_to_sell_direction(monkeypatch):
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda: (_FakePosition(symbol="XAUUSD", sl=2405.0, price_current=2400.0, volume=0.1, type_=mt5.POSITION_TYPE_SELL),),
+    )
+
+    adapter = ThrottledDemoAdapter(CREDS, FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc)), symbol_map=SYMBOL_MAP)
+    positions = adapter.get_open_positions()
+
+    assert positions[0].direction == "SELL"
+
+
+def test_get_open_positions_skips_position_with_unmapped_broker_symbol(monkeypatch, caplog):
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda: (_FakePosition(symbol="UNKNOWNSYMBOL", sl=1.0, price_current=1.1, volume=0.1, type_=mt5.POSITION_TYPE_BUY),),
+    )
+
+    adapter = ThrottledDemoAdapter(CREDS, FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc)), symbol_map=SYMBOL_MAP)
+    with caplog.at_level(logging.WARNING):
+        positions = adapter.get_open_positions()
+
+    assert positions == []
+    assert any("no canonical mapping" in record.message for record in caplog.records)
+
+
+def test_get_open_positions_treats_missing_stop_loss_as_unbounded_risk(monkeypatch, caplog):
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda: (_FakePosition(symbol="XAUUSD", sl=0.0, price_current=2400.0, volume=0.1, type_=mt5.POSITION_TYPE_BUY),),
+    )
+
+    adapter = ThrottledDemoAdapter(CREDS, FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc)), symbol_map=SYMBOL_MAP)
+    with caplog.at_level(logging.WARNING):
+        positions = adapter.get_open_positions()
+
+    assert len(positions) == 1
+    assert positions[0].risk_pct == float("inf")
+    assert any("no stop-loss set" in record.message for record in caplog.records)
+
+
+def test_get_open_positions_sl_zero_treated_as_unbounded_risk_blocks_new_entries(monkeypatch):
+    # Fix for code-reviewer finding #1: a position with no stop-loss
+    # (sl == 0) has effectively UNBOUNDED risk, not zero -- see
+    # test_get_open_positions_treats_missing_stop_loss_as_unbounded_risk
+    # above for that behavior in isolation. This test shows the fix closes
+    # the real gap: it feeds the same BrokerPosition orchestrator/
+    # shadow_loop.py would build straight into Shield's rule 5 (total risk
+    # ceiling) and confirms a large, entirely-unprotected position (5.0
+    # lots, no SL) now forces the ceiling check to block any new trade,
+    # instead of silently contributing zero.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda: (_FakePosition(symbol="XAUUSD", sl=0.0, price_current=2400.0, volume=5.0, type_=mt5.POSITION_TYPE_BUY),),
+    )
+
+    adapter = ThrottledDemoAdapter(CREDS, FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc)), symbol_map=SYMBOL_MAP)
+    positions = adapter.get_open_positions()
+
+    assert len(positions) == 1
+    assert positions[0].risk_pct == float("inf")  # the fix: 5.0 lots, no stop, "unbounded" risk
+
+    open_positions = [
+        OpenPositionInfo(symbol=positions[0].symbol, direction=positions[0].direction, risk_pct=positions[0].risk_pct)
+    ]
+    shield = Shield(
+        min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=5,
+        max_positions_total=5, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
+    )
+    # A brand-new trade at 2.9% risk on its own -- the existing (real,
+    # unstopped) exposure is now counted as unbounded, so this must block
+    # regardless of how small the new trade's own risk is.
+    new_plan = OrderPlan(direction="SELL", entry=1.10, stop_loss=1.11, take_profit=1.08, stop_distance=0.01)
+    decision = shield.check(
+        order_plan=new_plan, symbol="EURUSD", open_positions=open_positions,
+        new_trade_risk_pct=2.9, swing_index=1, clock=FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+    )
+
+    assert decision.risk_ceiling_blocked is True  # the gap is closed
+    assert decision.blocked is True
+
+
+def test_get_open_positions_raises_when_positions_get_returns_none(monkeypatch):
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "positions_get", lambda: None)
+    monkeypatch.setattr(mt5, "last_error", lambda: (11, "no connection"))
+
+    adapter = ThrottledDemoAdapter(CREDS, FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc)), symbol_map=SYMBOL_MAP)
+    with pytest.raises(RuntimeError, match="positions_get"):
+        adapter.get_open_positions()
+
+
+def test_get_open_positions_reverse_maps_broker_suffix_to_canonical_symbol(monkeypatch):
+    # All other get_open_positions tests use SYMBOL_MAP = {"XAUUSD": "XAUUSD"}
+    # (broker name == canonical name), which would still pass even if the
+    # reverse (broker -> canonical) lookup were built backwards (e.g. by
+    # accident reusing the canonical->broker dict as if it were already
+    # reversed). Using a real broker suffix here is the only way to catch
+    # that class of bug.
+    _patch_mt5_boilerplate(monkeypatch)
+    suffixed_map = {"XAUUSD": "XAUUSD.a", "EURUSD": "EURUSD.a"}
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda: (
+            _FakePosition(symbol="XAUUSD.a", sl=2395.0, price_current=2400.0, volume=0.1, type_=mt5.POSITION_TYPE_BUY, ticket=1),
+            _FakePosition(symbol="EURUSD.a", sl=1.10, price_current=1.09, volume=0.2, type_=mt5.POSITION_TYPE_SELL, ticket=2),
+        ),
+    )
+
+    adapter = ThrottledDemoAdapter(
+        CREDS, FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc)), symbol_map=suffixed_map,
+    )
+    positions = adapter.get_open_positions()
+
+    by_symbol = {pos.symbol: pos for pos in positions}
+    assert set(by_symbol) == {"XAUUSD", "EURUSD"}
+    assert by_symbol["XAUUSD"].direction == "BUY"
+    assert by_symbol["EURUSD"].direction == "SELL"
+
+
+def test_get_open_positions_raises_when_account_info_returns_none(monkeypatch):
+    # account_info() must succeed for mt5_session() itself to establish the
+    # connection -- so make it fail only on the SECOND call (the one
+    # get_open_positions() makes itself), not the session's own login check.
+    monkeypatch.setattr(mt5, "initialize", lambda **kwargs: True)
+    monkeypatch.setattr(mt5, "shutdown", lambda: None)
+    monkeypatch.setattr(mt5, "symbol_select", lambda name, enable: True)
+    monkeypatch.setattr(mt5, "symbol_info", lambda name: _FakeSymbolInfo())
+    monkeypatch.setattr(mt5, "positions_get", lambda: ())
+    monkeypatch.setattr(mt5, "last_error", lambda: (5, "no connection"))
+
+    account_info_calls = {"count": 0}
+
+    def flaky_account_info():
+        account_info_calls["count"] += 1
+        return _FakeAccount() if account_info_calls["count"] == 1 else None
+
+    monkeypatch.setattr(mt5, "account_info", flaky_account_info)
+
+    adapter = ThrottledDemoAdapter(CREDS, FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc)), symbol_map=SYMBOL_MAP)
+    with pytest.raises(RuntimeError, match="account_info"):
+        adapter.get_open_positions()
 
 
 def test_throttle_boundary_elapsed_exactly_equal_to_minimum_is_allowed(monkeypatch):
