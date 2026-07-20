@@ -1,8 +1,17 @@
 """Core event-driven backtest engine (spec.md §4 "Backtest engine" / §6 Phase
 4). Replays through the *exact same* signal/order-construction/sizing
-functions the live system uses (`council.trivial_signal.build_trade_idea` by
-default, injected so Phase 6's real Council is a drop-in later) over
-historical OHLC(+spread) data -- it does not reimplement any decision logic.
+functions the live system uses (`council.decision_matrix.evaluate_council`,
+via the `_council_signal_fn` adapter below, by default -- injected so a
+different strategy is a drop-in replacement later) over historical
+OHLC(+spread) data -- it does not reimplement any decision logic.
+
+Known gap (Phase 6b): Risk Voice (`council/risk_voice.py`) is NOT wired into
+this engine. Its news-calendar and session/spread re-check machinery is
+either a live-only concern, or a much bigger follow-up decision about how
+backtesting should model historical news/session data -- out of scope here.
+A backtest run through the default `_council_signal_fn` therefore only
+exercises the Bull/Bear Voice scoring + Decision Matrix, not the full veto
+gate a live/sandbox run would apply.
 
 Guardrails (spec.md §4), enforced structurally, not just documented:
 - Decisions only read closed bars: the signal function is called with
@@ -57,11 +66,42 @@ import pandas as pd
 from autotrade.backtest.clock import SimulatedClock
 from autotrade.backtest.cost_model import CostModelConfig, commission_cost, spread_slippage_price
 from autotrade.common.symbol_spec import SymbolSpec
+from autotrade.council.decision_matrix import evaluate_council
 from autotrade.council.order_construction import OrderPlan
-from autotrade.council.trivial_signal import build_trade_idea
 from autotrade.risk.sizing import compute_lot_size
 
 SignalFn = Callable[..., "OrderPlan | None"]
+
+
+def _council_signal_fn(
+    df: pd.DataFrame,
+    as_of_index: int,
+    *,
+    symbol: str,
+    symbol_spec: SymbolSpec,
+    sl_buffer_atr: float,
+    sl_min_atr: float,
+    sl_max_atr: float,
+    tp_r_multiple: float,
+    pivot_bars: int,
+    bull_threshold: int = 70,
+    bear_threshold: int = 70,
+    conflict_threshold: int = 55,
+) -> OrderPlan | None:
+    """Default `SignalFn` -- adapts `council.decision_matrix.evaluate_council`'s
+    `(CouncilDecision, BorderlineCase | None)` return shape to the plain
+    `OrderPlan | None` contract `run_backtest`'s loop expects. Borderline
+    cases are not surfaced here (nowhere to log them to in a backtest run --
+    that's `orchestrator/shadow_loop.py`'s `borderline_log.jsonl`, a
+    live-loop-only concern) -- only a clean BUY/SELL decision ever becomes a
+    trade. See module docstring's "Known gap" note re: Risk Voice."""
+    decision, _borderline_case = evaluate_council(
+        df, as_of_index, symbol, symbol_spec,
+        bull_threshold=bull_threshold, bear_threshold=bear_threshold, conflict_threshold=conflict_threshold,
+        sl_buffer_atr=sl_buffer_atr, sl_min_atr=sl_min_atr, sl_max_atr=sl_max_atr,
+        tp_r_multiple=tp_r_multiple, pivot_bars=pivot_bars,
+    )
+    return decision.order_plan if decision.direction is not None else None
 
 
 @dataclass(frozen=True)
@@ -100,10 +140,14 @@ class ClosedTrade:
 @dataclass(frozen=True)
 class BacktestConfig:
     """Strategy/risk/cost parameters for one backtest run. `signal_fn`
-    defaults to the Phase-3 trivial signal but is injected so Phase 6's real
-    Council can replace it without touching this engine -- it must be
-    `build_trade_idea`-shaped: `(df, as_of_index, sl_buffer_atr=, sl_min_atr=,
-    sl_max_atr=, tp_r_multiple=, pivot_bars=) -> OrderPlan | None`.
+    defaults to `_council_signal_fn` (the real Council: Bull/Bear scoring +
+    Decision Matrix, per Appendix A §1.1-§1.3) but is injected so it can be
+    replaced without touching this engine -- it must accept `(df,
+    as_of_index, symbol=, symbol_spec=, sl_buffer_atr=, sl_min_atr=,
+    sl_max_atr=, tp_r_multiple=, pivot_bars=) -> OrderPlan | None` (see
+    `run_backtest`'s call site). `council.trivial_signal.build_trade_idea`
+    (Phase 3) does not accept `symbol`/`symbol_spec` and so is no longer a
+    drop-in `signal_fn` without a small adapter of its own.
 
     `current_atr`/`avg_atr_20d` volatility dampening (risk/sizing.py §3.2) is
     left disabled (both `None` at every `compute_lot_size` call), matching
@@ -121,7 +165,10 @@ class BacktestConfig:
     sl_max_atr: float = 2.5
     tp_r_multiple: float = 2.0
     pivot_bars: int = 3
-    signal_fn: SignalFn = build_trade_idea
+    bull_threshold: int = 70
+    bear_threshold: int = 70
+    conflict_threshold: int = 55
+    signal_fn: SignalFn = _council_signal_fn
 
 
 @dataclass
@@ -278,10 +325,11 @@ def run_backtest(
 
         if position is None and pending is None:
             plan = config.signal_fn(
-                df, i,
+                df, i, symbol=symbol, symbol_spec=symbol_spec,
                 sl_buffer_atr=config.sl_buffer_atr, sl_min_atr=config.sl_min_atr,
                 sl_max_atr=config.sl_max_atr, tp_r_multiple=config.tp_r_multiple,
-                pivot_bars=config.pivot_bars,
+                pivot_bars=config.pivot_bars, bull_threshold=config.bull_threshold,
+                bear_threshold=config.bear_threshold, conflict_threshold=config.conflict_threshold,
             )
             if plan is not None:
                 lot = compute_lot_size(

@@ -24,6 +24,8 @@ from autotrade.common.config import MT5Credentials, load_mt5_credentials, load_y
 from autotrade.common.mt5_connection import mt5_session
 from autotrade.common.mt5_time import ServerClock
 from autotrade.common.symbols import to_broker_name
+from autotrade.council.news_calendar import StubNewsCalendarProvider
+from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.execution.adapter import BrokerAdapter
 from autotrade.execution.demo_adapter import ThrottledDemoAdapter
 from autotrade.execution.noop_adapter import NoOpBrokerAdapter
@@ -124,6 +126,30 @@ def main() -> int:
         sl_min_atr=cfg["order"]["sl_min_atr"],
         sl_max_atr=cfg["order"]["sl_max_atr"],
         tp_r_multiple=cfg["order"]["tp_r_multiple"],
+        bull_threshold=cfg["council"]["bull_threshold"],
+        bear_threshold=cfg["council"]["bear_threshold"],
+        conflict_threshold=cfg["council"]["conflict_threshold"],
+    )
+    risk_voice_cfg = RiskVoiceConfig(
+        max_spread_multiple=cfg["risk_voice"]["max_spread_multiple"],
+        max_spread_points_xauusd=cfg["risk_voice"]["max_spread_points_xauusd"],
+        news_blackout_before_min=cfg["risk_voice"]["news_blackout_before_min"],
+        news_blackout_after_min=cfg["risk_voice"]["news_blackout_after_min"],
+        max_stop_atr_multiple=cfg["risk_voice"]["max_stop_atr_multiple"],
+        session_start_hour=cfg["risk_voice"]["session_start_hour"],
+        session_end_hour=cfg["risk_voice"]["session_end_hour"],
+        friday_close_hour=cfg["risk_voice"]["friday_close_hour"],
+        max_atr_panic_multiple=cfg["risk_voice"]["max_atr_panic_multiple"],
+    )
+    # StubNewsCalendarProvider always reports "calendar unavailable" ->
+    # Risk Voice's fail-safe rule vetoes on the news condition every time --
+    # see council/news_calendar.py's module docstring. Until a real provider
+    # replaces it, this loop will not approve any trade.
+    news_provider = StubNewsCalendarProvider()
+    logger.warning(
+        "Using StubNewsCalendarProvider -- news calendar is NOT connected. Per Risk Voice's "
+        "fail-safe rule (Appendix A §1.5), this means EVERY trade will be vetoed on the news "
+        "condition until a real NewsCalendarProvider is wired in (see council/news_calendar.py)."
     )
 
     with mt5_session(creds):
@@ -138,6 +164,7 @@ def main() -> int:
         shadow_loop = ShadowLoop(
             adapter=adapter, circuit_breaker=circuit_breaker, shield=shield, cfg=loop_cfg,
             initial_history=initial_history, symbol_map=symbol_map, clock=loop_clock,
+            news_provider=news_provider, risk_voice_cfg=risk_voice_cfg,
         )
         logger.info(
             "Shadow loop starting: symbols=%s timeframe=%s adapter=%s -- waiting for next bar close",

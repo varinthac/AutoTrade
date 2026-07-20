@@ -20,6 +20,7 @@ from autotrade.backtest.cost_model import CostModelConfig, round_trip_cost
 from autotrade.backtest.engine import BacktestConfig, run_backtest
 from autotrade.common.symbol_spec import SymbolSpec
 from autotrade.council.order_construction import OrderPlan
+from autotrade.council.scoring import BullBearScore
 
 SYMBOL = SymbolSpec(
     canonical="XAUUSD", broker_name="XAUUSD", digits=2, point=0.01,
@@ -447,3 +448,69 @@ def test_sell_direction_fills_below_open_and_profits_when_price_falls():
     # gross_pnl = (entry - exit) * point_value * lot for SELL = (99.90-80.0)*1.0*10 = 199.0
     assert trade.gross_pnl == pytest.approx(199.0)
     assert trade.net_pnl == pytest.approx(199.0)
+
+
+# --- Phase 6b: BacktestConfig's default signal_fn is now Council wiring ---
+#
+# Bull/Bear Voice scoring is monkeypatched here (same convention as
+# tests/unit/council/test_decision_matrix.py's own docstring explains) so a
+# clean BUY fires as soon as a confirmed swing exists, without depending on
+# real score-threshold-crossing OHLC -- these two tests only prove the
+# *wiring* (BacktestConfig() with no signal_fn override really does drive
+# council.decision_matrix.evaluate_council end to end, and correctly treats
+# a borderline hypothetical order as "no trade"), not engine mechanics
+# (covered exhaustively above with the fake, fully-controlled signal_fn).
+
+
+def _council_signal_bars(n: int = 40) -> pd.DataFrame:
+    """Flat OHLC with a confirmed swing low at index 10 -- mirrors
+    tests/unit/council/test_decision_matrix.py's `_order_capable_df`."""
+    times = pd.date_range("2026-07-06 00:00:00", periods=n, freq="h")
+    highs = [101.0] * n
+    lows = [99.0] * n
+    closes = [100.0] * n
+    lows[10] = 90.0
+    return pd.DataFrame({
+        "time": times, "open": closes, "high": highs, "low": lows, "close": closes,
+        "spread": [0] * n,
+    })
+
+
+def _score(total: int) -> BullBearScore:
+    return BullBearScore(
+        score=total, trend_alignment=0, momentum_rsi=0, momentum_macd=0, market_structure=0, confluence=0
+    )
+
+
+def test_default_signal_fn_wires_the_real_council_and_produces_a_buy_trade(monkeypatch):
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].direction == "BUY"
+
+
+def test_default_signal_fn_treats_a_borderline_hypothetical_order_as_no_trade(monkeypatch):
+    # Borderline decisions (both scores >= conflict_threshold) build a
+    # hypothetical OrderPlan for logging purposes
+    # (decision_matrix.CouncilDecision.order_plan) even though
+    # decision.direction is None -- the default signal_fn must not mistake
+    # that hypothetical plan for a real tradeable one.
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(60))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(65))
+    df = _council_signal_bars()
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert trades == []

@@ -137,6 +137,13 @@ def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(mon
                 "max_positions_total": 3, "total_risk_ceiling_pct": 3.0,
                 "duplicate_signal_cooldown_hours": 4.0,
             },
+            "council": {"bull_threshold": 70, "bear_threshold": 70, "conflict_threshold": 55},
+            "risk_voice": {
+                "max_spread_multiple": 1.5, "max_spread_points_xauusd": 35,
+                "news_blackout_before_min": 45, "news_blackout_after_min": 30,
+                "max_stop_atr_multiple": 2.5, "session_start_hour": 14, "session_end_hour": 18,
+                "friday_close_hour": 20, "max_atr_panic_multiple": 3.0,
+            },
         },
     )
     monkeypatch.setattr(run_shadow_loop, "mt5_session", _fake_session)
@@ -172,6 +179,14 @@ def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(mon
     assert run_calls["init_kwargs"]["clock"]._reference_symbol_broker_name == "XAUUSD"
     assert run_calls["init_kwargs"]["circuit_breaker"]._state_path == run_shadow_loop.DEFAULT_STATE_PATH
     assert isinstance(run_calls["init_kwargs"]["shield"], run_shadow_loop.Shield)
+    # Phase 6b: news_provider/risk_voice_cfg are wired in too -- the stub
+    # provider (news calendar not connected yet) is what actually gets used.
+    assert isinstance(run_calls["init_kwargs"]["news_provider"], run_shadow_loop.StubNewsCalendarProvider)
+    risk_voice_cfg = run_calls["init_kwargs"]["risk_voice_cfg"]
+    assert isinstance(risk_voice_cfg, run_shadow_loop.RiskVoiceConfig)
+    assert risk_voice_cfg.session_start_hour == 14
+    assert risk_voice_cfg.session_end_hour == 18
+    assert run_calls["init_kwargs"]["cfg"].bull_threshold == 70
 
 
 def test_main_unknown_adapter_choice_rejected_by_argparse(monkeypatch, capsys):

@@ -58,3 +58,23 @@ order:
   max_retries: 2 # not yet consumed -- Watchman phase (Appendix A §4.8)
   retry_delay_sec: 3 # not yet consumed -- Watchman phase (Appendix A §4.8)
   max_entry_slippage_atr: 0.3 # not yet consumed -- Watchman phase (Appendix A §4.8)
+
+# Risk Voice -- Council's own veto gate (council/risk_voice.py), per
+# trading_system_summary_v2.md Appendix A §1.5 / §6. All values [adjustable].
+# session_start_hour/session_end_hour approximate the London+New York
+# session overlap in MT5 SERVER time -- see risk_voice.py's module docstring
+# for the exact reasoning and its DST caveat (broker server-time offsets
+# drift with UK/US daylight saving, so this needs periodic manual
+# re-verification, not a one-time pick). NOTE: with only
+# StubNewsCalendarProvider wired in (council/news_calendar.py), the news
+# condition below always vetoes -- see that module's docstring.
+risk_voice:
+  max_spread_multiple: 1.5
+  max_spread_points_xauusd: 35
+  news_blackout_before_min: 45
+  news_blackout_after_min: 30
+  max_stop_atr_multiple: 2.5
+  session_start_hour: 14
+  session_end_hour: 18
+  friday_close_hour: 20
+  max_atr_panic_multiple: 3.0

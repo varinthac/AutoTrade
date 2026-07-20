@@ -1,32 +1,46 @@
-"""Tests for orchestrator/shadow_loop.py -- the Phase 3d wiring of
-feed -> council(trivial_signal) -> risk(CFO sizing) -> execution. MT5,
+"""Tests for orchestrator/shadow_loop.py -- Phase 6b wiring of
+feed -> council(Bull/Bear scoring + Decision Matrix + Risk Voice) ->
+shield(portfolio checkpoint) -> risk(CFO sizing) -> execution. MT5,
 kill_switch_flag, and the broker are all faked/monkeypatched; this exercises
-the orchestration logic only (feed/poller, MT5, and live signal generation
-are covered by their own module's tests).
+the orchestration/wiring logic only.
 
-The crossover fixture mirrors tests/unit/council/test_trivial_signal.py's
-`_flat_then_jump_df` exactly (closes flat at `pre_level` through index 69,
-jump to `post_level` from index 70 on) so the EMA20/EMA50 crossover location
-(index 70) is already independently verified there, rather than re-derived
-here.
+Bull/Bear Voice scoring is monkeypatched to return exact, hand-picked
+scores -- same convention as tests/unit/council/test_decision_matrix.py's
+own docstring explains -- so every fixture here deterministically triggers a
+clean BUY/SELL/borderline/no-conviction Council decision without needing to
+engineer real OHLC crossing score thresholds (already covered by
+test_scoring.py). This keeps these wiring tests focused on ordering/plumbing,
+not scoring internals.
+
+The swing fixture (`_council_df`) mirrors test_decision_matrix.py's own
+`_order_capable_df`: flat OHLC with one confirmed swing low and one
+confirmed swing high, both confirmed well before `AS_OF`, so order
+construction succeeds regardless of which direction a given fixture picks.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta
 
 import pandas as pd
 
-from autotrade.execution.adapter import BrokerAdapter, BrokerPosition, OrderResult, TradeRequest
 from autotrade.common.symbols import SymbolSpec
+from autotrade.council.news_calendar import NewsEvent
+from autotrade.council.risk_voice import RiskVoiceConfig
+from autotrade.council.scoring import BullBearScore
+from autotrade.execution.adapter import BrokerAdapter, BrokerPosition, OrderResult, TradeRequest
 from autotrade.feed.snapshot import Bar, MarketSnapshot
 from autotrade.orchestrator import shadow_loop as shadow_loop_module
 from autotrade.orchestrator.shadow_loop import ShadowLoop, ShadowLoopConfig
 from autotrade.risk.circuit_breaker import CircuitBreaker
 from autotrade.shield.checkpoint import Shield
 
-CROSS_INDEX = 70
-BASE_TIME = datetime(2026, 1, 1)
+N = 40
+SWING_LOW_INDEX = 10
+SWING_HIGH_INDEX = 30
+AS_OF = N - 1  # index of the "new" bar once appended to an (N-1)-bar seed
+BASE_TIME = datetime(2026, 1, 1)  # a Thursday -- never accidentally trips the Friday-close condition
 
 
 class FixedClock:
@@ -73,20 +87,31 @@ def _fake_symbol_spec(symbol: str) -> SymbolSpec:
     )
 
 
-def _flat_then_jump_df(pre_level: float, post_level: float, swing_dip_index: int | None = None,
-                        swing_is_high: bool = False, post_bars: int = 5) -> pd.DataFrame:
-    closes = [pre_level] * CROSS_INDEX + [post_level] * post_bars
-    highs = [c + 1 for c in closes]
-    lows = [c - 1 for c in closes]
-    if swing_dip_index is not None:
-        if swing_is_high:
-            highs[swing_dip_index] = pre_level + 20
-        else:
-            lows[swing_dip_index] = pre_level - 20
-    times = [BASE_TIME + timedelta(hours=i) for i in range(len(closes))]
+def _council_df(n: int = N) -> pd.DataFrame:
+    """Flat OHLC with a confirmed swing low at `SWING_LOW_INDEX` (low=90)
+    and a confirmed swing high at `SWING_HIGH_INDEX` (high=110), both
+    confirmed well before `AS_OF` -- so order construction succeeds
+    regardless of which hypothetical/real direction a fixture's patched
+    scores pick."""
+    highs = [101.0] * n
+    lows = [99.0] * n
+    closes = [100.0] * n
+    lows[SWING_LOW_INDEX] = 90.0
+    highs[SWING_HIGH_INDEX] = 110.0
+    times = [BASE_TIME + timedelta(hours=i) for i in range(n)]
     return pd.DataFrame({
         "time": times, "open": closes, "high": highs, "low": lows, "close": closes,
-        "tick_volume": [10] * len(closes), "spread": [1] * len(closes),
+        "tick_volume": [10] * n, "spread": [10] * n,
+    })
+
+
+def _flat_df(level: float, n: int) -> pd.DataFrame:
+    """Perfectly flat OHLC, no swing anywhere -- used for fixtures that
+    never need order construction to succeed (e.g. history-trimming)."""
+    times = [BASE_TIME + timedelta(hours=i) for i in range(n)]
+    return pd.DataFrame({
+        "time": times, "open": [level] * n, "high": [level + 1] * n, "low": [level - 1] * n,
+        "close": [level] * n, "tick_volume": [10] * n, "spread": [10] * n,
     })
 
 
@@ -98,11 +123,58 @@ def _bar_from_row(df: pd.DataFrame, index: int) -> Bar:
     )
 
 
+def _score(total: int) -> BullBearScore:
+    return BullBearScore(
+        score=total, trend_alignment=0, momentum_rsi=0, momentum_macd=0, market_structure=0, confluence=0
+    )
+
+
+def _patch_scores(monkeypatch, bull_total: int, bear_total: int) -> None:
+    monkeypatch.setattr(
+        "autotrade.council.decision_matrix.score_bull_voice", lambda *args, **kwargs: _score(bull_total),
+    )
+    monkeypatch.setattr(
+        "autotrade.council.decision_matrix.score_bear_voice", lambda *args, **kwargs: _score(bear_total),
+    )
+
+
+class AllClearNewsProvider:
+    """Always reports "fetched fine, nothing found" -- the opposite of
+    `StubNewsCalendarProvider`, used so tests not specifically about the
+    news condition don't get vetoed by it."""
+
+    def get_high_impact_events(self, currency, window_start, window_end):
+        return []
+
+
+class FlakyNewsProvider:
+    """Returns `[]` on its first call, then a high-impact event on every
+    call after that -- simulates news appearing between Risk Voice's
+    signal-time check and its order-send-time re-check."""
+
+    def __init__(self):
+        self.call_count = 0
+
+    def get_high_impact_events(self, currency, window_start, window_end):
+        self.call_count += 1
+        if self.call_count == 1:
+            return []
+        return [NewsEvent(currency=currency, impact="high", event_time=window_start)]
+
+
+def _permissive_risk_voice_cfg() -> RiskVoiceConfig:
+    """Widened thresholds so only the condition a given test cares about can
+    fire -- session covers the whole day, spread/ATR/stop-distance ceilings
+    are generous multiples that this module's flat fixtures never approach."""
+    return RiskVoiceConfig(
+        max_spread_multiple=100.0, max_spread_points_xauusd=1000.0,
+        news_blackout_before_min=45.0, news_blackout_after_min=30.0,
+        max_stop_atr_multiple=100.0, session_start_hour=0, session_end_hour=24,
+        friday_close_hour=20, max_atr_panic_multiple=100.0,
+    )
+
+
 def _default_shield() -> Shield:
-    # Production-matching defaults from config/base.yaml's `shield:` block --
-    # the trivial signal's OrderPlan is always R:R=2.0 (fixed 2R take-profit,
-    # order_construction.py), so min_rr=1.5 never blocks these fixtures on
-    # its own, and with no seeded open positions rules 2-6 stay clean too.
     return Shield(
         min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=1,
         max_positions_total=3, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
@@ -110,13 +182,18 @@ def _default_shield() -> Shield:
 
 
 class SpyShield(Shield):
-    """Records every record_trade_opened() call, on top of Shield's real
-    check()/record_trade_opened() behavior -- same "subclass + record calls"
-    spy pattern as FlakyAdapter/InterruptingAdapter below."""
+    """Records every check()/record_trade_opened() call, on top of Shield's
+    real behavior -- used to prove ordering (Risk Voice vetoes before Shield
+    is even consulted)."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.check_calls: list[dict] = []
         self.record_trade_opened_calls: list[dict] = []
+
+    def check(self, order_plan, symbol, open_positions, new_trade_risk_pct, swing_index, clock):
+        self.check_calls.append({"symbol": symbol, "direction": order_plan.direction})
+        return super().check(order_plan, symbol, open_positions, new_trade_risk_pct, swing_index, clock)
 
     def record_trade_opened(self, symbol, direction, opened_at, swing_index) -> None:
         self.record_trade_opened_calls.append(
@@ -125,115 +202,145 @@ class SpyShield(Shield):
         super().record_trade_opened(symbol, direction, opened_at, swing_index)
 
 
-def _default_loop(adapter, circuit_breaker, seed_history, clock=None, shield=None) -> ShadowLoop:
+def _default_loop(
+    adapter, circuit_breaker, seed_history, clock=None, shield=None,
+    news_provider=None, risk_voice_cfg=None, borderline_log_path=None,
+) -> ShadowLoop:
     cfg = ShadowLoopConfig(risk_per_trade_pct=1.0)
     return ShadowLoop(
         adapter=adapter, circuit_breaker=circuit_breaker, shield=shield or _default_shield(), cfg=cfg,
         initial_history={"XAUUSD": seed_history}, resolve_symbol_spec=_fake_symbol_spec,
         clock=clock or FixedClock(BASE_TIME),
+        news_provider=news_provider or AllClearNewsProvider(),
+        risk_voice_cfg=risk_voice_cfg or _permissive_risk_voice_cfg(),
+        borderline_log_path=borderline_log_path,
     )
 
 
-def test_kill_switch_active_blocks_adapter_and_evaluates_no_signal(monkeypatch):
+def test_kill_switch_active_blocks_adapter_and_evaluates_no_signal(monkeypatch, tmp_path):
     monkeypatch.setattr(shadow_loop_module.kill_switch_flag, "is_active", lambda: True)
     monkeypatch.setattr(
         shadow_loop_module.kill_switch_flag, "get_status",
         lambda: {"reason": "manual halt for test", "activated_at": "2026-01-01T00:00:00"},
     )
 
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
     adapter = FakeAdapter()
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    loop = _default_loop(adapter, breaker, seed)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = _bar_from_row(df, CROSS_INDEX)
+    new_bar = _bar_from_row(df, AS_OF)
     loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
 
     assert adapter.place_order_calls == []
     # History must be untouched -- kill switch is checked before anything else.
-    assert len(loop._history["XAUUSD"]) == CROSS_INDEX
+    assert len(loop._history["XAUUSD"]) == AS_OF
 
 
-def test_circuit_breaker_tripped_blocks_adapter():
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+def test_circuit_breaker_tripped_blocks_adapter(tmp_path):
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
     adapter = FakeAdapter(equity=9_000.0)
 
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    # Pre-trip the drawdown gate -- 10% down from a 10,000 peak, well past
-    # the 8% threshold. The drawdown gate is one-way (never auto-clears), so
-    # this stays tripped regardless of what ShadowLoop later records.
     breaker.record_equity(equity=9_000.0, peak_equity=10_000.0, live_start_equity=10_000.0, as_of=BASE_TIME)
 
-    loop = _default_loop(adapter, breaker, seed)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = _bar_from_row(df, CROSS_INDEX)
+    new_bar = _bar_from_row(df, AS_OF)
     loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
 
     assert adapter.place_order_calls == []
-    assert len(loop._history["XAUUSD"]) == CROSS_INDEX
+    assert len(loop._history["XAUUSD"]) == AS_OF
 
 
-def test_floating_pnl_from_equity_minus_balance_feeds_daily_loss_gate():
-    # equity - balance approximates floating P&L (no Watchman/position
-    # tracking exists yet to report it directly) -- confirms ShadowLoop
-    # actually wires this into record_equity() rather than defaulting to 0.0.
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+def test_floating_pnl_from_equity_minus_balance_feeds_daily_loss_gate(tmp_path):
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
     adapter = FakeAdapter(equity=9_900.0, balance=10_000.0)  # -100 floating P&L
     breaker = CircuitBreaker(daily_loss_limit_pct=1.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    loop = _default_loop(adapter, breaker, seed)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = _bar_from_row(df, CROSS_INDEX)
+    new_bar = _bar_from_row(df, AS_OF)
     loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
 
     assert adapter.place_order_calls == []  # ~1.01% floating loss >= 1.0% limit
 
 
-def test_no_signal_does_not_call_adapter_or_raise():
-    # Flat closes throughout -- no EMA crossover ever fires.
-    times = [BASE_TIME + timedelta(hours=i) for i in range(60)]
-    seed = pd.DataFrame({
-        "time": times[:59], "open": [100.0] * 59, "high": [101.0] * 59, "low": [99.0] * 59,
-        "close": [100.0] * 59, "tick_volume": [10] * 59, "spread": [1] * 59,
-    })
+def test_no_conviction_does_not_call_adapter_or_raise(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=20, bear_total=20)  # neither near threshold nor conflicting
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
     adapter = FakeAdapter()
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    loop = _default_loop(adapter, breaker, seed)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = Bar(time=times[59], open=100.0, high=101.0, low=99.0, close=100.0, tick_volume=10, spread=1)
+    new_bar = _bar_from_row(df, AS_OF)
     loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
 
     assert adapter.place_order_calls == []
-    assert len(loop._history["XAUUSD"]) == 60  # bar still appended, just no trade
+    assert len(loop._history["XAUUSD"]) == AS_OF + 1  # bar still appended, just no trade
 
 
-def test_confirmed_crossover_and_swing_places_order_via_adapter():
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+def test_clean_buy_decision_places_order_via_adapter(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
     adapter = FakeAdapter(equity=10_000.0)
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    loop = _default_loop(adapter, breaker, seed)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = _bar_from_row(df, CROSS_INDEX)
+    new_bar = _bar_from_row(df, AS_OF)
     loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
 
     assert len(adapter.place_order_calls) == 1
     request = adapter.place_order_calls[0]
     assert request.symbol == "XAUUSD"
     assert request.direction == "BUY"
-    assert request.entry == 180.0
+    assert request.entry == 100.0
     assert request.stop_loss < request.entry < request.take_profit
     assert request.lot_size > 0
-    assert len(loop._history["XAUUSD"]) == CROSS_INDEX + 1
+    assert len(loop._history["XAUUSD"]) == AS_OF + 1
 
 
-def test_shield_blocked_trade_never_reaches_cfo_sizing_or_place_order():
-    # 3 existing open positions (on other symbols) already at
-    # max_positions_total=3 -- Shield's rule 4 blocks before CFO sizing.
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+def test_clean_sell_decision_places_sell_order_with_stop_above_entry(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=30, bear_total=75)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert len(adapter.place_order_calls) == 1
+    request = adapter.place_order_calls[0]
+    assert request.direction == "SELL"
+    assert request.take_profit < request.entry < request.stop_loss
+    assert request.lot_size > 0
+
+
+def test_decision_without_confirmed_swing_places_no_order_but_still_appends_bar(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)  # clean BUY
+    df = _flat_df(100.0, N)  # no swing anywhere -- order construction returns None
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert adapter.place_order_calls == []
+    assert len(loop._history["XAUUSD"]) == AS_OF + 1
+
+
+def test_shield_blocked_trade_never_reaches_cfo_sizing_or_place_order(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
     open_positions = [
         BrokerPosition(symbol="EURUSD", direction="SELL", risk_pct=0.1),
         BrokerPosition(symbol="GBPUSD", direction="SELL", risk_pct=0.1),
@@ -245,19 +352,20 @@ def test_shield_blocked_trade_never_reaches_cfo_sizing_or_place_order():
         min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=1,
         max_positions_total=3, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
     )
-    loop = _default_loop(adapter, breaker, seed, shield=shield)
+    loop = _default_loop(adapter, breaker, seed, shield=shield, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = _bar_from_row(df, CROSS_INDEX)
+    new_bar = _bar_from_row(df, AS_OF)
     loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
 
     assert adapter.place_order_calls == []
     assert shield.record_trade_opened_calls == []
-    assert len(loop._history["XAUUSD"]) == CROSS_INDEX + 1  # bar still appended
+    assert len(loop._history["XAUUSD"]) == AS_OF + 1
 
 
-def test_shield_blocked_trade_logs_warning_with_reason(caplog):
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+def test_shield_blocked_trade_logs_warning_with_reason(monkeypatch, tmp_path, caplog):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
     open_positions = [
         BrokerPosition(symbol="EURUSD", direction="SELL", risk_pct=0.1),
         BrokerPosition(symbol="GBPUSD", direction="SELL", risk_pct=0.1),
@@ -265,27 +373,28 @@ def test_shield_blocked_trade_logs_warning_with_reason(caplog):
     ]
     adapter = FakeAdapter(equity=10_000.0, open_positions=open_positions)
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    loop = _default_loop(adapter, breaker, seed)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = _bar_from_row(df, CROSS_INDEX)
+    new_bar = _bar_from_row(df, AS_OF)
     with caplog.at_level(logging.WARNING):
         loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
 
     assert any("Shield blocked" in record.message for record in caplog.records)
 
 
-def test_shield_approved_trade_proceeds_to_cfo_sizing_and_records_trade_opened():
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+def test_shield_approved_trade_proceeds_to_cfo_sizing_and_records_trade_opened(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
     adapter = FakeAdapter(equity=10_000.0)
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
     shield = SpyShield(
         min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=1,
         max_positions_total=3, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
     )
-    loop = _default_loop(adapter, breaker, seed, shield=shield)
+    loop = _default_loop(adapter, breaker, seed, shield=shield, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = _bar_from_row(df, CROSS_INDEX)
+    new_bar = _bar_from_row(df, AS_OF)
     loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
 
     assert len(adapter.place_order_calls) == 1  # reached CFO sizing + placement
@@ -294,32 +403,32 @@ def test_shield_approved_trade_proceeds_to_cfo_sizing_and_records_trade_opened()
     assert call["symbol"] == "XAUUSD"
     assert call["direction"] == "BUY"
     assert call["opened_at"] == BASE_TIME  # from the FixedClock used by _default_loop
-    assert call["swing_index"] == 30  # the swing_dip_index seeded into the fixture
+    assert call["swing_index"] == SWING_LOW_INDEX
 
 
-def test_shield_approved_but_lot_size_below_minimum_does_not_record_trade_opened():
-    # Approved by Shield, but CFO sizing returns None (tiny equity) -- Shield
-    # must not be told a trade was opened when none actually was.
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+def test_shield_approved_but_lot_size_below_minimum_does_not_record_trade_opened(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
     adapter = FakeAdapter(equity=1.0)
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
     shield = SpyShield(
         min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=1,
         max_positions_total=3, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
     )
-    loop = _default_loop(adapter, breaker, seed, shield=shield)
+    loop = _default_loop(adapter, breaker, seed, shield=shield, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = _bar_from_row(df, CROSS_INDEX)
+    new_bar = _bar_from_row(df, AS_OF)
     loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
 
     assert adapter.place_order_calls == []
     assert shield.record_trade_opened_calls == []
 
 
-def test_shield_record_trade_opened_not_called_when_order_rejected():
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+def test_shield_record_trade_opened_not_called_when_order_rejected(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
 
     class RejectingAdapter(FakeAdapter):
         def place_order(self, request: TradeRequest):
@@ -335,65 +444,47 @@ def test_shield_record_trade_opened_not_called_when_order_rejected():
         min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=1,
         max_positions_total=3, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
     )
-    loop = _default_loop(adapter, breaker, seed, shield=shield)
+    loop = _default_loop(adapter, breaker, seed, shield=shield, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = _bar_from_row(df, CROSS_INDEX)
+    new_bar = _bar_from_row(df, AS_OF)
     loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
 
     assert len(adapter.place_order_calls) == 1
     assert shield.record_trade_opened_calls == []
 
 
-def test_on_new_bar_raises_key_error_for_unseeded_symbol():
+def test_on_new_bar_raises_key_error_for_unseeded_symbol(tmp_path):
     import pytest
 
-    seed = _flat_then_jump_df(100.0, 180.0).iloc[:CROSS_INDEX].reset_index(drop=True)
+    seed = _council_df().iloc[:AS_OF].reset_index(drop=True)
     adapter = FakeAdapter()
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    loop = _default_loop(adapter, breaker, seed)  # only seeded for "XAUUSD"
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
 
     bar = Bar(time=BASE_TIME, open=1.0, high=1.0, low=1.0, close=1.0, tick_volume=1, spread=1)
     with pytest.raises(KeyError):
         loop.on_new_bar(MarketSnapshot(symbol="EURUSD", timeframe="H1", bar=bar))
 
 
-def test_crossover_without_confirmed_swing_places_no_order_but_still_appends_bar():
-    # No swing_dip_index at all -- the crossover fires, but there is no
-    # fractal swing anywhere in the fixture, so build_trade_idea() has no
-    # stop-loss anchor and returns None. Distinct code path from
-    # "no EMA crossover at all" (test_no_signal_does_not_call_adapter_or_raise).
-    df = _flat_then_jump_df(100.0, 180.0)  # no swing_dip_index
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
-    adapter = FakeAdapter()
-    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    loop = _default_loop(adapter, breaker, seed)
-
-    new_bar = _bar_from_row(df, CROSS_INDEX)
-    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
-
-    assert adapter.place_order_calls == []
-    assert len(loop._history["XAUUSD"]) == CROSS_INDEX + 1  # bar still appended
-
-
-def test_lot_size_below_broker_minimum_places_no_order():
-    # Tiny equity forces compute_lot_size() to return None (below
-    # volume_min) even though the signal + swing are both valid.
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+def test_lot_size_below_broker_minimum_places_no_order(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
     adapter = FakeAdapter(equity=1.0)  # far too small to clear volume_min=0.01
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    loop = _default_loop(adapter, breaker, seed)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = _bar_from_row(df, CROSS_INDEX)
+    new_bar = _bar_from_row(df, AS_OF)
     loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
 
     assert adapter.place_order_calls == []
-    assert len(loop._history["XAUUSD"]) == CROSS_INDEX + 1  # bar still appended
+    assert len(loop._history["XAUUSD"]) == AS_OF + 1
 
 
-def test_rejected_order_result_does_not_raise_and_leaves_history_appended():
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+def test_rejected_order_result_does_not_raise_and_leaves_history_appended(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
 
     class RejectingAdapter(FakeAdapter):
         def place_order(self, request: TradeRequest):
@@ -405,37 +496,21 @@ def test_rejected_order_result_does_not_raise_and_leaves_history_appended():
 
     adapter = RejectingAdapter()
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    loop = _default_loop(adapter, breaker, seed)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = _bar_from_row(df, CROSS_INDEX)
+    new_bar = _bar_from_row(df, AS_OF)
     loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))  # must not raise
 
     assert len(adapter.place_order_calls) == 1
-    assert len(loop._history["XAUUSD"]) == CROSS_INDEX + 1
+    assert len(loop._history["XAUUSD"]) == AS_OF + 1
 
 
-def test_sell_signal_places_sell_order_with_stop_above_entry():
-    df = _flat_then_jump_df(100.0, 20.0, swing_dip_index=30, swing_is_high=True)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
-    adapter = FakeAdapter(equity=10_000.0)
-    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    loop = _default_loop(adapter, breaker, seed)
-
-    new_bar = _bar_from_row(df, CROSS_INDEX)
-    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
-
-    assert len(adapter.place_order_calls) == 1
-    request = adapter.place_order_calls[0]
-    assert request.direction == "SELL"
-    assert request.take_profit < request.entry < request.stop_loss
-    assert request.lot_size > 0
-
-
-def test_multiple_symbols_are_tracked_and_processed_independently():
-    df_a = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    df_b = _flat_then_jump_df(50.0, 50.0)  # flat throughout -- never signals
-    seed_a = df_a.iloc[:CROSS_INDEX].reset_index(drop=True)
-    seed_b = df_b.iloc[:CROSS_INDEX].reset_index(drop=True)
+def test_multiple_symbols_are_tracked_and_processed_independently(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)  # clean BUY whenever reached
+    df_a = _council_df()  # XAUUSD: has a confirmed swing -- trades
+    df_b = _flat_df(50.0, N)  # EURUSD: no swing anywhere -- decision fires but never becomes an order
+    seed_a = df_a.iloc[:AS_OF].reset_index(drop=True)
+    seed_b = df_b.iloc[:AS_OF].reset_index(drop=True)
 
     adapter = FakeAdapter(equity=10_000.0)
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
@@ -444,64 +519,66 @@ def test_multiple_symbols_are_tracked_and_processed_independently():
         adapter=adapter, circuit_breaker=breaker, shield=_default_shield(), cfg=cfg,
         initial_history={"XAUUSD": seed_a, "EURUSD": seed_b},
         resolve_symbol_spec=_fake_symbol_spec, clock=FixedClock(BASE_TIME),
+        news_provider=AllClearNewsProvider(), risk_voice_cfg=_permissive_risk_voice_cfg(),
+        borderline_log_path=tmp_path / "borderline.jsonl",
     )
 
-    loop.on_new_bar(MarketSnapshot(symbol="EURUSD", timeframe="H1", bar=_bar_from_row(df_b, CROSS_INDEX)))
+    loop.on_new_bar(MarketSnapshot(symbol="EURUSD", timeframe="H1", bar=_bar_from_row(df_b, AS_OF)))
     assert adapter.place_order_calls == []
-    assert len(loop._history["EURUSD"]) == CROSS_INDEX + 1
-    assert len(loop._history["XAUUSD"]) == CROSS_INDEX  # untouched by the EURUSD bar
+    assert len(loop._history["EURUSD"]) == AS_OF + 1
+    assert len(loop._history["XAUUSD"]) == AS_OF  # untouched by the EURUSD bar
 
-    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=_bar_from_row(df_a, CROSS_INDEX)))
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=_bar_from_row(df_a, AS_OF)))
     assert len(adapter.place_order_calls) == 1
     assert adapter.place_order_calls[0].symbol == "XAUUSD"
 
 
-def test_history_is_trimmed_to_max_history_bars_configured_limit():
-    df = _flat_then_jump_df(100.0, 100.0, post_bars=0)  # flat, never signals
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)  # 70 bars seeded
+def test_history_is_trimmed_to_max_history_bars_configured_limit(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=20, bear_total=20)  # no conviction, never signals
+    df = _flat_df(100.0, 73)
+    seed = df.iloc[:70].reset_index(drop=True)  # 70 bars seeded
     adapter = FakeAdapter()
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
     cfg = ShadowLoopConfig(risk_per_trade_pct=1.0, max_history_bars=71)
     loop = ShadowLoop(
         adapter=adapter, circuit_breaker=breaker, shield=_default_shield(), cfg=cfg,
         initial_history={"XAUUSD": seed}, resolve_symbol_spec=_fake_symbol_spec,
-        clock=FixedClock(BASE_TIME),
+        clock=FixedClock(BASE_TIME), news_provider=AllClearNewsProvider(),
+        risk_voice_cfg=_permissive_risk_voice_cfg(), borderline_log_path=tmp_path / "borderline.jsonl",
     )
 
     # Feed 3 more distinct closed bars -- history would grow to 73, must be
     # trimmed down to max_history_bars=71.
     for i in range(3):
         bar = Bar(
-            time=BASE_TIME + timedelta(hours=CROSS_INDEX + i), open=100.0, high=101.0,
-            low=99.0, close=100.0, tick_volume=10, spread=1,
+            time=BASE_TIME + timedelta(hours=70 + i), open=100.0, high=101.0,
+            low=99.0, close=100.0, tick_volume=10, spread=10,
         )
         loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=bar))
 
     assert len(loop._history["XAUUSD"]) == 71
 
 
-def test_duplicate_bar_is_skipped_without_reevaluating():
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+def test_duplicate_bar_is_skipped_without_reevaluating(tmp_path):
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
     adapter = FakeAdapter()
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    loop = _default_loop(adapter, breaker, seed)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
 
     # The "new" bar has the same timestamp as the last seeded bar -- this can
     # happen on startup when the seed already includes the latest closed bar.
-    duplicate_bar = _bar_from_row(df, CROSS_INDEX - 1)
+    duplicate_bar = _bar_from_row(df, AS_OF - 1)
     loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=duplicate_bar))
 
     assert adapter.place_order_calls == []
-    assert len(loop._history["XAUUSD"]) == CROSS_INDEX  # unchanged, not double-appended
+    assert len(loop._history["XAUUSD"]) == AS_OF  # unchanged, not double-appended
 
 
-def test_transient_get_equity_error_skips_this_bar_but_loop_keeps_running(caplog):
-    # A transient MT5 hiccup (get_equity() raising, per demo_adapter.py's
-    # RuntimeError on account_info() failure) must skip only this bar -- not
-    # crash the loop or tear down monitoring entirely (spec.md §7).
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+def test_transient_get_equity_error_skips_this_bar_but_loop_keeps_running(monkeypatch, tmp_path, caplog):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
 
     class FlakyAdapter(FakeAdapter):
         def __init__(self):
@@ -516,14 +593,14 @@ def test_transient_get_equity_error_skips_this_bar_but_loop_keeps_running(caplog
 
     adapter = FlakyAdapter()
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    loop = _default_loop(adapter, breaker, seed)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = _bar_from_row(df, CROSS_INDEX)
+    new_bar = _bar_from_row(df, AS_OF)
     with caplog.at_level(logging.ERROR):
         loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))  # must not raise
 
     assert adapter.place_order_calls == []
-    assert len(loop._history["XAUUSD"]) == CROSS_INDEX  # this bar's processing was skipped entirely
+    assert len(loop._history["XAUUSD"]) == AS_OF  # this bar's processing was skipped entirely
     assert any("unhandled exception" in record.message for record in caplog.records)
 
     # The loop keeps running -- retrying the same bar on the next poll now
@@ -531,20 +608,14 @@ def test_transient_get_equity_error_skips_this_bar_but_loop_keeps_running(caplog
     loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
 
     assert len(adapter.place_order_calls) == 1
-    assert len(loop._history["XAUUSD"]) == CROSS_INDEX + 1
+    assert len(loop._history["XAUUSD"]) == AS_OF + 1
 
 
-def test_keyboard_interrupt_during_bar_processing_is_not_swallowed():
-    # _process()'s `except Exception` must NOT be widened to `except
-    # BaseException` (accidentally or otherwise) -- a real Ctrl-C (or any
-    # other BaseException) raised mid-bar must still propagate out of
-    # on_new_bar()/run(), not be logged-and-ignored like a transient MT5
-    # hiccup. KeyboardInterrupt subclasses BaseException, not Exception, so
-    # it is the natural probe for this.
+def test_keyboard_interrupt_during_bar_processing_is_not_swallowed(tmp_path):
     import pytest
 
-    df = _flat_then_jump_df(100.0, 180.0, swing_dip_index=30, swing_is_high=False)
-    seed = df.iloc[:CROSS_INDEX].reset_index(drop=True)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
 
     class InterruptingAdapter(FakeAdapter):
         def get_equity(self) -> float:
@@ -552,12 +623,228 @@ def test_keyboard_interrupt_during_bar_processing_is_not_swallowed():
 
     adapter = InterruptingAdapter()
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
-    loop = _default_loop(adapter, breaker, seed)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
 
-    new_bar = _bar_from_row(df, CROSS_INDEX)
+    new_bar = _bar_from_row(df, AS_OF)
     with pytest.raises(KeyboardInterrupt):
         loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
 
     # And history must be left untouched -- the bar was never actually
     # processed, not silently marked done.
-    assert len(loop._history["XAUUSD"]) == CROSS_INDEX
+    assert len(loop._history["XAUUSD"]) == AS_OF
+
+
+# --- Phase 6b: borderline logging + Risk Voice wiring ---------------------
+
+
+def test_borderline_case_is_logged_to_jsonl_and_no_trade_placed(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=60, bear_total=65)  # both >= 55 -> conflicting, borderline
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    log_path = tmp_path / "borderline.jsonl"
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=log_path)
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert adapter.place_order_calls == []
+    assert log_path.exists()
+    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["symbol"] == "XAUUSD"
+    assert payload["hypothetical_direction"] == "SELL"  # bear(65) > bull(60)
+    assert payload["bull_score"] == 60
+    assert payload["bear_score"] == 65
+    assert payload["order_plan"]["direction"] == "SELL"
+
+
+def test_borderline_case_jsonl_round_trips_every_field(monkeypatch, tmp_path):
+    # Every field of BorderlineCase (decision_matrix.py) must survive the
+    # JSONL round-trip, including the nested OrderPlan dataclass and the
+    # datetime field -- Appendix A §1.3's note requires a *full* hypothetical
+    # order for the future Auditor to replay, not just the scores.
+    _patch_scores(monkeypatch, bull_total=60, bear_total=65)  # both >= 55 -> conflicting, borderline
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    log_path = tmp_path / "borderline.jsonl"
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=log_path)
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+
+    assert set(payload.keys()) == {
+        "symbol", "as_of_time", "hypothetical_direction", "bull_score",
+        "bear_score", "risk_voice_score", "order_plan", "spread_at_evaluation",
+    }
+    assert payload["symbol"] == "XAUUSD"
+    assert payload["hypothetical_direction"] == "SELL"  # bear(65) > bull(60)
+    assert payload["bull_score"] == 60
+    assert payload["bear_score"] == 65
+    assert payload["risk_voice_score"] is None  # JSON null -- not yet wired per BorderlineCase's docstring
+    assert payload["spread_at_evaluation"] == 10.0  # from _council_df's flat spread=10 column
+
+    # as_of_time: dataclasses.asdict + json.dumps(default=str) has no native
+    # datetime support -- confirm the stringified value is still exactly the
+    # bar's own time and can be parsed back to that same value.
+    assert payload["as_of_time"] == str(new_bar.time)
+    assert datetime.fromisoformat(payload["as_of_time"]) == new_bar.time
+
+    # Nested OrderPlan dataclass -- every field, not just direction.
+    order_plan = payload["order_plan"]
+    assert set(order_plan.keys()) == {"direction", "entry", "stop_loss", "take_profit", "stop_distance"}
+    assert order_plan["direction"] == "SELL"
+    assert order_plan["entry"] == 100.0
+    assert order_plan["take_profit"] < order_plan["entry"] < order_plan["stop_loss"]
+    assert order_plan["stop_distance"] > 0
+    assert order_plan["take_profit"] == order_plan["entry"] - 2.0 * order_plan["stop_distance"]  # SELL, 2R TP
+
+
+def test_borderline_log_write_failure_does_not_crash_loop_and_skips_this_bar(monkeypatch, tmp_path, caplog):
+    # A write failure while persisting a borderline case (disk full,
+    # permission error, ...) must degrade gracefully -- caught by
+    # `_process`'s broad except (same "log loudly, skip this bar, keep
+    # running" contract as the transient-get_equity-error test above) rather
+    # than crashing the whole loop.
+    _patch_scores(monkeypatch, bull_total=60, bear_total=65)  # borderline -> triggers the write
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    real_log_borderline_case = shadow_loop_module._log_borderline_case
+
+    def _raise(*args, **kwargs):
+        raise OSError("disk full (simulated)")
+
+    monkeypatch.setattr(shadow_loop_module, "_log_borderline_case", _raise)
+
+    new_bar = _bar_from_row(df, AS_OF)
+    with caplog.at_level(logging.ERROR):
+        loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))  # must not raise
+
+    assert adapter.place_order_calls == []
+    # This bar's processing was skipped entirely (not partially committed) --
+    # same "whole-bar-atomic" contract as the transient-error test.
+    assert len(loop._history["XAUUSD"]) == AS_OF
+    assert any("unhandled exception" in record.message for record in caplog.records)
+
+    # The loop keeps running: retrying the same bar (write failure resolved)
+    # on the next poll now succeeds and is logged as usual, not silently lost.
+    monkeypatch.setattr(shadow_loop_module, "_log_borderline_case", real_log_borderline_case)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+    assert len(loop._history["XAUUSD"]) == AS_OF + 1
+
+
+def test_risk_voice_veto_blocks_before_shield_is_consulted(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)  # clean BUY
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    shield = SpyShield(
+        min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=1,
+        max_positions_total=3, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
+    )
+    # Session restricted to hours that never include BASE_TIME's hour (0) --
+    # the only condition this fixture trips is the session condition.
+    risk_voice_cfg = RiskVoiceConfig(
+        max_spread_multiple=100.0, max_spread_points_xauusd=1000.0,
+        news_blackout_before_min=45.0, news_blackout_after_min=30.0,
+        max_stop_atr_multiple=100.0, session_start_hour=14, session_end_hour=18,
+        friday_close_hour=20, max_atr_panic_multiple=100.0,
+    )
+    loop = _default_loop(
+        adapter, breaker, seed, shield=shield, risk_voice_cfg=risk_voice_cfg,
+        borderline_log_path=tmp_path / "borderline.jsonl",
+    )
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert adapter.place_order_calls == []
+    assert shield.check_calls == []  # Risk Voice vetoed before Shield was ever consulted
+
+
+def test_risk_voice_veto_logs_warning_with_reason(monkeypatch, tmp_path, caplog):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    risk_voice_cfg = RiskVoiceConfig(
+        max_spread_multiple=100.0, max_spread_points_xauusd=1000.0,
+        news_blackout_before_min=45.0, news_blackout_after_min=30.0,
+        max_stop_atr_multiple=100.0, session_start_hour=14, session_end_hour=18,
+        friday_close_hour=20, max_atr_panic_multiple=100.0,
+    )
+    loop = _default_loop(
+        adapter, breaker, seed, risk_voice_cfg=risk_voice_cfg, borderline_log_path=tmp_path / "borderline.jsonl",
+    )
+
+    new_bar = _bar_from_row(df, AS_OF)
+    with caplog.at_level(logging.WARNING):
+        loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert any("Risk Voice vetoed" in record.message for record in caplog.records)
+
+
+def test_default_news_provider_is_stub_and_vetoes_every_trade(monkeypatch, tmp_path):
+    # No news_provider/risk_voice_cfg override -- ShadowLoop's own defaults
+    # (StubNewsCalendarProvider, RiskVoiceConfig()) apply. Clock is inside
+    # the default session window and not a Friday, so news is the only
+    # condition left that can veto -- and the stub always does.
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    cfg = ShadowLoopConfig(risk_per_trade_pct=1.0)
+    loop = ShadowLoop(
+        adapter=adapter, circuit_breaker=breaker, shield=_default_shield(), cfg=cfg,
+        initial_history={"XAUUSD": seed}, resolve_symbol_spec=_fake_symbol_spec,
+        clock=FixedClock(datetime(2026, 1, 1, 15, 0)),  # Thursday, inside default [14,18) session
+        borderline_log_path=tmp_path / "borderline.jsonl",
+    )
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert adapter.place_order_calls == []
+
+
+def test_stale_signal_recheck_vetoes_and_skips_placing_order(monkeypatch, tmp_path, caplog):
+    # News is clear at the first (signal-time) Risk Voice check but has
+    # appeared by the second (order-send-time) re-check -- must cancel the
+    # trade and log stale_signal, not place it, and must not tell Shield a
+    # trade was opened.
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    shield = SpyShield(
+        min_rr=1.5, max_correlation=0.7, max_positions_per_symbol=1,
+        max_positions_total=3, total_risk_ceiling_pct=3.0, duplicate_signal_cooldown_hours=4.0,
+    )
+    loop = _default_loop(
+        adapter, breaker, seed, shield=shield, news_provider=FlakyNewsProvider(),
+        borderline_log_path=tmp_path / "borderline.jsonl",
+    )
+
+    new_bar = _bar_from_row(df, AS_OF)
+    with caplog.at_level(logging.WARNING):
+        loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert adapter.place_order_calls == []
+    assert shield.record_trade_opened_calls == []
+    assert any("stale_signal" in record.message for record in caplog.records)

@@ -1,12 +1,52 @@
-"""Continuous demo shadow-running loop (Phase 3d/5) -- the orchestrator
+"""Continuous demo shadow-running loop (Phase 3d/5/6b) -- the orchestrator
 wiring that turns each newly-closed bar into, at most, one placed order via
 the pipeline: `feed -> features(inside council/risk) -> council
-(trivial_signal) -> shield (portfolio checkpoint) -> risk (CFO sizing +
-circuit breaker) -> execution` (spec.md §2.2). Watchman/Auditor don't exist
-yet (later phases) -- this loop simply never calls them, rather than
-stubbing them out.
+(Bull/Bear scoring + Decision Matrix + Risk Voice veto) -> shield (portfolio
+checkpoint) -> risk (CFO sizing + circuit breaker) -> execution` (spec.md
+§2.2). Watchman/Auditor don't exist yet (later phases) -- this loop simply
+never calls them, rather than stubbing them out.
+
+**Risk Voice is checked twice** (Appendix A §1.5's explicit re-check
+requirement): once right after a clean BUY/SELL Council decision (before
+Shield -- it is Council's own internal veto gate, per spec.md §2.2's data
+flow), and again immediately before `execution/`'s `place_order()` is
+called. If the second check fails when the first one didn't, the trade is
+cancelled and logged as `stale_signal` rather than placed.
+
+**What the re-check actually covers, honestly:** `_risk_voice_inputs()`
+(below) recomputes spread/ATR/stop-distance from the SAME already-closed
+bar/history on both calls, and the two calls happen close enough in
+wall-clock time that session/Friday-close almost never differ either -- so
+in this pipeline, spread/ATR/stop-distance/session/Friday-close are
+structurally near-identical between the two `check_risk_voice` calls, not
+independently re-verified against fresh market state. The re-check's
+genuine, currently-real value is the news-provider re-query, which IS
+re-fetched fresh on each call and can flip pass -> veto, plus (rarely) a
+session/Friday-close boundary the wall-clock happens to cross if enough
+real time elapses between the two calls. Do not assume this re-check
+catches, e.g., spread widening between signal-time and send-time -- it
+currently doesn't, in this pipeline. See `council/risk_voice.py`'s module
+docstring for the same note from the other side of this wiring.
+
+**News-calendar limitation (read this first):** `StubNewsCalendarProvider`
+(the only `NewsCalendarProvider` wired in by default -- see
+`scripts/run_shadow_loop.py`) always returns "calendar unavailable", which
+Risk Voice's fail-safe rule treats as "there IS news" -> veto. Until a real
+provider replaces it (see `council/news_calendar.py`'s module docstring),
+this loop will therefore veto **every single trade** on the news condition
+alone -- a known, deliberate, conservative limitation, not a bug.
+
+Every `borderline` Council decision (Appendix A §1.3's note) is appended as
+one JSON line to `data/db/borderline_log.jsonl` (see `_log_borderline_case`)
+-- same simple-file-persistence pattern as `common/kill_switch_flag.py`/
+`risk/circuit_breaker.py`'s state files -- for a future Phase 8 Auditor to
+replay (Appendix A §5.4).
 
 Known simplifications, documented rather than hidden:
+- The 20-day rolling averages Risk Voice needs (spread, ATR) are
+  approximated from the last `ROLLING_AVG_DAYS * BARS_PER_DAY_H1` bars of
+  seeded H1 history -- see `_rolling_average`'s docstring for the exact
+  bars-per-day assumption and its caveat.
 - `risk.sizing.compute_lot_size`'s volatility dampening (`current_atr` /
   `avg_atr_20d`) is not wired in yet -- both are left `None`, which disables
   that extra risk-halving in high-volatility regimes. A correct 20-*trading*
@@ -29,25 +69,63 @@ Known simplifications, documented rather than hidden:
 """
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Callable
 
 import pandas as pd
 
 from autotrade.common import kill_switch_flag
-from autotrade.common.clock import Clock, RealClock
+from autotrade.common.clock import Clock
+from autotrade.common.config import REPO_ROOT
 from autotrade.common.symbols import SymbolSpec, get_symbol_spec
-from autotrade.council.trivial_signal import build_trade_idea, generate_trivial_signal
+from autotrade.council.decision_matrix import BorderlineCase, evaluate_council
+from autotrade.council.news_calendar import NewsCalendarProvider, StubNewsCalendarProvider
+from autotrade.council.risk_voice import RiskVoiceConfig, check_risk_voice
 from autotrade.execution.adapter import BrokerAdapter, TradeRequest
 from autotrade.feed.poller import poll_new_bars
 from autotrade.feed.snapshot import Bar, MarketSnapshot
+from autotrade.features.indicators import atr
 from autotrade.features.swing import latest_confirmed_swing_high, latest_confirmed_swing_low
 from autotrade.risk.circuit_breaker import CircuitBreaker
 from autotrade.risk.sizing import compute_lot_size
 from autotrade.shield.checkpoint import OpenPositionInfo, Shield
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_BORDERLINE_LOG_PATH = REPO_ROOT / "data" / "db" / "borderline_log.jsonl"
+
+# H1 bars trade roughly 24 hours/day on weekdays (spec.md Appendix A §0 fixes
+# the system-wide timeframe to H1) -- so a "20 calendar day" rolling average
+# is approximated as the last ROLLING_AVG_DAYS * BARS_PER_DAY_H1 bars of
+# seeded history. This is an approximation, not an exact 20-*trading*-day
+# window (real bar counts per day vary slightly around session opens/closes,
+# and this doesn't account for weekend closures within the window) -- same
+# "good enough for now, documented rather than hidden" simplification as this
+# module's other known-gaps above.
+ROLLING_AVG_DAYS = 20
+BARS_PER_DAY_H1 = 24
+
+
+def _rolling_average(series: pd.Series, as_of_index: int) -> float:
+    """Mean of `series` over the last `ROLLING_AVG_DAYS * BARS_PER_DAY_H1`
+    bars up to and including `as_of_index` (fewer, if not enough history
+    exists yet) -- see module docstring's "Known simplifications" note."""
+    window = ROLLING_AVG_DAYS * BARS_PER_DAY_H1
+    start = max(0, as_of_index - window + 1)
+    return float(series.iloc[start : as_of_index + 1].mean())
+
+
+def _log_borderline_case(case: BorderlineCase, path: Path) -> None:
+    """Append one borderline case as a single JSON line to `path` (JSONL) --
+    what a future Phase 8 Auditor will read to replay borderline cases
+    (Appendix A §5.4)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = asdict(case)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, default=str) + "\n")
 
 
 @dataclass(frozen=True)
@@ -63,6 +141,9 @@ class ShadowLoopConfig:
     sl_max_atr: float = 2.5
     tp_r_multiple: float = 2.0
     pivot_bars: int = 3
+    bull_threshold: int = 70
+    bear_threshold: int = 70
+    conflict_threshold: int = 55
     max_history_bars: int = 500
 
 
@@ -82,16 +163,20 @@ def _append_bar(history: pd.DataFrame, bar: Bar, max_bars: int) -> pd.DataFrame:
 
 
 class ShadowLoop:
-    """Wires feed -> council(trivial_signal) -> risk -> execution for one or
-    more symbols. `adapter` is injected so the exact same loop runs against
-    `NoOpBrokerAdapter` (safe dry-run) or `ThrottledDemoAdapter` (real demo
-    orders) unmodified.
+    """Wires feed -> council(Bull/Bear scoring + Decision Matrix + Risk
+    Voice) -> shield -> risk -> execution for one or more symbols. `adapter`
+    is injected so the exact same loop runs against `NoOpBrokerAdapter`
+    (safe dry-run) or `ThrottledDemoAdapter` (real demo orders) unmodified.
 
     `initial_history` must contain a seeded DataFrame (columns at least
     `time, open, high, low, close`) per symbol this loop will be asked to
     process -- see scripts/run_shadow_loop.py for how that's fetched from
-    MT5 on startup. EMA20/50 and swing detection both need real history, not
-    a single bar.
+    MT5 on startup. EMA20/50/200 and swing detection both need real history,
+    not a single bar.
+
+    `news_provider` defaults to `StubNewsCalendarProvider` (always vetoes,
+    see module docstring's news-calendar limitation) and `risk_voice_cfg`
+    defaults to `RiskVoiceConfig()`'s defaults if not given.
     """
 
     def __init__(
@@ -101,9 +186,12 @@ class ShadowLoop:
         shield: Shield,
         cfg: ShadowLoopConfig,
         initial_history: dict[str, pd.DataFrame],
+        clock: Clock,
         resolve_symbol_spec: Callable[[str], SymbolSpec] | None = None,
         symbol_map: dict[str, str] | None = None,
-        clock: Clock | None = None,
+        news_provider: NewsCalendarProvider | None = None,
+        risk_voice_cfg: RiskVoiceConfig | None = None,
+        borderline_log_path: Path | None = None,
     ) -> None:
         self._adapter = adapter
         self._circuit_breaker = circuit_breaker
@@ -113,7 +201,10 @@ class ShadowLoop:
         self._resolve_symbol_spec = resolve_symbol_spec or (
             lambda symbol: get_symbol_spec(symbol, symbol_map)
         )
-        self._clock = clock or RealClock()
+        self._clock = clock
+        self._news_provider = news_provider or StubNewsCalendarProvider()
+        self._risk_voice_cfg = risk_voice_cfg or RiskVoiceConfig()
+        self._borderline_log_path = borderline_log_path or DEFAULT_BORDERLINE_LOG_PATH
         self._peak_equity: float | None = None
         self._live_start_equity: float | None = None
 
@@ -202,31 +293,62 @@ class ShadowLoop:
             logger.info("%s %s: bar already in seeded history, skipping duplicate", symbol, bar.time)
             return history
 
-        # 3. Append + evaluate the trivial signal.
+        # 3. Append + evaluate via the real Council (Bull/Bear scoring +
+        # Decision Matrix, Appendix A §1.1-§1.3).
         history = _append_bar(history, bar, self._cfg.max_history_bars)
         as_of_index = len(history) - 1
+        symbol_spec = self._resolve_symbol_spec(symbol)
 
-        direction = generate_trivial_signal(history, as_of_index)
-        if direction is None:
-            logger.info("%s %s: no signal (no EMA crossover)", symbol, bar.time)
-            return history
-
-        plan = build_trade_idea(
-            history, as_of_index,
+        council_decision, borderline_case = evaluate_council(
+            history, as_of_index, symbol, symbol_spec,
+            bull_threshold=self._cfg.bull_threshold, bear_threshold=self._cfg.bear_threshold,
+            conflict_threshold=self._cfg.conflict_threshold,
             sl_buffer_atr=self._cfg.sl_buffer_atr, sl_min_atr=self._cfg.sl_min_atr,
             sl_max_atr=self._cfg.sl_max_atr, tp_r_multiple=self._cfg.tp_r_multiple,
             pivot_bars=self._cfg.pivot_bars,
         )
-        if plan is None:
+
+        if borderline_case is not None:
+            _log_borderline_case(borderline_case, self._borderline_log_path)
             logger.info(
-                "%s %s: %s crossover fired but no confirmed swing available yet -- "
-                "no stop-loss anchor, skipping", symbol, bar.time, direction,
+                "%s %s: borderline case logged (%s) -- no trade",
+                symbol, bar.time, council_decision.borderline_reason,
+            )
+
+        if council_decision.direction is None:
+            logger.info(
+                "%s %s: no council decision (%s)",
+                symbol, bar.time, council_decision.borderline_reason or "no conviction",
             )
             return history
 
-        # 4. Shield -- portfolio-level checkpoint, before CFO sizing (spec.md
+        plan = council_decision.order_plan
+        if plan is None:
+            logger.info(
+                "%s %s: %s decision but no confirmed swing available yet -- "
+                "no stop-loss anchor, skipping", symbol, bar.time, council_decision.direction,
+            )
+            return history
+
+        # 4. Risk Voice -- Council's own veto gate (Appendix A §1.5), checked
+        # right after a clean BUY/SELL decision and BEFORE Shield: it is
+        # council's internal veto, not shield's portfolio-level filtering
+        # (spec.md §2.2's data-flow ordering).
+        risk_voice_decision = check_risk_voice(
+            symbol=symbol, order_plan=plan, news_provider=self._news_provider,
+            clock=self._clock, config=self._risk_voice_cfg,
+            **self._risk_voice_inputs(history, as_of_index),
+        )
+        if risk_voice_decision.vetoed:
+            logger.warning(
+                "%s %s: Risk Voice vetoed %s trade -- %s",
+                symbol, bar.time, plan.direction, "; ".join(risk_voice_decision.reasons),
+            )
+            return history
+
+        # 5. Shield -- portfolio-level checkpoint, before CFO sizing (spec.md
         # §2.2: council -> shield -> risk). Re-derives the same swing
-        # build_trade_idea() used internally -- cheap, and build_trade_idea()
+        # evaluate_council() used internally -- cheap, and CouncilDecision
         # doesn't currently expose the swing index it found.
         if plan.direction == "BUY":
             swing = latest_confirmed_swing_low(history, as_of_index, pivot_bars=self._cfg.pivot_bars)
@@ -238,29 +360,47 @@ class ShadowLoop:
             OpenPositionInfo(symbol=pos.symbol, direction=pos.direction, risk_pct=pos.risk_pct)
             for pos in self._adapter.get_open_positions()
         ]
-        decision = self._shield.check(
+        shield_decision = self._shield.check(
             order_plan=plan, symbol=symbol, open_positions=open_positions,
             new_trade_risk_pct=self._cfg.risk_per_trade_pct, swing_index=swing_index, clock=self._clock,
         )
-        if decision.blocked:
+        if shield_decision.blocked:
             logger.warning(
                 "%s %s: Shield blocked %s trade -- %s",
-                symbol, bar.time, plan.direction, "; ".join(decision.reasons),
+                symbol, bar.time, plan.direction, "; ".join(shield_decision.reasons),
             )
             return history
 
-        # 5. CFO sizing, then place (or skip below broker minimum).
-        spec = self._resolve_symbol_spec(symbol)
-        point_value = spec.tick_value / spec.tick_size
+        # 6. CFO sizing, then place (or skip below broker minimum).
+        point_value = symbol_spec.tick_value / symbol_spec.tick_size
         lot = compute_lot_size(
             equity=equity, risk_per_trade_pct=self._cfg.risk_per_trade_pct,
             entry=plan.entry, stop_loss=plan.stop_loss, point_value=point_value,
-            volume_min=spec.volume_min, volume_max=spec.volume_max, volume_step=spec.volume_step,
+            volume_min=symbol_spec.volume_min, volume_max=symbol_spec.volume_max,
+            volume_step=symbol_spec.volume_step,
         )
         if lot is None:
             logger.info(
                 "%s %s: %s signal with confirmed swing, but computed lot size below broker "
-                "minimum %.2f -- no trade placed", symbol, bar.time, plan.direction, spec.volume_min,
+                "minimum %.2f -- no trade placed", symbol, bar.time, plan.direction, symbol_spec.volume_min,
+            )
+            return history
+
+        # 7. Re-check Risk Voice immediately before sending the order
+        # (Appendix A §1.5's explicit re-check requirement): spread/news can
+        # go stale between signal evaluation and order placement. No live
+        # tick-level spread source exists in this pipeline yet, so this
+        # reuses the same bar-close spread -- the news provider IS re-queried
+        # fresh, the part that can genuinely change between the two calls.
+        recheck_decision = check_risk_voice(
+            symbol=symbol, order_plan=plan, news_provider=self._news_provider,
+            clock=self._clock, config=self._risk_voice_cfg,
+            **self._risk_voice_inputs(history, as_of_index),
+        )
+        if recheck_decision.vetoed:
+            logger.warning(
+                "%s %s: stale_signal -- Risk Voice re-check failed immediately before "
+                "order placement -- %s", symbol, bar.time, "; ".join(recheck_decision.reasons),
             )
             return history
 
@@ -281,3 +421,20 @@ class ShadowLoop:
             logger.warning("%s %s: order REJECTED -- %s", symbol, bar.time, result.message)
 
         return history
+
+    def _risk_voice_inputs(self, history: pd.DataFrame, as_of_index: int) -> dict[str, float]:
+        """Cheap-to-recompute inputs `check_risk_voice` needs beyond the
+        `OrderPlan` itself -- computed fresh on every call (both the
+        signal-time check and the order-send-time re-check) rather than
+        cached, since a re-check that reused stale numbers would defeat its
+        own purpose."""
+        closes = history["close"].iloc[: as_of_index + 1]
+        highs = history["high"].iloc[: as_of_index + 1]
+        lows = history["low"].iloc[: as_of_index + 1]
+        atr_series = atr(highs, lows, closes)
+        return {
+            "current_spread_points": float(history["spread"].iloc[as_of_index]),
+            "avg_spread_points_20d": _rolling_average(history["spread"], as_of_index),
+            "current_atr": float(atr_series.iloc[-1]),
+            "avg_atr_20d": _rolling_average(atr_series, as_of_index),
+        }
