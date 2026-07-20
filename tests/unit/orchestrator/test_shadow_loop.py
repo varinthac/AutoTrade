@@ -35,6 +35,7 @@ from autotrade.orchestrator import shadow_loop as shadow_loop_module
 from autotrade.orchestrator.shadow_loop import ShadowLoop, ShadowLoopConfig
 from autotrade.risk.circuit_breaker import CircuitBreaker
 from autotrade.shield.checkpoint import Shield
+from autotrade.watchman import position_metadata
 
 N = 40
 SWING_LOW_INDEX = 10
@@ -61,12 +62,18 @@ class FakeAdapter(BrokerAdapter):
         self._open_positions = open_positions or []
         self.place_order_calls: list[TradeRequest] = []
 
-    def place_order(self, request: TradeRequest) -> OrderResult:
+    def place_order(self, request: TradeRequest, current_atr: float | None = None) -> OrderResult:
         self.place_order_calls.append(request)
         return OrderResult(
             success=True, broker_ticket=1, filled_price=request.entry,
             filled_volume=request.lot_size, retcode=None, message="ok",
         )
+
+    def modify_stop_loss(self, ticket: int, new_stop_loss: float) -> OrderResult:
+        raise NotImplementedError("not exercised by these wiring tests")
+
+    def close_position(self, ticket: int, volume: float | None = None) -> OrderResult:
+        raise NotImplementedError("not exercised by these wiring tests")
 
     def get_equity(self) -> float:
         return self._equity
@@ -205,8 +212,15 @@ class SpyShield(Shield):
 def _default_loop(
     adapter, circuit_breaker, seed_history, clock=None, shield=None,
     news_provider=None, risk_voice_cfg=None, borderline_log_path=None,
+    watchman_loop=None, position_metadata_path=None,
 ) -> ShadowLoop:
     cfg = ShadowLoopConfig(risk_per_trade_pct=1.0)
+    # position_metadata_path defaults alongside borderline_log_path -- both
+    # are test-scoped tmp_path files, never the repo's real default state
+    # files, so a test that reaches a successful place_order() never writes
+    # to data/db/position_metadata.json.
+    if position_metadata_path is None and borderline_log_path is not None:
+        position_metadata_path = borderline_log_path.parent / "position_metadata.json"
     return ShadowLoop(
         adapter=adapter, circuit_breaker=circuit_breaker, shield=shield or _default_shield(), cfg=cfg,
         initial_history={"XAUUSD": seed_history}, resolve_symbol_spec=_fake_symbol_spec,
@@ -214,6 +228,7 @@ def _default_loop(
         news_provider=news_provider or AllClearNewsProvider(),
         risk_voice_cfg=risk_voice_cfg or _permissive_risk_voice_cfg(),
         borderline_log_path=borderline_log_path,
+        watchman_loop=watchman_loop, position_metadata_path=position_metadata_path,
     )
 
 
@@ -342,9 +357,9 @@ def test_shield_blocked_trade_never_reaches_cfo_sizing_or_place_order(monkeypatc
     df = _council_df()
     seed = df.iloc[:AS_OF].reset_index(drop=True)
     open_positions = [
-        BrokerPosition(symbol="EURUSD", direction="SELL", risk_pct=0.1),
-        BrokerPosition(symbol="GBPUSD", direction="SELL", risk_pct=0.1),
-        BrokerPosition(symbol="USDJPY", direction="SELL", risk_pct=0.1),
+        BrokerPosition(ticket=101, symbol="EURUSD", direction="SELL", risk_pct=0.1, current_sl=1.10, current_price=1.09, volume=0.1),
+        BrokerPosition(ticket=102, symbol="GBPUSD", direction="SELL", risk_pct=0.1, current_sl=1.30, current_price=1.29, volume=0.1),
+        BrokerPosition(ticket=103, symbol="USDJPY", direction="SELL", risk_pct=0.1, current_sl=150.0, current_price=149.0, volume=0.1),
     ]
     adapter = FakeAdapter(equity=10_000.0, open_positions=open_positions)
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
@@ -367,9 +382,9 @@ def test_shield_blocked_trade_logs_warning_with_reason(monkeypatch, tmp_path, ca
     df = _council_df()
     seed = df.iloc[:AS_OF].reset_index(drop=True)
     open_positions = [
-        BrokerPosition(symbol="EURUSD", direction="SELL", risk_pct=0.1),
-        BrokerPosition(symbol="GBPUSD", direction="SELL", risk_pct=0.1),
-        BrokerPosition(symbol="USDJPY", direction="SELL", risk_pct=0.1),
+        BrokerPosition(ticket=101, symbol="EURUSD", direction="SELL", risk_pct=0.1, current_sl=1.10, current_price=1.09, volume=0.1),
+        BrokerPosition(ticket=102, symbol="GBPUSD", direction="SELL", risk_pct=0.1, current_sl=1.30, current_price=1.29, volume=0.1),
+        BrokerPosition(ticket=103, symbol="USDJPY", direction="SELL", risk_pct=0.1, current_sl=150.0, current_price=149.0, volume=0.1),
     ]
     adapter = FakeAdapter(equity=10_000.0, open_positions=open_positions)
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
@@ -431,7 +446,7 @@ def test_shield_record_trade_opened_not_called_when_order_rejected(monkeypatch, 
     seed = df.iloc[:AS_OF].reset_index(drop=True)
 
     class RejectingAdapter(FakeAdapter):
-        def place_order(self, request: TradeRequest):
+        def place_order(self, request: TradeRequest, current_atr: float | None = None):
             self.place_order_calls.append(request)
             return OrderResult(
                 success=False, broker_ticket=None, filled_price=None,
@@ -487,7 +502,7 @@ def test_rejected_order_result_does_not_raise_and_leaves_history_appended(monkey
     seed = df.iloc[:AS_OF].reset_index(drop=True)
 
     class RejectingAdapter(FakeAdapter):
-        def place_order(self, request: TradeRequest):
+        def place_order(self, request: TradeRequest, current_atr: float | None = None):
             self.place_order_calls.append(request)
             return OrderResult(
                 success=False, broker_ticket=None, filled_price=None,
@@ -521,6 +536,7 @@ def test_multiple_symbols_are_tracked_and_processed_independently(monkeypatch, t
         resolve_symbol_spec=_fake_symbol_spec, clock=FixedClock(BASE_TIME),
         news_provider=AllClearNewsProvider(), risk_voice_cfg=_permissive_risk_voice_cfg(),
         borderline_log_path=tmp_path / "borderline.jsonl",
+        position_metadata_path=tmp_path / "position_metadata.json",
     )
 
     loop.on_new_bar(MarketSnapshot(symbol="EURUSD", timeframe="H1", bar=_bar_from_row(df_b, AS_OF)))
@@ -545,6 +561,7 @@ def test_history_is_trimmed_to_max_history_bars_configured_limit(monkeypatch, tm
         initial_history={"XAUUSD": seed}, resolve_symbol_spec=_fake_symbol_spec,
         clock=FixedClock(BASE_TIME), news_provider=AllClearNewsProvider(),
         risk_voice_cfg=_permissive_risk_voice_cfg(), borderline_log_path=tmp_path / "borderline.jsonl",
+        position_metadata_path=tmp_path / "position_metadata.json",
     )
 
     # Feed 3 more distinct closed bars -- history would grow to 73, must be
@@ -814,6 +831,7 @@ def test_default_news_provider_is_stub_and_vetoes_every_trade(monkeypatch, tmp_p
         initial_history={"XAUUSD": seed}, resolve_symbol_spec=_fake_symbol_spec,
         clock=FixedClock(datetime(2026, 1, 1, 15, 0)),  # Thursday, inside default [14,18) session
         borderline_log_path=tmp_path / "borderline.jsonl",
+        position_metadata_path=tmp_path / "position_metadata.json",
     )
 
     new_bar = _bar_from_row(df, AS_OF)
@@ -848,3 +866,145 @@ def test_stale_signal_recheck_vetoes_and_skips_placing_order(monkeypatch, tmp_pa
     assert adapter.place_order_calls == []
     assert shield.record_trade_opened_calls == []
     assert any("stale_signal" in record.message for record in caplog.records)
+
+
+# --- Phase 7b: Watchman wiring ----------------------------------------------
+
+
+def test_successful_trade_records_position_metadata(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    state_path = tmp_path / "position_metadata.json"
+    loop = _default_loop(
+        adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl",
+        position_metadata_path=state_path,
+    )
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert len(adapter.place_order_calls) == 1
+    request = adapter.place_order_calls[0]
+    recorded = position_metadata.get_position_metadata(1, state_path)  # FakeAdapter always returns ticket=1
+    assert recorded is not None
+    assert recorded.symbol == "XAUUSD"
+    assert recorded.direction == "BUY"
+    assert recorded.entry_price == request.entry  # ACTUAL filled price (FakeAdapter echoes request.entry)
+    assert recorded.initial_stop_distance > 0
+    assert recorded.entry_swing_index == SWING_LOW_INDEX
+    assert recorded.opened_at == BASE_TIME
+
+
+def test_place_order_receives_current_atr_kwarg(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+
+    class AtrCapturingAdapter(FakeAdapter):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.current_atr_calls: list[float | None] = []
+
+        def place_order(self, request, current_atr=None):
+            self.current_atr_calls.append(current_atr)
+            return super().place_order(request, current_atr)
+
+    adapter = AtrCapturingAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert len(adapter.current_atr_calls) == 1
+    assert adapter.current_atr_calls[0] is not None  # a real ATR value, not the None default
+
+
+def test_ticket_none_does_not_record_position_metadata(monkeypatch, tmp_path):
+    # NoOpBrokerAdapter-style success (dry run: broker_ticket=None) -- there
+    # is no real position to manage, so Watchman metadata must not be
+    # recorded for a ticket that doesn't exist.
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+
+    class DryRunAdapter(FakeAdapter):
+        def place_order(self, request, current_atr=None):
+            self.place_order_calls.append(request)
+            return OrderResult(
+                success=True, broker_ticket=None, filled_price=request.entry,
+                filled_volume=request.lot_size, retcode=None, message="dry run",
+            )
+
+    adapter = DryRunAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    state_path = tmp_path / "position_metadata.json"
+    loop = _default_loop(
+        adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl",
+        position_metadata_path=state_path,
+    )
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert len(adapter.place_order_calls) == 1
+    assert not state_path.exists()  # nothing was ever written
+
+
+def test_run_wires_watchman_cycle_as_on_iteration_end_hook_when_given(monkeypatch, tmp_path):
+    seed = _council_df().iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+
+    class SpyWatchmanLoop:
+        def __init__(self):
+            self.run_cycle_calls = []
+
+        def run_cycle(self, history_by_symbol, now):
+            self.run_cycle_calls.append((history_by_symbol, now))
+
+    watchman_loop = SpyWatchmanLoop()
+    cfg = ShadowLoopConfig(risk_per_trade_pct=1.0)
+    loop = ShadowLoop(
+        adapter=adapter, circuit_breaker=breaker, shield=_default_shield(), cfg=cfg,
+        initial_history={"XAUUSD": seed}, resolve_symbol_spec=_fake_symbol_spec,
+        clock=FixedClock(BASE_TIME), news_provider=AllClearNewsProvider(),
+        risk_voice_cfg=_permissive_risk_voice_cfg(), borderline_log_path=tmp_path / "borderline.jsonl",
+        position_metadata_path=tmp_path / "position_metadata.json", watchman_loop=watchman_loop,
+    )
+
+    captured_kwargs = {}
+
+    def fake_poll_new_bars(symbols, timeframe, on_new_bar, poll_interval_sec, max_iterations, on_iteration_end):
+        captured_kwargs["on_iteration_end"] = on_iteration_end
+        if on_iteration_end is not None:
+            on_iteration_end()
+
+    monkeypatch.setattr(shadow_loop_module, "poll_new_bars", fake_poll_new_bars)
+    loop.run(["XAUUSD"], "H1", poll_interval_sec=0.0, max_iterations=1)
+
+    assert captured_kwargs["on_iteration_end"] is not None
+    assert len(watchman_loop.run_cycle_calls) == 1
+    history_arg, now_arg = watchman_loop.run_cycle_calls[0]
+    assert set(history_arg.keys()) == {"XAUUSD"}
+    assert now_arg == BASE_TIME
+
+
+def test_run_passes_none_on_iteration_end_when_no_watchman_loop_given(monkeypatch, tmp_path):
+    seed = _council_df().iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    captured_kwargs = {}
+
+    def fake_poll_new_bars(symbols, timeframe, on_new_bar, poll_interval_sec, max_iterations, on_iteration_end):
+        captured_kwargs["on_iteration_end"] = on_iteration_end
+
+    monkeypatch.setattr(shadow_loop_module, "poll_new_bars", fake_poll_new_bars)
+    loop.run(["XAUUSD"], "H1", poll_interval_sec=0.0, max_iterations=1)
+
+    assert captured_kwargs["on_iteration_end"] is None

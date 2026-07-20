@@ -142,3 +142,83 @@ def test_poll_new_bars_tracks_each_symbol_independently(monkeypatch):
     eur_calls = [s for s in received if s.symbol == "EURUSD"]
     assert len(xau_calls) == 3  # advances every iteration
     assert len(eur_calls) == 1  # only the first iteration is "new"
+
+
+def test_on_iteration_end_called_once_per_iteration_after_all_symbols(monkeypatch):
+    monkeypatch.setattr(poller, "to_broker_name", lambda symbol: symbol)
+
+    from autotrade.feed.snapshot import Bar
+
+    def fake_fetch(broker_symbol, timeframe):
+        return Bar(time=_naive_server_time(1_700_000_000), open=1, high=1, low=1, close=1, tick_volume=1, spread=1)
+
+    monkeypatch.setattr(poller, "fetch_last_closed_bar", fake_fetch)
+
+    iteration_end_calls = []
+    poll_new_bars(
+        ["XAUUSD", "EURUSD"], "H1", on_new_bar=lambda snapshot: None,
+        poll_interval_sec=0, max_iterations=3,
+        on_iteration_end=lambda: iteration_end_calls.append(1),
+    )
+
+    assert len(iteration_end_calls) == 3  # once per outer iteration, not once per symbol
+
+
+def test_poll_new_bars_on_new_bar_sequence_unchanged_with_or_without_iteration_hook(monkeypatch):
+    # Backward-compatibility regression for the on_iteration_end addition:
+    # a caller that does NOT pass it must see the EXACT SAME on_new_bar call
+    # sequence (which bars, in which order, deduped the same way) as a
+    # caller that does -- the hook must be a strict, side-effect-free
+    # add-on to the existing dedup loop, not something that alters it.
+    monkeypatch.setattr(poller, "to_broker_name", lambda symbol: symbol)
+
+    from autotrade.feed.snapshot import Bar
+
+    bar_sequence = [
+        _fake_rate(1_700_000_000), _fake_rate(1_700_000_000),
+        _fake_rate(1_700_003_600), _fake_rate(1_700_003_600),
+    ]
+
+    def _make_fetch():
+        call_index = {"i": 0}
+
+        def fake_fetch(broker_symbol, timeframe):
+            rate = bar_sequence[min(call_index["i"], len(bar_sequence) - 1)]
+            call_index["i"] += 1
+            return Bar(
+                time=_naive_server_time(rate["time"]), open=rate["open"], high=rate["high"],
+                low=rate["low"], close=rate["close"], tick_volume=rate["tick_volume"], spread=rate["spread"],
+            )
+
+        return fake_fetch
+
+    monkeypatch.setattr(poller, "fetch_last_closed_bar", _make_fetch())
+    received_without_hook = []
+    poll_new_bars(["XAUUSD"], "H1", on_new_bar=received_without_hook.append, poll_interval_sec=0, max_iterations=4)
+
+    monkeypatch.setattr(poller, "fetch_last_closed_bar", _make_fetch())
+    received_with_hook = []
+    poll_new_bars(
+        ["XAUUSD"], "H1", on_new_bar=received_with_hook.append, poll_interval_sec=0, max_iterations=4,
+        on_iteration_end=lambda: None,
+    )
+
+    assert len(received_without_hook) == 2  # sanity: dedup still worked as expected
+    assert [s.bar.time for s in received_without_hook] == [s.bar.time for s in received_with_hook]
+    assert [s.symbol for s in received_without_hook] == [s.symbol for s in received_with_hook]
+
+
+def test_on_iteration_end_none_by_default_never_called(monkeypatch):
+    monkeypatch.setattr(poller, "to_broker_name", lambda symbol: symbol)
+
+    from autotrade.feed.snapshot import Bar
+
+    monkeypatch.setattr(
+        poller, "fetch_last_closed_bar",
+        lambda broker_symbol, timeframe: Bar(
+            time=_naive_server_time(1_700_000_000), open=1, high=1, low=1, close=1, tick_volume=1, spread=1,
+        ),
+    )
+
+    # Must not raise even though on_iteration_end is never supplied.
+    poll_new_bars(["XAUUSD"], "H1", on_new_bar=lambda snapshot: None, poll_interval_sec=0, max_iterations=2)

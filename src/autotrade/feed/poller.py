@@ -63,11 +63,22 @@ def poll_new_bars(
     on_new_bar: Callable[[MarketSnapshot], None],
     poll_interval_sec: float = 5.0,
     max_iterations: int | None = None,
+    on_iteration_end: Callable[[], None] | None = None,
 ) -> None:
     """Blocking loop. Calls on_new_bar(snapshot) once per symbol the first
     time its last-closed-bar timestamp advances. Requires an active
     mt5_session(). Set max_iterations for tests/manual verification runs;
-    leave None to run forever."""
+    leave None to run forever.
+
+    `on_iteration_end`, if given, is called once per outer iteration, after
+    every symbol has been checked for a new bar (whether or not any symbol
+    actually had one) and before the poll-interval sleep -- this is the hook
+    `orchestrator/shadow_loop.py` uses to run Watchman's per-cycle position
+    management on the same polling cadence as the entry-signal loop (see
+    `watchman/loop.py`'s module docstring for why that's a deliberate,
+    documented simplification rather than a genuinely separate faster loop).
+    A `max_iterations=0` run never calls this either, matching the existing
+    "never calls on_new_bar" behavior for that edge case."""
     broker_symbols = {symbol: to_broker_name(symbol) for symbol in symbols}
     last_seen: dict[str, datetime] = {}
     iterations = 0
@@ -88,6 +99,9 @@ def poll_new_bars(
                     timeframe, symbol, bar.time, bar.open, bar.high, bar.low, bar.close, bar.spread,
                 )
                 on_new_bar(MarketSnapshot(symbol=symbol, timeframe=timeframe, bar=bar))
+
+        if on_iteration_end is not None:
+            on_iteration_end()
 
         iterations += 1
         if max_iterations is None or iterations < max_iterations:

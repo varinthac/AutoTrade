@@ -1,10 +1,26 @@
-"""Continuous demo shadow-running loop (Phase 3d/5/6b) -- the orchestrator
+"""Continuous demo shadow-running loop (Phase 3d/5/6b/7b) -- the orchestrator
 wiring that turns each newly-closed bar into, at most, one placed order via
 the pipeline: `feed -> features(inside council/risk) -> council
 (Bull/Bear scoring + Decision Matrix + Risk Voice veto) -> shield (portfolio
 checkpoint) -> risk (CFO sizing + circuit breaker) -> execution` (spec.md
-§2.2). Watchman/Auditor don't exist yet (later phases) -- this loop simply
-never calls them, rather than stubbing them out.
+§2.2). The Auditor doesn't exist yet (a later phase) -- this loop simply
+never calls it, rather than stubbing it out.
+
+**Phase 7b: Watchman wiring.** After a successful `place_order()`, this
+loop also records the position's entry-time context via
+`watchman.position_metadata.record_position_opened` (ticket, symbol,
+direction, ACTUAL filled entry price, the ORIGINAL `stop_distance` from the
+`OrderPlan`, the same `swing_index` Shield's own cooldown check already
+derived, and the current time) -- Watchman needs this to survive past this
+bar's processing. If an injected `watchman_loop` (a `watchman.loop.WatchmanLoop`)
+is given, its `run_cycle()` is also invoked once per polling iteration, via
+`feed.poller.poll_new_bars`'s `on_iteration_end` hook, AFTER the
+entry-signal processing for every symbol that iteration -- see
+`watchman/loop.py`'s module docstring for why this shares the entry-signal
+loop's polling cadence rather than running as a genuinely separate faster
+loop (a deliberate, documented Phase 7b simplification, not an oversight).
+`watchman_loop=None` (the default) skips Watchman entirely -- useful for
+tests/wiring that don't care about position management.
 
 **Risk Voice is checked twice** (Appendix A §1.5's explicit re-check
 requirement): once right after a clean BUY/SELL Council decision (before
@@ -92,6 +108,8 @@ from autotrade.features.swing import latest_confirmed_swing_high, latest_confirm
 from autotrade.risk.circuit_breaker import CircuitBreaker
 from autotrade.risk.sizing import compute_lot_size
 from autotrade.shield.checkpoint import OpenPositionInfo, Shield
+from autotrade.watchman import position_metadata
+from autotrade.watchman.loop import WatchmanLoop
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +210,8 @@ class ShadowLoop:
         news_provider: NewsCalendarProvider | None = None,
         risk_voice_cfg: RiskVoiceConfig | None = None,
         borderline_log_path: Path | None = None,
+        watchman_loop: WatchmanLoop | None = None,
+        position_metadata_path: Path | None = None,
     ) -> None:
         self._adapter = adapter
         self._circuit_breaker = circuit_breaker
@@ -205,6 +225,8 @@ class ShadowLoop:
         self._news_provider = news_provider or StubNewsCalendarProvider()
         self._risk_voice_cfg = risk_voice_cfg or RiskVoiceConfig()
         self._borderline_log_path = borderline_log_path or DEFAULT_BORDERLINE_LOG_PATH
+        self._watchman_loop = watchman_loop
+        self._position_metadata_path = position_metadata_path
         self._peak_equity: float | None = None
         self._live_start_equity: float | None = None
 
@@ -216,11 +238,17 @@ class ShadowLoop:
         max_iterations: int | None = None,
     ) -> None:
         """Blocking call -- runs `feed.poller.poll_new_bars` forever (or for
-        `max_iterations`), dispatching every new closed bar to `on_new_bar`."""
+        `max_iterations`), dispatching every new closed bar to `on_new_bar`.
+        If a `watchman_loop` was injected, its per-cycle position management
+        also runs once per iteration (see module docstring)."""
         poll_new_bars(
             symbols, timeframe, self.on_new_bar,
             poll_interval_sec=poll_interval_sec, max_iterations=max_iterations,
+            on_iteration_end=self._run_watchman_cycle if self._watchman_loop is not None else None,
         )
+
+    def _run_watchman_cycle(self) -> None:
+        self._watchman_loop.run_cycle(self._history, self._clock.now())
 
     def on_new_bar(self, snapshot: MarketSnapshot) -> None:
         if snapshot.symbol not in self._history:
@@ -392,10 +420,10 @@ class ShadowLoop:
         # tick-level spread source exists in this pipeline yet, so this
         # reuses the same bar-close spread -- the news provider IS re-queried
         # fresh, the part that can genuinely change between the two calls.
+        recheck_inputs = self._risk_voice_inputs(history, as_of_index)
         recheck_decision = check_risk_voice(
             symbol=symbol, order_plan=plan, news_provider=self._news_provider,
-            clock=self._clock, config=self._risk_voice_cfg,
-            **self._risk_voice_inputs(history, as_of_index),
+            clock=self._clock, config=self._risk_voice_cfg, **recheck_inputs,
         )
         if recheck_decision.vetoed:
             logger.warning(
@@ -408,17 +436,44 @@ class ShadowLoop:
             symbol=symbol, direction=plan.direction, lot_size=lot,
             entry=plan.entry, stop_loss=plan.stop_loss, take_profit=plan.take_profit,
         )
-        result = self._adapter.place_order(request)
+        # current_atr (Phase 7b, Appendix A §4.8's abnormal-slippage check)
+        # reuses the exact same ATR value the re-check above just computed --
+        # no reason to recompute it a third time from the same bar.
+        result = self._adapter.place_order(request, current_atr=recheck_inputs["current_atr"])
+        opened_at = self._clock.now()
         if result.success:
             logger.info(
                 "%s %s: order PLACED %s lot=%.2f entry=%.5f sl=%.5f tp=%.5f -- %s",
                 symbol, bar.time, plan.direction, lot, plan.entry, plan.stop_loss, plan.take_profit, result.message,
             )
             self._shield.record_trade_opened(
-                symbol=symbol, direction=plan.direction, opened_at=self._clock.now(), swing_index=swing_index,
+                symbol=symbol, direction=plan.direction, opened_at=opened_at, swing_index=swing_index,
             )
         else:
             logger.warning("%s %s: order REJECTED -- %s", symbol, bar.time, result.message)
+
+        # Phase 7b: Watchman needs this position's entry-time context to
+        # survive past this bar -- entry price is the ACTUAL fill
+        # (result.filled_price), stop_distance is the ORIGINAL plan value
+        # (never a post-modification one, per
+        # watchman/position_metadata.py's module docstring). Recorded
+        # whenever a real broker ticket exists AND the position is actually
+        # open on the broker -- either the normal success path, OR the
+        # compounding-failure path where the entry fill succeeded but the
+        # abnormal-slippage auto-close then failed even after a retry
+        # (execution/demo_adapter.py's `OrderResult.position_still_open`):
+        # that position is genuinely open and would otherwise be
+        # permanently invisible to Watchman. Skipped when there's no real
+        # broker ticket (NoOpBrokerAdapter dry runs never open a position
+        # with any broker) or when the position was actually closed (a
+        # normal rejection, or a slippage-close that DID succeed).
+        if result.broker_ticket is not None and (result.success or result.position_still_open):
+            position_metadata.record_position_opened(
+                ticket=result.broker_ticket, symbol=symbol, direction=plan.direction,
+                entry_price=result.filled_price, initial_stop_distance=plan.stop_distance,
+                entry_swing_index=swing_index, opened_at=opened_at,
+                state_path=self._position_metadata_path,
+            )
 
         return history
 

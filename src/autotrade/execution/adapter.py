@@ -32,30 +32,96 @@ class OrderResult:
     filled_volume: float | None
     retcode: int | None
     message: str
+    # Phase 7b (Appendix A §4.8) additions -- both default so every
+    # pre-existing OrderResult(...) construction (place_order's own success/
+    # failure paths, NoOpBrokerAdapter, every test fixture) keeps working
+    # unmodified; only place_order()'s partial-fill/abnormal-slippage paths
+    # and the new modify_stop_loss()/close_position() methods set these
+    # explicitly.
+    partial_fill: bool = False
+    closed_due_to_slippage: bool = False
+    # Phase 7b bugfix: set True only on the specific compounding-failure path
+    # where an abnormal-slippage close was attempted (and retried) but never
+    # actually succeeded -- the entry fill DID go through, so `broker_ticket`
+    # is a REAL open position on the broker, even though `success` is False
+    # and `closed_due_to_slippage` is False (it was never actually closed).
+    # Callers (orchestrator/shadow_loop.py) must still record this position's
+    # Watchman metadata when this is True, same as a normal success, or it
+    # becomes permanently invisible to Watchman.
+    position_still_open: bool = False
 
 
 @dataclass(frozen=True)
 class BrokerPosition:
     """An open position, as seen from execution/'s side of the fence.
-    Deliberately shaped the same as `shield.checkpoint.OpenPositionInfo`
-    (symbol/direction/risk_pct) but defined independently here rather than
-    imported from shield/ -- same "define our own plain dataclass instead of
-    importing an upstream module's" pattern this file already uses for
-    `TradeRequest` vs. `council.order_construction.OrderPlan`. The caller
-    (orchestrator/) converts one into the other."""
+    Started out (Phase 3) shaped the same as `shield.checkpoint.OpenPositionInfo`
+    (symbol/direction/risk_pct); Phase 7b adds `ticket`/`current_sl`/
+    `current_price`/`volume` -- Watchman's per-position loop
+    (`watchman/loop.py`) needs the broker ticket to look up
+    `PositionMetadata`/call `modify_stop_loss`/`close_position`, and the
+    position's live SL/price/volume to feed `evaluate_watchman`/
+    `news_protection` without a second MT5 round-trip. Defined independently
+    here rather than imported from shield/ -- same "define our own plain
+    dataclass instead of importing an upstream module's" pattern this file
+    already uses for `TradeRequest` vs. `council.order_construction.OrderPlan`.
+    The caller (orchestrator/) converts this into whatever shape each
+    downstream module (Shield, Watchman) actually needs."""
 
+    ticket: int
     symbol: str
     direction: Literal["BUY", "SELL"]
     risk_pct: float
+    current_sl: float
+    current_price: float
+    volume: float
 
 
 class BrokerAdapter(ABC):
-    """Minimal interface every execution backend implements. Kept deliberately
-    small — close_position/modify_stop_loss belong to the Watchman phase,
-    added only when actually needed."""
+    """Minimal interface every execution backend implements."""
 
     @abstractmethod
-    def place_order(self, request: TradeRequest) -> OrderResult:
+    def place_order(self, request: TradeRequest, current_atr: float | None = None) -> OrderResult:
+        """Open a new position. `current_atr` is optional (Phase 7b,
+        Appendix A §4.8's abnormal-slippage check) -- when given, a fill
+        that lands beyond `max_entry_slippage_atr` x `current_atr` from
+        `request.entry` is logged as `abnormal_slippage`; if the resulting
+        realized R:R (measured from the ACTUAL fill price against the
+        unchanged sl/tp) then drops below the configured floor, the position
+        is closed immediately and this returns `success=False`,
+        `closed_due_to_slippage=True` rather than a normal success. If that
+        immediate close itself fails (retried once, still fails), this
+        instead returns `success=False`, `closed_due_to_slippage=False`,
+        `position_still_open=True` -- the entry fill genuinely went through
+        and `broker_ticket` is a REAL open position the caller must still
+        record for Watchman, even though the intended slippage-close did
+        not succeed. Passing `None` (the default) skips this check entirely
+        -- callers with no ATR handy (e.g. NoOpBrokerAdapter) simply never
+        trigger it.
+        `OrderResult.partial_fill` is True whenever the actual filled volume
+        differs from `request.lot_size` -- callers must use
+        `OrderResult.filled_volume` (the ACTUAL filled amount) for any
+        downstream risk/position-sizing bookkeeping, never `request.lot_size`,
+        and must NEVER place a second order to top up the difference (Appendix
+        A §4.8's explicit "ห้ามยิงเพิ่ม")."""
+        ...
+
+    @abstractmethod
+    def modify_stop_loss(self, ticket: int, new_stop_loss: float) -> OrderResult:
+        """Move `ticket`'s stop-loss to `new_stop_loss`. If the broker
+        rejects it for being closer to the current price than
+        `SYMBOL_TRADE_STOPS_LEVEL` allows, the SL is instead set at the
+        closest distance the broker will actually accept (Appendix A §4.8)
+        -- `OrderResult.filled_price` always carries the ACTUAL stop-loss
+        applied (which may differ from `new_stop_loss` for exactly this
+        reason); `filled_volume` is unused (`None`)."""
+        ...
+
+    @abstractmethod
+    def close_position(self, ticket: int, volume: float | None = None) -> OrderResult:
+        """Close `ticket` at market -- the full position if `volume` is
+        `None`, otherwise a partial close of exactly `volume` lots (used by
+        Watchman's news protection to close half). `OrderResult.filled_price`
+        is the actual close price, `filled_volume` the actual volume closed."""
         ...
 
     @abstractmethod
@@ -72,5 +138,6 @@ class BrokerAdapter(ABC):
     @abstractmethod
     def get_open_positions(self) -> list[BrokerPosition]:
         """Every currently-open position on the account, for Shield's
-        portfolio-level checks (shield/checkpoint.py rules 2-5)."""
+        portfolio-level checks (shield/checkpoint.py rules 2-5) and
+        Watchman's per-position loop (watchman/loop.py)."""
         ...

@@ -87,6 +87,16 @@ class PositionMetadata:
     initial_stop_distance: float
     entry_swing_index: int
     opened_at: datetime
+    # Phase 7b bugfix (news-protection dedup): `None` until news protection
+    # first fires for this position; then set to roughly the end of the news
+    # blackout window it fired for. `watchman/loop.py` skips re-evaluating
+    # `check_news_protection` entirely while `now < news_protected_until`,
+    # so the same still-active news window can't re-trigger the protective
+    # action (e.g. CLOSE_HALF_AND_BREAKEVEN) every polling cycle and drain
+    # the position -- see `watchman/loop.py`'s handling of this field for
+    # the full mechanism. Once past this timestamp, a NEW high-impact event
+    # can trigger protection again -- this is NOT a permanent one-shot flag.
+    news_protected_until: datetime | None = None
 
 
 def _load_all(state_path: Path) -> dict:
@@ -139,6 +149,7 @@ def record_position_opened(
         "initial_stop_distance": initial_stop_distance,
         "entry_swing_index": entry_swing_index,
         "opened_at": opened_at.isoformat(),
+        "news_protected_until": None,
     }
     _save_all(path, all_positions)
 
@@ -151,6 +162,7 @@ def get_position_metadata(ticket: int, state_path: Path | None = None) -> Positi
     record = all_positions.get(str(ticket))
     if record is None:
         return None
+    news_protected_until_raw = record.get("news_protected_until")
     return PositionMetadata(
         ticket=ticket,
         symbol=record["symbol"],
@@ -159,7 +171,31 @@ def get_position_metadata(ticket: int, state_path: Path | None = None) -> Positi
         initial_stop_distance=record["initial_stop_distance"],
         entry_swing_index=record["entry_swing_index"],
         opened_at=datetime.fromisoformat(record["opened_at"]),
+        news_protected_until=(
+            datetime.fromisoformat(news_protected_until_raw) if news_protected_until_raw else None
+        ),
     )
+
+
+def update_news_protected_until(
+    ticket: int, news_protected_until: datetime | None, state_path: Path | None = None,
+) -> None:
+    """Update just `ticket`'s existing record's `news_protected_until`
+    field, leaving every other field untouched -- called by
+    `watchman/loop.py` right after news protection fires for a position, so
+    the SAME still-active news window doesn't re-trigger the protective
+    action every cycle (see `PositionMetadata.news_protected_until`'s
+    docstring). A no-op if no record exists for this ticket (position
+    already closed, or was never recorded)."""
+    path = state_path or DEFAULT_STATE_PATH
+    all_positions = _load_all(path)
+    record = all_positions.get(str(ticket))
+    if record is None:
+        return
+    record["news_protected_until"] = (
+        news_protected_until.isoformat() if news_protected_until is not None else None
+    )
+    _save_all(path, all_positions)
 
 
 def remove_position_metadata(ticket: int, state_path: Path | None = None) -> None:

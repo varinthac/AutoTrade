@@ -14,7 +14,7 @@ class NoOpBrokerAdapter(BrokerAdapter):
     def __init__(self, fixed_equity: float = 10_000.0) -> None:
         self._fixed_equity = fixed_equity
 
-    def place_order(self, request: TradeRequest) -> OrderResult:
+    def place_order(self, request: TradeRequest, current_atr: float | None = None) -> OrderResult:
         logger.info(
             "NoOp dry-run order: %s %s lots=%s entry=%s sl=%s tp=%s",
             request.direction, request.symbol, request.lot_size,
@@ -27,6 +27,28 @@ class NoOpBrokerAdapter(BrokerAdapter):
             filled_volume=request.lot_size,
             retcode=None,
             message="dry run: no order sent to any broker",
+        )
+
+    def modify_stop_loss(self, ticket: int, new_stop_loss: float) -> OrderResult:
+        logger.info("NoOp dry-run modify SL: ticket=%s new_sl=%s", ticket, new_stop_loss)
+        return OrderResult(
+            success=True,
+            broker_ticket=ticket,
+            filled_price=new_stop_loss,
+            filled_volume=None,
+            retcode=None,
+            message="dry run: no modify sent to any broker",
+        )
+
+    def close_position(self, ticket: int, volume: float | None = None) -> OrderResult:
+        logger.info("NoOp dry-run close: ticket=%s volume=%s", ticket, volume if volume is not None else "ALL")
+        return OrderResult(
+            success=True,
+            broker_ticket=ticket,
+            filled_price=None,
+            filled_volume=volume,
+            retcode=None,
+            message="dry run: no close sent to any broker",
         )
 
     def get_equity(self) -> float:

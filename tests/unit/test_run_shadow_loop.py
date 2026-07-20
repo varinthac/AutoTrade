@@ -135,6 +135,11 @@ _BASE_CFG = {
         "max_stop_atr_multiple": 2.5, "session_start_hour": 14, "session_end_hour": 18,
         "friday_close_hour": 20, "max_atr_panic_multiple": 3.0,
     },
+    "watchman": {
+        "breakeven_at_r": 1.0, "trail_start_r": 1.5, "trail_distance_atr": 1.0,
+        "time_stop_hours": 48, "dead_trade_r_band": 0.3, "news_window_minutes": 30,
+        "news_profit_threshold_r": 0.5, "news_close_mode": "half", "connectivity_timeout_minutes": 5,
+    },
 }
 
 

@@ -16,6 +16,9 @@ data/historical/*
 data/db/*
 !data/db/.gitkeep
 
+# Claude Code harness state (local session artifacts, not project code)
+.claude/
+
 # Editors / OS
 .vscode/
 .idea/

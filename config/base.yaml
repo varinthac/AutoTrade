@@ -50,14 +50,18 @@ council:
 
 # Council order construction (council/order_construction.py), per
 # trading_system_summary_v2.md Appendix A §1.4 / §6. All values [adjustable].
+# max_retries/retry_delay_sec/max_entry_slippage_atr/min_rr_after_slippage
+# are Phase 7b's execution-error handling (Appendix A §4.8), consumed by
+# execution/demo_adapter.py's ThrottledDemoAdapter.
 order:
   sl_buffer_atr: 0.2
   sl_min_atr: 0.8
   sl_max_atr: 2.5
   tp_r_multiple: 2.0
-  max_retries: 2 # not yet consumed -- Watchman phase (Appendix A §4.8)
-  retry_delay_sec: 3 # not yet consumed -- Watchman phase (Appendix A §4.8)
-  max_entry_slippage_atr: 0.3 # not yet consumed -- Watchman phase (Appendix A §4.8)
+  max_retries: 2
+  retry_delay_sec: 3
+  max_entry_slippage_atr: 0.3
+  min_rr_after_slippage: 1.3 # close immediately if realized R:R after slippage drops below this
 
 # Risk Voice -- Council's own veto gate (council/risk_voice.py), per
 # trading_system_summary_v2.md Appendix A §1.5 / §6. All values [adjustable].
@@ -85,9 +89,21 @@ risk_voice:
 # ระหว่าง ±0.3R") requires it as a configurable threshold -- added here to
 # match the codebase's established practice of keeping every threshold
 # configurable rather than hardcoding it.
+#
+# Phase 7b additions (also not in the spec's own abbreviated §6 sample, same
+# "every threshold configurable" reasoning): news_window_minutes/
+# news_profit_threshold_r/news_close_mode are item 5's news protection
+# (watchman/news_protection.py) -- news_close_mode: "half" (default, matches
+# the spec's primary rule) or "all" (the spec's own explicitly-noted
+# alternative, "[adjustable: หรือปิดทั้งไม้]"). connectivity_timeout_minutes
+# is item 7's connectivity watchdog (watchman/connectivity_watchdog.py).
 watchman:
   breakeven_at_r: 1.0
   trail_start_r: 1.5
   trail_distance_atr: 1.0
   time_stop_hours: 48
   dead_trade_r_band: 0.3
+  news_window_minutes: 30
+  news_profit_threshold_r: 0.5
+  news_close_mode: half
+  connectivity_timeout_minutes: 5

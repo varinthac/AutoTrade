@@ -39,6 +39,11 @@ from autotrade.feed.poller import TIMEFRAME_MAP
 from autotrade.orchestrator.shadow_loop import ShadowLoop, ShadowLoopConfig
 from autotrade.risk.circuit_breaker import DEFAULT_STATE_PATH, CircuitBreaker
 from autotrade.shield.checkpoint import Shield
+from autotrade.watchman.connectivity_watchdog import ConnectivityWatchdog, ConnectivityWatchdogConfig
+from autotrade.watchman.evaluate import WatchmanConfig
+from autotrade.watchman.loop import WatchmanLoop
+from autotrade.watchman.news_protection import NewsProtectionConfig
+from autotrade.watchman.position_metadata import DEFAULT_STATE_PATH as DEFAULT_POSITION_METADATA_PATH
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -65,11 +70,20 @@ def seed_history(symbol: str, timeframe: str, bars: int, symbol_map: dict[str, s
     return df
 
 
-def build_adapter(name: str, creds: MT5Credentials, clock: RealClock) -> BrokerAdapter:
+def build_adapter(
+    name: str, creds: MT5Credentials, clock: RealClock, order_cfg: dict | None = None,
+) -> BrokerAdapter:
     if name == "noop":
         return NoOpBrokerAdapter()
     if name == "demo":
-        return ThrottledDemoAdapter(creds, clock)
+        order_cfg = order_cfg or {}
+        return ThrottledDemoAdapter(
+            creds, clock,
+            max_retries=order_cfg.get("max_retries", 2),
+            retry_delay_sec=order_cfg.get("retry_delay_sec", 3),
+            max_entry_slippage_atr=order_cfg.get("max_entry_slippage_atr", 0.3),
+            min_rr_after_slippage=order_cfg.get("min_rr_after_slippage", 1.3),
+        )
     raise ValueError(f"unknown --adapter {name!r}")
 
 
@@ -117,7 +131,7 @@ def main() -> int:
     # server time specifically -- RealClock is fine here and avoids an extra
     # MT5 round-trip per place_order() call.
     adapter_clock = RealClock()
-    adapter = build_adapter(args.adapter, creds, adapter_clock)
+    adapter = build_adapter(args.adapter, creds, adapter_clock, order_cfg=cfg["order"])
     if args.adapter == "noop":
         logger.info("Using NoOpBrokerAdapter -- dry run, no orders will be sent to any broker.")
     else:
@@ -169,6 +183,30 @@ def main() -> int:
     # rationale as adapter_clock above).
     news_provider = build_news_provider(adapter_clock)
 
+    watchman_config = WatchmanConfig(
+        breakeven_at_r=cfg["watchman"]["breakeven_at_r"],
+        trail_start_r=cfg["watchman"]["trail_start_r"],
+        trail_distance_atr=cfg["watchman"]["trail_distance_atr"],
+        time_stop_hours=cfg["watchman"]["time_stop_hours"],
+        dead_trade_r_band=cfg["watchman"]["dead_trade_r_band"],
+    )
+    news_protection_cfg = NewsProtectionConfig(
+        news_window_minutes=cfg["watchman"]["news_window_minutes"],
+        profit_threshold_r=cfg["watchman"]["news_profit_threshold_r"],
+        close_mode=cfg["watchman"]["news_close_mode"],
+    )
+    # Connectivity is a wall-clock-elapsed-time question ("how long has it
+    # actually been"), not a server-day-boundary one -- RealClock, same
+    # rationale as adapter_clock/news_provider's clock above.
+    connectivity_watchdog = ConnectivityWatchdog(
+        adapter_clock, ConnectivityWatchdogConfig(timeout_minutes=cfg["watchman"]["connectivity_timeout_minutes"]),
+    )
+    watchman_loop = WatchmanLoop(
+        adapter=adapter, watchman_config=watchman_config, news_provider=news_provider,
+        news_protection_config=news_protection_cfg, connectivity_watchdog=connectivity_watchdog,
+        symbol_map=symbol_map, state_path=DEFAULT_POSITION_METADATA_PATH,
+    )
+
     with mt5_session(creds):
         initial_history = {
             symbol: seed_history(symbol, timeframe, args.seed_bars, symbol_map) for symbol in symbols
@@ -182,6 +220,7 @@ def main() -> int:
             adapter=adapter, circuit_breaker=circuit_breaker, shield=shield, cfg=loop_cfg,
             initial_history=initial_history, symbol_map=symbol_map, clock=loop_clock,
             news_provider=news_provider, risk_voice_cfg=risk_voice_cfg,
+            watchman_loop=watchman_loop, position_metadata_path=DEFAULT_POSITION_METADATA_PATH,
         )
         logger.info(
             "Shadow loop starting: symbols=%s timeframe=%s adapter=%s -- waiting for next bar close",
