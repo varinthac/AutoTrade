@@ -66,6 +66,26 @@ def load_finnhub_api_key(env_file: Path | None = None) -> str | None:
     return key or None
 
 
+def load_fmp_api_key(env_file: Path | None = None) -> str | None:
+    """Financial Modeling Prep API key (financialmodelingprep.com) for a
+    prospective `council/fmp_news_calendar.py` economic-calendar provider.
+    Same optional/nullable pattern as `load_finnhub_api_key` -- a missing/
+    blank key is not a hard error, just `None` for the caller to act on.
+
+    As of 2026-07-20, FMP's `/stable/economic-calendar` endpoint was
+    confirmed live to return `HTTP 402 Payment Required` ("Restricted
+    Endpoint: This endpoint is not available under your current
+    subscription") on the currently-configured `FMP_API_KEY` -- the same
+    key succeeds (HTTP 200) against a known free-tier endpoint
+    (`/stable/quote`), confirming the key itself is valid and the 402 is
+    specifically about this endpoint's tier gating. No `FMPNewsCalendarProvider`
+    has been built against this key for that reason -- see
+    council/news_calendar.py's module docstring."""
+    load_dotenv(env_file or REPO_ROOT / ".env")
+    key = os.environ.get("FMP_API_KEY")
+    return key or None
+
+
 def load_yaml_config(name: str) -> dict:
     """Load a YAML file from config/, e.g. load_yaml_config('base')."""
     path = CONFIG_DIR / f"{name}.yaml"

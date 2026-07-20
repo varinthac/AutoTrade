@@ -7,6 +7,7 @@ import pytest
 from autotrade.common.config import (
     MT5Credentials,
     load_finnhub_api_key,
+    load_fmp_api_key,
     load_mt5_credentials,
     load_yaml_config,
 )
@@ -116,6 +117,28 @@ def test_load_finnhub_api_key_treats_blank_string_as_none(monkeypatch, clean_fin
     monkeypatch.setenv("FINNHUB_API_KEY", "")
 
     assert load_finnhub_api_key(clean_finnhub_env) is None
+
+
+@pytest.fixture
+def clean_fmp_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("FMP_API_KEY", raising=False)
+    return tmp_path / "does_not_exist.env"
+
+
+def test_load_fmp_api_key_returns_key_when_set(monkeypatch, clean_fmp_env):
+    monkeypatch.setenv("FMP_API_KEY", "abc123")
+
+    assert load_fmp_api_key(clean_fmp_env) == "abc123"
+
+
+def test_load_fmp_api_key_returns_none_when_unset(clean_fmp_env):
+    assert load_fmp_api_key(clean_fmp_env) is None
+
+
+def test_load_fmp_api_key_treats_blank_string_as_none(monkeypatch, clean_fmp_env):
+    monkeypatch.setenv("FMP_API_KEY", "")
+
+    assert load_fmp_api_key(clean_fmp_env) is None
 
 
 def test_load_yaml_config_reads_real_base_config():
