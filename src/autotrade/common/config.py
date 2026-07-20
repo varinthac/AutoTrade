@@ -108,6 +108,30 @@ def load_eodhd_api_token(env_file: Path | None = None) -> str | None:
     return token or None
 
 
+def load_rapidapi_key(env_file: Path | None = None) -> str | None:
+    """RapidAPI key (rapidapi.com) for a prospective
+    `council/rapidapi_news_calendar.py` economic-calendar provider, backed by
+    the "Ultimate Economic Calendar" API (provider "toplistaai"). Same
+    optional/nullable pattern as `load_finnhub_api_key`/`load_fmp_api_key`/
+    `load_eodhd_api_token` -- a missing/blank key is not a hard error, just
+    `None` for the caller to act on.
+
+    As of 2026-07-20, this API's `/economic-events/tradingview` endpoint was
+    confirmed live to return `HTTP 402 Payment Required` ("DEPLOYMENT_DISABLED",
+    a Vercel-platform-level error, not a RapidAPI subscription message) on
+    the currently-configured `RAPIDAPI_KEY`, using the exact query shape from
+    the provider's own documented example. The same key succeeds with a
+    proper RapidAPI-gateway response (HTTP 404 `{"message": "Endpoint '...'
+    does not exist"}`, not an auth/subscription error) against other paths on
+    the same host, confirming the key and gateway routing are valid and the
+    402 is specifically this endpoint's backend being disabled by the API
+    provider. No `RapidAPINewsCalendarProvider` has been built against this
+    key for that reason -- see council/news_calendar.py's module docstring."""
+    load_dotenv(env_file or REPO_ROOT / ".env")
+    key = os.environ.get("RAPIDAPI_KEY")
+    return key or None
+
+
 def load_yaml_config(name: str) -> dict:
     """Load a YAML file from config/, e.g. load_yaml_config('base')."""
     path = CONFIG_DIR / f"{name}.yaml"

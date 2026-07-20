@@ -28,9 +28,14 @@ principle: "ก้ำกึ่ง = ไม่เทรด"). Candidates checked 
 gated behind a paid plan on the currently-configured keys/tokens (none
 integrated yet): Finnhub (`council/finnhub_news_calendar.py` -- HTTP 403),
 Financial Modeling Prep (`common/config.load_fmp_api_key` -- HTTP 402),
-EODHD (`common/config.load_eodhd_api_token` -- HTTP 403). Trading Economics
-remains unchecked. This must be revisited before Phase 9 (paper trading)
-for the system to be practically testable at scale.
+EODHD (`common/config.load_eodhd_api_token` -- HTTP 403), RapidAPI's
+"Ultimate Economic Calendar" (`common/config.load_rapidapi_key` -- HTTP 402
+"DEPLOYMENT_DISABLED" on the documented `/economic-events/tradingview`
+endpoint, confirmed to be the endpoint's own backend being disabled by the
+provider rather than a bad key -- other endpoints on the same host return a
+normal RapidAPI-gateway 404). Trading Economics remains unchecked. This must
+be revisited before Phase 9 (paper trading) for the system to be practically
+testable at scale.
 """
 from __future__ import annotations
 
