@@ -132,6 +132,36 @@ def load_rapidapi_key(env_file: Path | None = None) -> str | None:
     return key or None
 
 
+def load_alphavantage_api_key(env_file: Path | None = None) -> str | None:
+    """Alpha Vantage API key (alphavantage.co) -- checked as a fifth
+    candidate for a real `council/*_news_calendar.py` economic-calendar
+    provider. Same optional/nullable pattern as `load_finnhub_api_key`/
+    `load_fmp_api_key`/`load_eodhd_api_token`/`load_rapidapi_key` -- a
+    missing/blank key is not a hard error, just `None` for the caller to act
+    on.
+
+    As of 2026-07-20, Alpha Vantage's own documentation
+    (alphavantage.co/documentation) was reviewed and confirmed to have NO
+    forward-looking macro economic-events calendar with a timestamp and an
+    impact/importance rating -- unlike the previous four candidates (all of
+    which had the right *kind* of endpoint but were paywalled), Alpha
+    Vantage simply does not offer this *kind* of data at all. Its
+    "Economic Indicators" section (`REAL_GDP`, `CPI`, `FEDERAL_FUNDS_RATE`,
+    `UNEMPLOYMENT`, `NONFARM_PAYROLL`, etc.) is individual historical/
+    current time series (sourced from FRED), not a calendar of upcoming
+    releases -- there is no "impact" field or forward release schedule
+    anywhere in the docs. `EARNINGS_CALENDAR`/`IPO_CALENDAR` are
+    company-specific (earnings/IPO events per stock symbol), not macro
+    economic events. `NEWS_SENTIMENT` is a sentiment-scored feed of
+    already-published news articles filtered by ticker/topic/time range,
+    not a schedule of known-in-advance upcoming events. No
+    `AlphaVantageNewsCalendarProvider` has been built against this key for
+    that reason -- see council/news_calendar.py's module docstring."""
+    load_dotenv(env_file or REPO_ROOT / ".env")
+    key = os.environ.get("ALPHAVANTAGE_API_KEY")
+    return key or None
+
+
 def load_yaml_config(name: str) -> dict:
     """Load a YAML file from config/, e.g. load_yaml_config('base')."""
     path = CONFIG_DIR / f"{name}.yaml"
