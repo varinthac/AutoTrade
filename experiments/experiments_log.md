@@ -320,6 +320,75 @@ Auditor gate thresholds NOT touched (rule 8). Watchman exits remain UNMODELED in
 (see §0) — wiring them in is the highest-value roadmap item before any further exit-param
 tuning, since fixed-TP tuning cannot capture the trailing behaviour live actually uses.
 
+---
+
+## EXP-003 2026-07-21 — Session filter ON `[14,18)` vs OFF (all-24h)
+
+Status: ADOPT-CANDIDATE (Test confirmed) — recommend to user, config NOT auto-changed
+
+### 0. Relation to EXP-001
+
+EXP-001 compared `[14,18)` against OTHER windows CONFINED to London+NY (08-22), and found no
+robust edge among them → kept `[14,18)`. It never tested REMOVING the filter (all-24h incl.
+Asia). This experiment does exactly that — a different, 1-dimensional question (filter on/off),
+prompted by the user. NOTE the live/backtest mismatch surfaced here: `scripts/run_backtest.py`
+is ungated, so BOTH existing promotion-gate reports were generated ALL-24h, while live applies
+`[14,18)` via Risk Voice — the promotion numbers do not reflect what live actually trades.
+
+### 1. Hypothesis / mechanism
+
+If the London+NY overlap were the genuinely-best-quality window, gating to `[14,18)` should
+raise PF vs trading 24h. Test: does the filter add risk-adjusted value, per year?
+
+### 2. Splits — reuse EXP-001/002 (Train Y1-Y3, Val Y4, Test Y5). Metric: per-year PF + net,
+gated by trade floor. ADOPT-removal iff all-24h ≥ inside in a MAJORITY of years AND not
+materially worse in any (mirrors EXP-002's per-year robustness bar), then Test confirms.
+
+### 3. Results — all-24h (ungated, tp2.0) vs inside-[14,18)-only
+
+Harness: `scratchpad/session_split.py` (mode inside|outside|all) + EXP-002's ungated per-year
+runs (which ARE the all-24h case). Cost model on (commission $7/lot, slippage = bar spread).
+
+| Year        | all-24h PF (net)  | inside [14,18) PF (net) | winner   |
+|-------------|-------------------|--------------------------|----------|
+| Y1 2021-22  | 1.050 (+297)      | **0.898 (−518)**         | all-24h  |
+| Y2 2022-23  | 1.001 (+5)        | 1.038 (+193)             | inside(marg) |
+| Y3 2023-24  | 1.224 (+1294)     | 1.183 (+1018)            | all-24h  |
+| Y4 Val 24-25| 1.064 (+404)      | 1.039 (+172)             | all-24h  |
+| Y5 Test 25-26| 1.277 (+1458, 199tr, DD4.37)| 1.275 (+1073, 145tr, DD5.12) | all-24h |
+
+all-24h wins/ties on PF in 4 of 5 years (only Y2 marginally favours the filter, +$188 on a
+break-even year) and beats inside on NET PROFIT in ALL 5 years. Test (touched once here): PF
+tied (1.277 vs 1.275) but all-24h delivers +$385 more, +54 trades, LOWER drawdown. The filter
+TURNS A WINNING YEAR (Y1, all-24h +$297) INTO A LOSS (−$518) with no compensating benefit
+elsewhere. Test set now CONSUMED for the session-filter family (rule 2 — one touch).
+
+5-yr hour bucket (ungated, trades by entry hour): outside-[14,18) 777 tr PF 1.142 (+$3493);
+inside 222 tr PF 1.105 (+$743). BOTH profitable, but the filter keeps only the smaller,
+lower-PF slice. Within the current window, hours 15 & 16 are net LOSERS (−$296, −$460);
+worst hours overall are 22-23 (rollover, −$928/−$306).
+
+### 4. Robustness / caveats (why this is ADOPT-CANDIDATE, not auto-adopt)
+
+- Per-year: ✓ (all-24h ≥ inside in 4/5 yr, incl. the decisive Y1 sign flip). PASSES the same
+  bar tp 2.5 FAILED.
+- **Unmodeled live risks** (backtest cannot see these; session filter partly proxied for them):
+  (a) news veto is unmodeled — removing the session gate must NOT remove the news blackout;
+  (b) Asia/rollover thin-liquidity: hours 22-23 are net-negative even WITH spread cost modeled;
+  (c) DST drift in server time. So "all-24h" the safe way = drop the session gate BUT keep
+  news blackout + a rollover/Friday guard, not a literal unconditional 24h.
+- Overfit guard: resisted per-hour cherry-picking (24-dim, high overfit risk). Filter on/off is
+  the 1-param, robust conclusion.
+
+### 5. VERDICT — recommend REMOVING the `[14,18)` session gate (config change is the USER's call)
+
+Evidence robustly favours trading beyond the overlap: all-24h beats `[14,18)` in 4/5 years incl.
+Test, and the filter caused a full losing year (Y1). This REVERSES EXP-001's "keep default"
+only because EXP-001 never tested removal. `config/base.yaml` NOT modified by me (analysis-only
+mandate) — awaiting user confirmation. If adopted, implement as: widen/disable the session gate
+while KEEPING news blackout + Friday/rollover guard; re-verify once Watchman exits are modeled.
+Auditor gate thresholds NOT touched (rule 8).
+
 
 
 
