@@ -389,6 +389,174 @@ mandate) — awaiting user confirmation. If adopted, implement as: widen/disable
 while KEEPING news blackout + Friday/rollover guard; re-verify once Watchman exits are modeled.
 Auditor gate thresholds NOT touched (rule 8).
 
+---
 
+## EXP-004 2026-07-21 — Session gate `[0,22)` (rollover-hours-excluded) vs all-24h and `[14,18)`
 
+Status: PRE-REGISTERED (running) — Train+Validation only, Test set NOT touched (already
+CONSUMED for the session-filter family per EXP-003; rule 2 — one touch).
 
+### 0. Relation to EXP-001/002/003 + why this specific candidate
+
+EXP-003 found that REMOVING the `[14,18)` gate (trading all-24h) beats the filter in 4/5 years
+incl. the Test year, and CONSUMED the Test set for the session-filter family. But its own §4
+caveat (b) flagged that rollover hours 22-23 are net-negative even with spread cost modeled
+(5-yr hour bucket: 22:00 −$928, 23:00 −$306), and its §5 recommendation was NOT "literal
+unconditional 24h" but "drop the session gate BUT keep a rollover/Friday guard." That specific
+compromise config — `session_start_hour=0, session_end_hour=22` (admit all hours EXCEPT the
+documented net-losing rollover hours 22-23), news blackout + Friday-close guard unchanged — was
+RECOMMENDED but never backtested as its own explicit condition in EXP-003. This experiment tests
+exactly that config, on Train+Validation ONLY.
+
+An undisciplined ad-hoc peek at the already-CONSUMED Test year was taken by the orchestrator
+(PF 1.32 / 184 tr / DD 3.97% / +$1,539). Per rule 2 that is a spent-Test-set peek and is NOT
+valid evidence; it is recorded here only as the context that prompted this disciplined run. This
+experiment's verdict stands solely on the Train+Validation evaluation below and does NOT reuse or
+confirm that number.
+
+### 1. Hypothesis / mechanism
+
+Mechanism is explicit and pre-committed from EXP-003's own hour-bucket data: hours 22-23
+(rollover / thin-liquidity) are net-losing even after spread+commission+slippage. If those two
+hours are the *only* genuinely-bad slice, then excluding just them — `[0,22)` — should (a) match
+or beat literal all-24h (it removes a documented loss-making slice), and (b) beat the narrow
+`[14,18)` filter (which EXP-003 already showed discards profitable London/NY/Asia hours and even
+flips Y1 into a losing year). Open question / failure mode: the 22-23 loss could be an aggregate
+artifact of one regime, or removing those hours could remove too few trades to matter, or could
+itself flip a year — the per-year robustness bar (below) is the guard.
+
+### 2. Data splits (reuse EXP-001/002/003's; chronological, no shuffling)
+
+| Split      | Range                    | span | use here |
+|------------|--------------------------|------|----------|
+| Train      | 2021-07-22 → 2024-07-21  | 3 yr | evaluate per-year (Y1,Y2,Y3) |
+| Validation | 2024-07-21 → 2025-07-21  | 1 yr | evaluate (Y4) |
+| Test       | 2025-07-21 → 2026-07-21  | 1 yr | **NOT TOUCHED — CONSUMED by EXP-003** |
+
+Per-year boundaries: Y1 2021-07-22→2022-07-21, Y2 →2023-07-21, Y3 →2024-07-21, Y4 →2025-07-21.
+
+### 3. Conditions (one gate parameter; candidate + 2 plateau neighbors + 2 existing baselines)
+
+| id | gate      | role                                            |
+|----|-----------|-------------------------------------------------|
+| A  | none/24h  | baseline 1 — EXP-003's all-24h (rollover incl.) |
+| F  | [14,18)   | baseline 2 — current live config                |
+| K  | **[0,22)**| **CANDIDATE** — rollover 22-23 excluded         |
+| N1 | [0,21)    | plateau neighbor (end −1h)                       |
+| N2 | [0,23)    | plateau neighbor (end +1h)                       |
+
+All re-run through the SAME `experiments/session_window_harness.py` for apples-to-apples (cost
+model on: commission $7/lot, slippage = bar's own spread; news/Friday guards are Risk-Voice-live
+concerns unmodeled in the engine and identical across all conditions, so they don't bias the
+comparison). Family multiple-testing count for the session-filter family is now: EXP-001's 8
+windows + EXP-003's {all-24h} + this experiment's {[0,22),[0,21),[0,23)} = 12 distinct windows
+(still < 20). Candidate K is ONE new condition; N1/N2 are its plateau guards, not extra bets.
+
+### 4. Metric that decides + acceptance criterion (pre-registered)
+
+Deciding metric: **per-year profit factor + net $**, gated by trade floor and plateau (mirrors
+EXP-002/003's per-year robustness bar — the bar that caught tp 2.5's regime artifact and passed
+all-24h). ADOPT-CANDIDATE `[0,22)` iff ALL of:
+- (a) Trade floor: `trades(K) >= 100` in every one of the 4 years (Y1-Y4);
+- (b) vs `[14,18)`: K's PF ≥ F's PF in a MAJORITY of the 4 years AND K is not materially worse
+      (PF gap > 0.05 against it) in ANY year — i.e. K robustly dominates the current live filter;
+- (c) vs all-24h (A): K's PF ≥ A's PF − 0.02 in every year (K must not be materially worse than
+      simply trading 24h; the whole point of excluding 22-23 is that it should NOT cost us) AND
+      K beats A on net $ or PF in a MAJORITY of years (the rollover exclusion earns its keep);
+- (d) No sign flip: K does not turn any all-24h-positive year net-negative (the EXP-002 tp-2.5
+      failure mode / EXP-003 Y1 filter failure mode);
+- (e) Plateau (rule 5): neighbors N1 `[0,21)` and N2 `[0,23)` are within ~15% PF of K on the
+      aggregate Train+Val AND agree in direction (no sharp isolated peak at exactly end=22).
+Else REJECT (state which baseline to keep) or INSUFFICIENT DATA. Test set NOT touched (rule 2).
+Auditor gate thresholds NOT touched (rule 8).
+
+### 5. Spec bounds
+
+§1.5 tags the session hours `[adjustable]`; no hard numeric bound. `[0,22)` and its neighbors are
+within bounds. `friday_close_hour`, `news_blackout_*` untouched (separate params). Analysis-only:
+`config/base.yaml` NOT modified regardless of verdict — the user makes the final call.
+
+### 6. Results
+
+Harness: `experiments/session_window_harness.py` logic, all 5 conditions re-run through the
+SAME code path (cost model on: commission $7/lot, slippage = bar's own spread; Risk Voice OFF /
+signal-gate injection only). Fidelity: conditions A and F reproduce EXP-002/003's per-year
+all-24h and inside-[14,18) figures to the cent (A: Y1 1.050/+297, Y2 1.001/+5, Y3 1.224/+1294,
+Y4 1.064/+404; F: Y1 0.898/−518, Y2 1.038/+193, Y3 1.183/+1018, Y4 1.039/+172) — apples-to-apples
+confirmed. Batch: `scratchpad/exp004_batch.py`. Test year NOT run.
+
+#### 6.1 Per-year grid (PF / net $ / trades / DD%) — Test year EXCLUDED
+
+| Year | A all-24h | F [14,18) | **K [0,22)** | N1 [0,21) | N2 [0,23) |
+|------|-----------|-----------|--------------|-----------|-----------|
+| Y1 21-22 (Tr) | 1.050 / +297 / 197 / 5.74 | 0.898 / −518 / 168 / 10.20 | 1.011 / +69 / 206 / 7.03 | 1.010 / +63 / 206 | 1.011 / +68 / 202 |
+| Y2 22-23 (Tr) | 1.001 / +5 / 202 / 11.24 | 1.038 / +193 / 165 / 10.78 | 1.037 / +239 / 206 / 11.23 | 1.035 / +226 / 206 | 1.020 / +125 / 203 |
+| Y3 23-24 (Tr) | 1.224 / +1294 / 183 / 9.59 | 1.183 / +1018 / 178 / 6.49 | 1.258 / +1477 / 181 / 8.95 | 1.242 / +1381 / 181 | 1.239 / +1372 / 182 |
+| Y4 24-25 (Val)| 1.064 / +404 / 223 / 4.66 | 1.039 / +172 / 155 / 4.72 | 1.020 / +124 / 222 / 6.08 | 1.034 / +214 / 219 | 1.047 / +305 / 230 |
+| **Aggregate net** | **+2000 / 805 tr** | +866 / 666 tr | +1909 / 815 tr | +1884 / 812 tr | +1870 / 817 tr |
+
+Min trades/year for K = 181 (≥100 floor ✓, all conditions clear it).
+
+### 7. Robustness / acceptance-criteria evaluation
+
+Scoring K [0,22) against the pre-registered §4 criteria:
+
+- **(a) Trade floor ≥100 every year: PASS.** K = 206/206/181/222.
+- **(b) K vs current live [14,18) (F): PASS.** K ≥ F PF in Y1 (1.011 vs 0.898 — a decisive sign
+  flip: +$69 vs −$518), Y3 (1.258 vs 1.183); ties Y2 (1.037 vs 1.038, noise); Y4 marginally below
+  (1.020 vs 1.039, gap 0.019 < 0.05 → not material). Majority-win, no material loss in any year.
+  K robustly beats the current filter and, unlike F, does NOT flip Y1 negative.
+- **(c) K vs all-24h (A): FAIL.** Pre-registered bar = "K ≥ A PF − 0.02 in EVERY year AND K beats
+  A on net/PF in a majority." K falls MORE than 0.02 below A in **two** years: Y1 (1.011 vs 1.050,
+  gap −0.039) and Y4/Val (1.020 vs 1.064, gap −0.044). On net, K beats A in only 2/4 years
+  (Y2 +239 vs +5, Y3 +1477 vs +1294) and loses Y1 (+69 vs +297) and Y4 (+124 vs +404). Aggregate
+  net: A +$2000 > K +$1909. **Excluding rollover hours 22-23 does NOT earn its keep vs simply
+  trading 24h** — it makes ~$91 LESS in aggregate and is materially worse than all-24h in half the
+  Train+Val years.
+- **(d) No sign flip: PASS.** A is net-positive in all 4 years; K stays net-positive in all 4
+  (69/239/1477/124). K is safe (does not manufacture a losing year the way F does to Y1).
+- **(e) Plateau (rule 5): PASS (flat).** N1 [0,21) and N2 [0,23) track K within ~1-2% PF every
+  year (Y3 K 1.258 / N1 1.242 / N2 1.239; Y4 K 1.020 / N1 1.034 / N2 1.047). No sharp isolated
+  peak at end=22 — but the plateau is flat precisely BECAUSE moving the tail cut by ±1h barely
+  changes anything (one-position-at-a-time: very few fresh entries occur at hours 21/22/23).
+
+**Why (c) fails — mechanism.** EXP-003's motivating stat (5-yr hour bucket: 22:00 −$928, 23:00
+−$306) is a MULTI-YEAR AGGREGATE dominated by specific years (incl. the now-consumed Test year
+and Y3), not a per-year-stable loss. Per year, entries at 22-23 were net-POSITIVE in Y1 and Y4,
+so excluding them removed profitable trades and (via one-position sequencing — a trade held into
+22-23 vs a fresh entry) shuffled the downstream trade set unfavourably. The "rollover hours are
+uniformly bad" premise does not survive the per-year split — the same failure mode EXP-002's
+tp-2.5 hit (an aggregate edge that was really a regime artifact).
+
+**Multiple-testing (rule 7):** session-filter family now 12 distinct windows; K's aggregate edge
+over all-24h is negative, so magnitude is moot — no favourable result to over-credit.
+
+**Note on the undisciplined Test peek.** The orchestrator's ad-hoc [0,22) run on the CONSUMED
+Test year (PF 1.32 / 184 tr / +$1,539) is NOT used here and does not enter the verdict (rule 2 —
+Test is spent for this family). Even taken at face value it would only show [0,22) ≈ all-24h on
+Test (EXP-003 all-24h Test = PF 1.277 / +$1,458), consistent with the Train+Val finding that
+the rollover exclusion is roughly net-neutral-to-slightly-worse vs all-24h, not a new edge.
+
+### 8. VERDICT — REJECT the `[0,22)` candidate (rollover exclusion NOT justified on Train+Val)
+
+`session_start_hour=0, session_end_hour=22` **fails its own pre-registered acceptance** (criterion
+(c)): excluding rollover hours 22-23 does not beat simply trading all-24h — it earns ~$91 LESS in
+aggregate over Train+Val and is materially worse than all-24h in Y1 and Y4 (the Validation year).
+The 22-23-are-bad premise is a multi-year-aggregate artifact that dissolves per-year (rule 5/9).
+
+Two honest sub-findings, both matter for the user's decision:
+1. **[0,22) IS clearly better than the current live [14,18) filter** (fixes the Y1 sign flip,
+   +$1,043 more aggregate net, more trades). If the choice were only "current filter vs [0,22)",
+   [0,22) wins. But that is not the decision on the table.
+2. **[0,22) is NOT better than EXP-003's actual recommendation (all-24h + news/Friday guards).**
+   The specific rollover-exclusion refinement adds no value over plain all-24h and slightly hurts.
+   EXP-003's recommendation stands as-is; this experiment does NOT extend or improve it.
+
+Recommendation to user: do NOT adopt `[0,22)` as a distinct config. If acting on the session
+family, EXP-003's all-24h (gate removed, news blackout + Friday/rollover guard KEPT as live-risk
+controls that the backtest cannot see) remains the better-supported option; carving out 22-23
+specifically is not backtest-justified. Re-verify once Watchman exits are modeled in the engine.
+
+**Test set (2025-07-21 → 2026-07-21) NOT touched** — remained CONSUMED from EXP-003; this verdict
+rests entirely on Train+Validation (rule 2). `config/base.yaml` NOT modified (analysis-only).
+Auditor gate thresholds NOT touched (rule 8).
