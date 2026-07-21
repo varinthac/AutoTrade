@@ -76,21 +76,35 @@ order:
 
 # Risk Voice -- Council's own veto gate (council/risk_voice.py), per
 # trading_system_summary_v2.md Appendix A §1.5 / §6. All values [adjustable].
-# session_start_hour/session_end_hour approximate the London+New York
-# session overlap in MT5 SERVER time -- see risk_voice.py's module docstring
-# for the exact reasoning and its DST caveat (broker server-time offsets
-# drift with UK/US daylight saving, so this needs periodic manual
-# re-verification, not a one-time pick). NOTE: with only
-# StubNewsCalendarProvider wired in (council/news_calendar.py), the news
-# condition below always vetoes -- see that module's docstring.
+# NOTE: with only StubNewsCalendarProvider wired in as a fallback
+# (council/news_calendar.py, MQL5CalendarProvider used live when the MT5
+# Service is running), a missing/failed calendar fetch always vetoes -- see
+# that module's docstring.
+#
+# session_start_hour/session_end_hour: 2026-07-21, EXP-003/EXP-004
+# (experiments/experiments_log.md) -- the original [14,18) London+NY-overlap
+# window was never actually tested against "no session gate at all", only
+# against other windows confined to London+NY (EXP-001, which correctly
+# rejected widening WITHIN that range). EXP-003 tested removing the gate
+# entirely and found all-24h beats [14,18) in 4/5 years including the
+# held-out Test year, and the gate turned a winning year (2021-22, +$297)
+# into a losing one (-$518) with no offsetting benefit. EXP-004 then tested
+# EXP-003's own "keep a rollover guard" refinement (excluding hours 22-23
+# specifically, session_start_hour=0/session_end_hour=22) and found it does
+# NOT outperform literal all-24h on Train+Validation -- the "22-23 always
+# loses" pattern is an aggregate artifact that doesn't hold every year, so
+# REJECTED as a separate config. Net: 0/24 (no gate) is the evidence-backed
+# choice, not a partial exclusion. The existing news_blackout_*/
+# friday_close_hour below are UNCHANGED and still the live-risk controls
+# EXP-003 explicitly said must stay regardless of the session-gate decision.
 risk_voice:
   max_spread_multiple: 1.5
   max_spread_points_xauusd: 35
   news_blackout_before_min: 45
   news_blackout_after_min: 30
   max_stop_atr_multiple: 2.5
-  session_start_hour: 14
-  session_end_hour: 18
+  session_start_hour: 0
+  session_end_hour: 24
   friday_close_hour: 20
   max_atr_panic_multiple: 3.0
 
