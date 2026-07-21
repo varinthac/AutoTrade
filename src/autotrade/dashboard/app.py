@@ -12,21 +12,75 @@ alongside a live trading loop, and never exposed off `127.0.0.1` (see
 from __future__ import annotations
 
 import io
-from datetime import date, timedelta
+import logging
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 from flask import Flask, redirect, render_template, request, send_file, url_for
 
 from autotrade.auditor.daily_report import build_daily_report
+from autotrade.common.config import load_mt5_credentials, load_yaml_config
+from autotrade.common.mt5_connection import mt5_session
+from autotrade.common.mt5_time import server_now
+from autotrade.common.symbols import to_broker_name
 from autotrade.dashboard import views
 from autotrade.store import journal
 from autotrade.store.models import DEFAULT_PAPER_DB_PATH
+
+logger = logging.getLogger(__name__)
+
+_SERVER_TIME_MT5_TIMEOUT_MS = 3000
+
+
+def get_current_server_time() -> datetime | None:
+    """A brief, best-effort MT5 connection for display only -- this
+    dashboard is otherwise deliberately MT5-free (module docstring) so it
+    keeps working even when the MT5 terminal isn't running; this is the one
+    exception, and must never let an MT5 failure break a page render. Same
+    reference-symbol convention `scripts/run_shadow_loop.py`'s
+    `reference_symbol_broker_name` uses (first configured symbol).
+
+    This opens its own MT5 connection from the dashboard's own OS process --
+    `mt5_session()`'s reentrancy guard (`common/mt5_connection.py`) only
+    dedupes nested/sequential calls WITHIN one process, so it provides no
+    synchronization at all with the live trading loop's own long-lived
+    `mt5_session()` (e.g. `scripts/run_shadow_loop.py`), which runs as a
+    separate process. A clean failure here is already handled by the
+    broad except below (degrades to "(unavailable)"); genuine interference
+    with the live loop's own session is a known, accepted risk at this
+    project's current single-operator scale, not something this function
+    attempts to prevent.
+
+    Opens a fresh connection per request rather than caching a background
+    value: a cached value could silently go stale (e.g. keep showing a
+    server time from before the terminal was closed) -- staleness would
+    defeat the whole point of a "current" time display. A short timeout is
+    passed to mt5.initialize() (unlike every other mt5_session() caller,
+    which keeps the package's own default wait) so a dashboard page load
+    stays responsive even if the terminal is running but unresponsive."""
+    try:
+        symbol_map = load_yaml_config("base")["symbols"]
+        symbols = list(symbol_map.keys())
+        if not symbols:
+            return None
+        reference_symbol_broker_name = to_broker_name(symbols[0], symbol_map)
+        creds = load_mt5_credentials()
+        with mt5_session(creds, timeout_ms=_SERVER_TIME_MT5_TIMEOUT_MS):
+            return server_now(reference_symbol_broker_name)
+    except Exception:
+        logger.warning("get_current_server_time: could not fetch MT5 server time", exc_info=True)
+        return None
 
 
 def create_app(db_path: Path | None = None) -> Flask:
     app = Flask(__name__)
     resolved_db_path = db_path if db_path is not None else DEFAULT_PAPER_DB_PATH
+
+    @app.context_processor
+    def inject_current_server_time():
+        server_time = get_current_server_time()
+        return {"current_server_time": views.format_server_time(server_time) if server_time is not None else None}
 
     @app.route("/")
     def index():

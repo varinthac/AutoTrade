@@ -34,10 +34,16 @@ _depth = 0
 
 
 @contextmanager
-def mt5_session(creds: MT5Credentials) -> Iterator[None]:
+def mt5_session(creds: MT5Credentials, timeout_ms: int | None = None) -> Iterator[None]:
     """Initialize the MT5 terminal connection and log in for the duration
     of the outermost `with` block; nested calls (same credentials) reuse the
-    existing connection. Shuts down cleanly when the outermost block exits."""
+    existing connection. Shuts down cleanly when the outermost block exits.
+
+    timeout_ms defaults to None (mt5.initialize()'s own default wait, ~60s)
+    so every existing caller's behavior is unchanged -- a startup connection
+    (e.g. scripts/run_shadow_loop.py) may legitimately need to wait longer
+    for a terminal that's still loading. Callers that must stay responsive
+    (e.g. a dashboard page render) can pass a short value instead."""
     global _depth
 
     # The whole initialize sequence (not just the counter increment) runs
@@ -52,6 +58,8 @@ def mt5_session(creds: MT5Credentials) -> Iterator[None]:
             init_kwargs = dict(login=creds.login, password=creds.password, server=creds.server)
             if creds.terminal_path:
                 init_kwargs["path"] = creds.terminal_path
+            if timeout_ms is not None:
+                init_kwargs["timeout"] = timeout_ms
 
             if not mt5.initialize(**init_kwargs):
                 _depth -= 1

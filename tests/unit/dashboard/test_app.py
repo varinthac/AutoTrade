@@ -3,6 +3,7 @@ dashboard/views.py's pure logic -- same seeded-tmp_path DB convention as
 tests/unit/store/test_journal.py / tests/unit/test_run_auditor.py."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date, datetime
 
 import pandas as pd
@@ -10,7 +11,8 @@ import pytest
 
 from autotrade.auditor.daily_report import build_daily_report
 from autotrade.dashboard import views
-from autotrade.dashboard.app import create_app
+from autotrade.dashboard import app as dashboard_app
+from autotrade.dashboard.app import create_app, get_current_server_time
 from autotrade.store import journal
 
 
@@ -79,6 +81,77 @@ def test_trades_and_daily_show_server_time_banner(db_path):
     banner = "All times are MT5 broker SERVER time, not your local time."
     assert banner in trades_body
     assert banner in daily_body
+
+
+# --- current_server_time (Feature A) ---------------------------------------
+
+
+def test_current_server_time_displayed_when_available(db_path, monkeypatch):
+    monkeypatch.setattr(dashboard_app, "get_current_server_time", lambda: datetime(2026, 7, 21, 17, 30))
+    client = create_app(db_path=db_path).test_client()
+
+    trades_body = client.get("/trades").get_data(as_text=True)
+    daily_body = client.get("/daily").get_data(as_text=True)
+
+    assert "2026-07-21 17:30" in trades_body
+    assert "2026-07-21 17:30" in daily_body
+
+
+def test_current_server_time_unavailable_shows_clear_message_not_error(db_path, monkeypatch):
+    monkeypatch.setattr(dashboard_app, "get_current_server_time", lambda: None)
+    client = create_app(db_path=db_path).test_client()
+
+    resp = client.get("/trades")
+
+    assert resp.status_code == 200
+    assert "unavailable" in resp.get_data(as_text=True).lower()
+
+
+def test_get_current_server_time_returns_none_when_mt5_session_raises(monkeypatch):
+    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
+    monkeypatch.setattr(dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a"}})
+
+    def _raise(creds, **kwargs):
+        raise RuntimeError("MT5 terminal not running")
+
+    monkeypatch.setattr(dashboard_app, "mt5_session", _raise)
+
+    assert get_current_server_time() is None
+
+
+def test_get_current_server_time_passes_a_short_timeout_ms_to_mt5_session(monkeypatch):
+    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
+    monkeypatch.setattr(dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a"}})
+    captured = {}
+
+    @contextmanager
+    def _fake_session(creds, **kwargs):
+        captured.update(kwargs)
+        yield
+
+    monkeypatch.setattr(dashboard_app, "mt5_session", _fake_session)
+    monkeypatch.setattr(dashboard_app, "server_now", lambda symbol: datetime(2026, 7, 21, 17, 30))
+
+    get_current_server_time()
+
+    assert captured.get("timeout_ms") is not None
+    assert captured["timeout_ms"] <= 5000
+
+
+def test_page_still_renders_200_when_mt5_session_raises(db_path, monkeypatch):
+    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
+    monkeypatch.setattr(dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a"}})
+
+    def _raise(creds, **kwargs):
+        raise RuntimeError("MT5 terminal not running")
+
+    monkeypatch.setattr(dashboard_app, "mt5_session", _raise)
+
+    client = create_app(db_path=db_path).test_client()
+    resp = client.get("/trades")
+
+    assert resp.status_code == 200
+    assert "unavailable" in resp.get_data(as_text=True).lower()
 
 
 # --- /trades/export --------------------------------------------------------

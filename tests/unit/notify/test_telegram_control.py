@@ -4,10 +4,14 @@ format_status are always mocked (same "never actually launch a process"
 discipline as tests/unit/test_autotrade_control.py)."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
+from autotrade.auditor.daily_report import build_daily_report, format_daily_report
 from autotrade.notify import telegram_control
 from autotrade.notify.telegram_control import PendingConfirmation, handle_update, has_text_message, is_authorized, parse_command
+from autotrade.store import journal
 
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -273,6 +277,143 @@ def test_unknown_command_returns_usage_text():
     assert "/start" in reply
 
 
+# --- /trades, /daily ---------------------------------------------------------
+
+
+@pytest.fixture
+def db_path(tmp_path, monkeypatch):
+    path = tmp_path / "paper.sqlite"
+    monkeypatch.setattr(telegram_control, "DEFAULT_PAPER_DB_PATH", path)
+    return path
+
+
+def _record_trade(db_path, **overrides):
+    kwargs = dict(
+        symbol="XAUUSD", direction="BUY", entry_time=datetime(2026, 7, 19, 9, 0),
+        entry_price=2400.0, exit_time=datetime(2026, 7, 19, 10, 0), exit_price=2410.0,
+        exit_reason="take_profit", lot_size=0.1, gross_pnl=100.0, cost=2.0, net_pnl=98.0,
+        r_multiple=1.96, recorded_at=datetime(2026, 7, 19, 10, 0, 1), db_path=db_path,
+    )
+    kwargs.update(overrides)
+    journal.record_closed_trade(**kwargs)
+
+
+def test_trades_command_empty_db_returns_no_trades_message(db_path):
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/trades"), "12345", pending, FixedClock(NOW))
+
+    assert reply == "No trades recorded yet."
+
+
+def test_trades_command_shows_seeded_trade_field_values(db_path):
+    _record_trade(
+        db_path, symbol="EURUSD", direction="SELL", net_pnl=-12.5,
+        exit_reason="stop_loss", broker_ticket=1,
+    )
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/trades"), "12345", pending, FixedClock(NOW))
+
+    assert "EURUSD" in reply
+    assert "SELL" in reply
+    assert "-12.5" in reply
+    assert "stop_loss" in reply
+
+
+def test_trades_command_caps_at_ten_most_recent(db_path):
+    for i in range(12):
+        _record_trade(
+            db_path, symbol=f"SYM{i:02d}", exit_time=datetime(2026, 7, 19, 9, i), broker_ticket=i + 1,
+        )
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/trades"), "12345", pending, FixedClock(NOW))
+
+    assert "Most recent 10 trade(s)" in reply
+    assert "SYM11" in reply
+    assert "SYM02" in reply
+    assert "SYM01" not in reply
+    assert "SYM00" not in reply
+
+
+def test_daily_command_empty_db_returns_no_trades_message(db_path):
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/daily"), "12345", pending, FixedClock(NOW))
+
+    assert reply == "No trades recorded yet."
+
+
+def test_daily_command_cross_checks_against_build_daily_report_directly(db_path):
+    _record_trade(
+        db_path, symbol="XAUUSD", exit_time=datetime(2026, 7, 19, 10, 0), net_pnl=98.0, broker_ticket=1,
+    )
+    _record_trade(
+        db_path, symbol="XAUUSD", exit_time=datetime(2026, 7, 19, 16, 0), net_pnl=-40.0,
+        exit_reason="stop_loss", broker_ticket=2,
+    )
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/daily"), "12345", pending, FixedClock(NOW))
+
+    expected_report = build_daily_report(date(2026, 7, 19), db_path=db_path)
+    assert reply == format_daily_report(expected_report)
+
+
+def test_trades_command_returns_graceful_reply_not_exception_when_journal_raises(db_path, monkeypatch):
+    def _raise(*args, **kwargs):
+        raise Exception("database is locked")
+
+    monkeypatch.setattr(telegram_control.journal, "get_trades_in_range", _raise)
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/trades"), "12345", pending, FixedClock(NOW))
+
+    assert reply is not None
+    assert "Failed to fetch trade data" in reply
+    assert "database is locked" in reply
+
+
+def test_daily_command_returns_graceful_reply_not_exception_when_journal_raises(db_path, monkeypatch):
+    def _raise(*args, **kwargs):
+        raise Exception("database is locked")
+
+    monkeypatch.setattr(telegram_control.journal, "get_trades_in_range", _raise)
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/daily"), "12345", pending, FixedClock(NOW))
+
+    assert reply is not None
+    assert "Failed to fetch trade data" in reply
+    assert "database is locked" in reply
+
+
+def test_daily_command_returns_graceful_reply_when_build_daily_report_raises(db_path, monkeypatch):
+    _record_trade(db_path, broker_ticket=1)
+
+    def _raise(*args, **kwargs):
+        raise Exception("database is locked")
+
+    monkeypatch.setattr(telegram_control, "build_daily_report", _raise)
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/daily"), "12345", pending, FixedClock(NOW))
+
+    assert reply is not None
+    assert "Failed to fetch trade data" in reply
+    assert "database is locked" in reply
+
+
+def test_help_command_lists_trades_and_daily_commands():
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/help"), "12345", pending, FixedClock(NOW))
+
+    assert "/trades" in reply
+    assert "/daily" in reply
+
+
 # --- unauthorized sender ------------------------------------------------------
 
 
@@ -288,6 +429,17 @@ def test_unauthorized_sender_never_dispatches_to_any_gui_control_function(monkey
 
     assert reply is None
     assert calls == []
+
+
+def test_unauthorized_sender_cannot_reach_trades_or_daily_commands(db_path):
+    _record_trade(db_path, broker_ticket=1)
+    pending = PendingConfirmation()
+
+    trades_reply = handle_update(_update(99999, "/trades"), "12345", pending, FixedClock(NOW))
+    daily_reply = handle_update(_update(99999, "/daily"), "12345", pending, FixedClock(NOW))
+
+    assert trades_reply is None
+    assert daily_reply is None
 
 
 # --- interleaved message cancels a pending confirmation -----------------------

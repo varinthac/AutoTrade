@@ -10,22 +10,33 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from autotrade.auditor.daily_report import build_daily_report, format_daily_report
 from autotrade.common.clock import Clock
+from autotrade.dashboard import views
 from autotrade.gui import control as gui_control
+from autotrade.store import journal
+from autotrade.store.models import DEFAULT_PAPER_DB_PATH
 
 UNKNOWN_COMMAND = "unknown"
 
 _CONFIRMATION_WINDOW_SEC = 60
 _STDERR_TRUNCATE_CHARS = 300
 
-_COMMANDS = {"/start", "/stop", "/status", "/emergency_stop", "/help"}
+# Telegram messages have a real length limit, so /trades can't dump an
+# unbounded trade history -- same "cap it" reasoning as dashboard/views.py's
+# own pagination, just a smaller fixed count instead of a page param.
+_TRADES_REPLY_LIMIT = 10
+
+_COMMANDS = {"/start", "/stop", "/status", "/emergency_stop", "/trades", "/daily", "/help"}
 
 _USAGE_TEXT = (
     "AutoTrade control commands:\n"
     "/start - launch the shadow loop\n"
     "/stop - request a graceful stop\n"
     "/status - report loop/kill-switch/stop-flag state\n"
-    "/emergency_stop - halt trading AND close every open position at market (requires confirmation)"
+    "/emergency_stop - halt trading AND close every open position at market (requires confirmation)\n"
+    "/trades - most recent 10 trades (paper mode)\n"
+    "/daily - daily trade-autopsy report for the most recent recorded day"
 )
 
 
@@ -119,6 +130,48 @@ def _run_gui_action(command: str, action, success_text: str) -> str:
     return _format_result(result, success_text)
 
 
+def _format_trade_line(trade) -> str:
+    row = views.to_trade_row(trade)
+    return f"{row.exit_time}  {row.symbol} {row.direction}  net={row.net_pnl:+.2f}  R={row.r_multiple:.2f}  {row.exit_reason}"
+
+
+def _handle_trades() -> str:
+    # Unlike /start /stop /emergency_stop's _run_gui_action, journal reads
+    # here can raise from transient SQLite contention with the live loop's
+    # own writes to the same file (e.g. "database is locked") -- must still
+    # guarantee a reply, since run_poll_loop advances the update offset
+    # before this return value is used, so an uncaught exception here would
+    # silently drop the operator's message with no reply at all.
+    try:
+        all_trades = journal.get_trades_in_range(views.EPOCH, views.FAR_FUTURE, db_path=DEFAULT_PAPER_DB_PATH)
+    except Exception as exc:
+        return f"Failed to fetch trade data: {exc}. Try again."
+    if not all_trades:
+        return "No trades recorded yet."
+    recent = views.newest_first(all_trades)[:_TRADES_REPLY_LIMIT]
+    lines = [f"Most recent {len(recent)} trade(s) (paper mode):"]
+    lines.extend(_format_trade_line(trade) for trade in recent)
+    return "\n".join(lines)
+
+
+def _handle_daily() -> str:
+    # Same failure-reply guarantee as _handle_trades, and for the same
+    # reason (run_poll_loop's offset advancement means an uncaught exception
+    # here silently drops the operator's message).
+    try:
+        # The reported date comes from the trade data itself (views.default_daily_date),
+        # never MT5/wall-clock -- same convention dashboard/app.py's /daily route
+        # already uses, kept here so this listener stays MT5-free (module docstring).
+        all_trades = journal.get_trades_in_range(views.EPOCH, views.FAR_FUTURE, db_path=DEFAULT_PAPER_DB_PATH)
+        server_date = views.default_daily_date(all_trades)
+        if server_date is None:
+            return "No trades recorded yet."
+        report = build_daily_report(server_date, db_path=DEFAULT_PAPER_DB_PATH)
+        return format_daily_report(report)
+    except Exception as exc:
+        return f"Failed to fetch trade data: {exc}. Try again."
+
+
 def handle_update(
     update: dict, configured_chat_id: str, pending: PendingConfirmation, clock: Clock,
 ) -> str | None:
@@ -140,6 +193,10 @@ def handle_update(
             "EMERGENCY STOP requested -- this halts trading AND closes every open "
             f"position at market. Reply with {code} within 60 seconds to confirm."
         )
+    if command == "/trades":
+        return _handle_trades()
+    if command == "/daily":
+        return _handle_daily()
     if command == "/help":
         return _USAGE_TEXT
 

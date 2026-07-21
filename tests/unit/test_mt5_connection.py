@@ -68,6 +68,40 @@ def test_mt5_session_includes_terminal_path_when_set(monkeypatch):
     assert captured["path"] == r"C:\MT5\terminal64.exe"
 
 
+def test_mt5_session_omits_timeout_kwarg_by_default(monkeypatch):
+    captured = {}
+
+    def fake_initialize(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(mt5_connection.mt5, "initialize", fake_initialize)
+    monkeypatch.setattr(mt5_connection.mt5, "account_info", lambda: _FakeAccount())
+    monkeypatch.setattr(mt5_connection.mt5, "shutdown", lambda: None)
+
+    with mt5_session(CREDS):
+        pass
+
+    assert "timeout" not in captured
+
+
+def test_mt5_session_passes_timeout_ms_through_to_initialize_when_given(monkeypatch):
+    captured = {}
+
+    def fake_initialize(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(mt5_connection.mt5, "initialize", fake_initialize)
+    monkeypatch.setattr(mt5_connection.mt5, "account_info", lambda: _FakeAccount())
+    monkeypatch.setattr(mt5_connection.mt5, "shutdown", lambda: None)
+
+    with mt5_session(CREDS, timeout_ms=3000):
+        pass
+
+    assert captured["timeout"] == 3000
+
+
 def test_mt5_session_raises_when_initialize_fails_and_does_not_shutdown(monkeypatch):
     shutdown_calls = []
     monkeypatch.setattr(mt5_connection.mt5, "initialize", lambda **kwargs: False)

@@ -1,0 +1,1337 @@
+# AutoTrade Test Cases Reference
+
+This document provides a comprehensive list of all 1030 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+
+## Overview
+
+- **Total Test Count**: 1030 (including all parametrized variants)
+- **Test Files**: ~55 files across `tests/unit/` subdirectories
+- **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
+
+**Important**: This document is a point-in-time reference snapshot, not automatically generated. As tests are added, modified, or removed, this file must be manually updated to stay in sync with the actual test suite. When adding or changing tests, please update the relevant section and adjust the summary table counts below.
+
+## Summary by Subsystem
+
+| Subsystem | Test File | Test Count |
+|-----------|-----------|-----------|
+| Auditor | test_backtest_results.py | 6 |
+| | test_borderline.py | 17 |
+| | test_daily_report.py | 3 |
+| | test_demotion.py | 11 |
+| | test_metrics.py | 6 |
+| | test_promotion.py | 29 |
+| **Auditor Subtotal** | | **72** |
+| Backtest | test_clock.py | 3 |
+| | test_cost_model.py | 7 |
+| | test_engine.py | 23 |
+| | test_forward_walk.py | 10 |
+| | test_lookahead_validation.py | 3 |
+| | test_report.py | 15 |
+| **Backtest Subtotal** | | **61** |
+| Council | test_decision_matrix.py | 50 |
+| | test_finnhub_news_calendar.py | 12 |
+| | test_mql5_calendar_provider.py | 21 |
+| | test_news_calendar.py | 2 |
+| | test_order_construction.py | 10 |
+| | test_risk_voice.py | 29 |
+| | test_scoring.py | 25 |
+| | test_trivial_signal.py | 6 |
+| **Council Subtotal** | | **155** |
+| Dashboard | test_app.py | 33 |
+| **Dashboard Subtotal** | | **33** |
+| Execution | test_demo_adapter.py | 65 |
+| | test_noop_adapter.py | 8 |
+| **Execution Subtotal** | | **73** |
+| Features | test_indicators.py | 10 |
+| | test_levels.py | 13 |
+| | test_swing.py | 15 |
+| **Features Subtotal** | | **38** |
+| GUI | test_control.py | 16 |
+| | test_env_file.py | 16 |
+| **GUI Subtotal** | | **32** |
+| Notify | test_gate_state.py | 16 |
+| | test_telegram.py | 22 |
+| | test_telegram_control.py | 46 |
+| **Notify Subtotal** | | **84** |
+| Orchestrator | test_shadow_loop.py | 44 |
+| **Orchestrator Subtotal** | | **44** |
+| Risk | test_circuit_breaker.py | 32 |
+| | test_sizing.py | 13 |
+| **Risk Subtotal** | | **45** |
+| Shield | test_checkpoint.py | 20 |
+| | test_correlation.py | 4 |
+| **Shield Subtotal** | | **24** |
+| Store | test_journal.py | 17 |
+| | test_models.py | 3 |
+| **Store Subtotal** | | **20** |
+| Watchman | test_connectivity_watchdog.py | 10 |
+| | test_evaluate.py | 6 |
+| | test_exit_conditions.py | 19 |
+| | test_loop.py | 28 |
+| | test_news_protection.py | 10 |
+| | test_position_metadata.py | 11 |
+| | test_stop_logic.py | 33 |
+| **Watchman Subtotal** | | **117** |
+| Scripts & CLI | test_autotrade_control.py | 19 |
+| | test_clock.py | 1 |
+| | test_config.py | 26 |
+| | test_historical_download.py | 6 |
+| | test_historical_gaps.py | 4 |
+| | test_kill_switch_flag.py | 9 |
+| | test_kill_switch_script.py | 25 |
+| | test_mt5_connection.py | 10 |
+| | test_mt5_time.py | 4 |
+| | test_pid_file.py | 19 |
+| | test_poller.py | 10 |
+| | test_run_auditor.py | 37 |
+| | test_run_backtest.py | 12 |
+| | test_run_shadow_loop.py | 24 |
+| | test_run_telegram_control.py | 10 |
+| | test_stop_request_flag.py | 9 |
+| | test_symbols.py | 7 |
+| **Scripts & CLI Subtotal** | | **236** |
+| | | |
+| **GRAND TOTAL** | | **1030** |
+
+---
+
+## Auditor — Daily reporting, promotion/demotion gates, borderline case analysis
+
+### tests/unit/auditor/test_backtest_results.py
+
+- test_load_valid_envelope_round_trips_every_field
+- test_missing_top_level_field_raises
+- test_missing_risk_voice_modeled_field_raises
+- test_missing_report_field_raises
+- test_invalid_json_raises
+- test_missing_file_raises
+- test_non_object_top_level_raises
+
+### tests/unit/auditor/test_borderline.py
+
+- test_load_borderline_cases_parses_jsonl
+- test_load_borderline_cases_missing_file_returns_empty_list
+- test_load_borderline_cases_skips_blank_lines
+- test_take_profit_case_is_classified_and_counted
+- test_stop_loss_case_is_classified_and_counted
+- test_time_stop_case_is_classified_and_counted
+- test_zero_stop_distance_case_is_skipped_as_malformed_not_counted_or_crashed
+- test_unresolved_case_is_counted_separately_and_excluded_from_avg_net_r
+- test_case_for_symbol_with_no_supplied_price_data_is_skipped_entirely
+- test_as_of_time_not_found_in_supplied_data_is_skipped_entirely
+- test_commission_and_spread_reduce_net_r_for_take_profit_case
+- test_meets_ai_consideration_signal_is_none_below_the_case_floor
+- test_meets_ai_consideration_signal_true_at_floor_case_count_and_avg_r
+- test_meets_ai_consideration_signal_false_when_avg_r_just_below_threshold
+- test_meets_ai_consideration_signal_exact_boundary_0_2000_true_0_1999_false
+
+### tests/unit/auditor/test_daily_report.py
+
+- test_build_daily_report_over_seeded_db
+- test_build_daily_report_with_no_data_returns_zeros_and_nones
+- test_format_daily_report_is_human_readable_and_does_not_crash_on_empty_data
+
+### tests/unit/auditor/test_demotion.py
+
+- test_no_records_yields_no_action
+- test_two_consecutive_calendar_months_of_net_loss_reverts_to_paper
+- test_one_losing_month_and_one_profitable_month_does_not_trigger
+- test_missing_data_for_one_of_the_two_months_does_not_trigger
+- test_rolling_60_day_profit_factor_below_1_reverts_to_paper
+- test_two_consecutive_calendar_months_of_loss_triggers_without_rolling_pf_also_firing
+- test_rolling_60_day_window_is_exactly_60_days_not_61
+- test_rolling_60_day_window_includes_the_boundary_day_itself
+- test_rolling_60_day_window_excludes_older_trades
+- test_win_rate_divergence_above_15_points_at_50_plus_trades_halts_and_investigates
+- test_win_rate_divergence_below_50_trades_does_not_trigger
+- test_precedence_halt_and_investigate_wins_over_revert_and_surfaces_both_reasons
+
+### tests/unit/auditor/test_metrics.py
+
+- test_compute_trade_metrics_matches_backtest_report_over_equivalent_closed_trades
+- test_compute_trade_metrics_over_trade_records_matches_same_numbers
+- test_zero_trades_returns_none_for_rate_dependent_fields
+- test_profit_factor_excluding_top_5_is_none_when_trade_count_at_or_below_five
+- test_profit_factor_is_inf_when_there_are_wins_and_zero_losses
+- test_profit_factor_is_zero_when_all_trades_are_exactly_breakeven
+
+### tests/unit/auditor/test_promotion.py
+
+- test_gate1_passes_when_every_criterion_clears
+- test_gate1_fails_outright_when_cost_model_incomplete_regardless_of_other_numbers
+- test_gate1_fails_outright_when_not_out_of_sample_regardless_of_otherwise_passing_numbers
+- test_gate1_fails_outright_reporting_both_hard_fail_criteria_when_both_missing
+- test_gate1_fails_outright_when_risk_voice_not_modeled_regardless_of_otherwise_passing_numbers
+- test_gate1_fails_outright_reporting_all_three_hard_fail_criteria_when_all_missing
+- test_gate1_profit_factor_boundary_1_30_passes_1_29_fails
+- test_gate1_profit_factor_exact_boundary_1_3_passes_1_2999_fails
+- test_gate1_max_drawdown_boundary_15_00_passes_15_01_fails
+- test_gate1_trade_count_boundary_200_passes_199_fails
+- test_gate1_profit_factor_excluding_top_5_must_exceed_1_0_not_just_equal
+- test_gate1_profit_factor_excluding_top_5_exact_boundary_1_0_fails_1_0001_passes
+- test_gate1_insufficient_data_when_trade_count_zero_marks_criteria_none_not_false
+- test_gate2_passes_with_enough_trades_and_weeks
+- test_gate2_fails_when_weeks_below_the_absolute_floor_even_with_enough_trades
+- test_gate2_fewer_than_100_trades_in_16_weeks_still_passes_sample_size_with_non_blocking_recommendation
+- test_gate2_fails_when_neither_trade_count_nor_weeks_fast_track_met
+- test_gate2_sample_size_compound_condition_all_four_quadrants
+- test_gate2_win_rate_deviation_29_percent_passes_31_percent_fails
+- test_gate2_avg_r_deviation_29_percent_passes_31_percent_fails
+- test_gate2_win_rate_deviation_exact_30_percent_passes_30_01_percent_fails
+- test_gate2_avg_r_deviation_exact_30_percent_passes_30_01_percent_fails
+- test_gate2_profit_factor_and_drawdown_boundaries
+- test_gate2_insufficient_data_when_zero_paper_trades
+- test_gate3_passes_when_every_criterion_clears
+- test_gate3_fails_when_months_below_threshold
+- test_gate3_heavy_circuit_breaker_blocks_regardless_of_other_numbers
+- test_gate3_avg_net_r_must_be_strictly_positive
+- test_gate3_profit_factor_boundary
+
+---
+
+## Backtest — Backtesting engine, cost modeling, report generation
+
+### tests/unit/backtest/test_clock.py
+
+- test_now_returns_the_constructor_supplied_initial_time
+- test_set_then_now_round_trips_exactly
+- test_repeated_set_calls_overwrite_not_accumulate
+
+### tests/unit/backtest/test_cost_model.py
+
+- test_cost_model_config_defaults_are_the_documented_placeholder
+- test_spread_slippage_price_defaults_slippage_to_the_bars_own_spread
+- test_spread_slippage_price_uses_an_explicit_slippage_override
+- test_commission_cost_scales_with_lot_size
+- test_round_trip_cost_combines_spread_slippage_and_commission
+- test_spread_slippage_price_uses_symbol_point_not_tick_size_or_tick_value
+- test_round_trip_cost_uses_tick_value_over_tick_size_for_point_value_not_point
+
+### tests/unit/backtest/test_engine.py
+
+- test_clean_take_profit_hit_applies_entry_cost_and_commission
+- test_spread_slippage_cost_is_tracked_separately_and_cost_plus_it_recovers_the_full_round_trip_cost
+- test_clean_stop_loss_hit
+- test_same_bar_touches_both_sl_and_tp_stop_loss_takes_priority
+- test_weekend_gap_through_stop_exits_at_the_actual_gapped_open_not_nominal_sl
+- test_position_still_open_at_end_of_data_is_closed_at_last_close_not_dropped
+- test_no_lookahead_signal_evaluated_once_and_fill_uses_next_bar_open_not_signal_bar_close
+- test_signal_firing_on_the_very_last_bar_produces_no_trade_no_next_bar_to_fill_on
+- test_signal_below_broker_minimum_lot_never_becomes_a_trade
+- test_engine_ignores_new_signals_while_a_position_is_open_even_if_signal_fn_always_fires
+- test_immediate_exit_on_the_same_bar_the_pending_order_fills
+- test_default_zero_commission_is_actually_applied_end_to_end_not_silently_ignored
+- test_sell_direction_fills_below_open_and_profits_when_price_falls
+- test_default_signal_fn_wires_the_real_council_and_produces_a_buy_trade
+- test_default_signal_fn_treats_a_borderline_hypothetical_order_as_no_trade
+- test_risk_voice_inputs_never_looks_ahead_of_as_of_index
+- test_risk_voice_cfg_session_hour_reflects_the_actual_signal_bar_not_a_stale_or_initial_hour
+- test_risk_voice_cfg_session_hour_tracks_a_later_bar_not_a_stale_initial_hour
+- test_risk_voice_cfg_none_never_vetoes_even_outside_any_session
+- test_risk_voice_cfg_permissive_still_lets_the_trade_through
+- test_risk_voice_cfg_session_veto_blocks_the_trade_entirely
+- test_risk_voice_cfg_stop_distance_veto_blocks_the_trade
+- test_no_historical_news_data_provider_always_returns_empty_list_never_none
+
+### tests/unit/backtest/test_forward_walk.py
+
+- test_take_profit_hit_first
+- test_stop_loss_hit_first
+- test_gap_through_stop_exits_at_the_actual_gapped_open
+- test_same_bar_touches_both_sl_and_tp_stop_loss_takes_priority
+- test_time_stop_expiry_marks_at_last_window_bar_close
+- test_no_exit_when_data_runs_out_before_the_time_stop_window_elapses
+- test_start_index_beyond_available_data_is_no_exit
+- test_sell_direction_gross_r_sign
+- test_commission_reduces_net_r_independent_of_lot_size
+- test_zero_stop_distance_does_not_raise_and_yields_zero_r_multiples
+
+### tests/unit/backtest/test_lookahead_validation.py
+
+- test_clean_take_profit_hit_matches_the_independent_reference_and_could_only_pass_with_next_bar_open_fill
+- test_gap_through_stop_loss_matches_the_independent_reference_sell_direction
+- test_gap_through_stop_loss_matches_the_independent_reference
+
+### tests/unit/backtest/test_report.py
+
+- test_empty_trades_returns_sensible_nones_and_zeros_not_a_crash
+- test_win_rate_and_counts
+- test_profit_factor_normal_case
+- test_profit_factor_is_infinite_when_there_are_wins_and_zero_losses
+- test_profit_factor_is_zero_when_there_are_only_losses
+- test_avg_r_multiple
+- test_max_drawdown_pct_hand_traced_peak_and_trough
+- test_max_drawdown_pct_sorts_by_exit_time_defensively_even_if_input_is_out_of_order
+- test_profit_factor_excluding_top_5_with_fewer_than_5_trades_returns_none
+- test_profit_factor_excluding_top_5_with_more_than_5_trades
+- test_profit_factor_excluding_top_5_with_exactly_5_trades_returns_none
+- test_max_drawdown_pct_picks_the_larger_of_two_separate_drawdown_episodes
+- test_all_breakeven_trades_produce_sensible_not_nonsensical_metrics
+- test_format_report_all_none_fields_renders_na_without_crashing
+- test_format_report_infinite_profit_factor_renders_literal_inf_not_garbled
+
+---
+
+## Council — Trading signal generation, risk voice, news calendar, market scoring
+
+### tests/unit/council/test_decision_matrix.py
+
+- test_clean_buy_row_proposes_buy
+- test_clean_sell_row_proposes_sell
+- test_both_above_conflict_threshold_is_conflicting_no_trade
+- test_neither_reaches_60_is_plain_no_conviction_not_borderline
+- test_near_threshold_band_is_borderline
+- test_exact_tie_hypothetical_direction_defaults_to_buy
+- test_documented_decision_table_gap_is_borderline_strong_but_not_negated
+- test_clean_buy_direction_set_even_when_no_confirmed_swing_yet
+- test_borderline_case_not_logged_when_no_confirmed_swing_yet
+- test_borderline_case_carries_the_full_hypothetical_order_for_replay
+- test_evaluate_council_returns_council_decision_and_optional_borderline_case
+- test_gap_bull_leads_lower_left_corner_is_borderline
+- test_gap_bull_leads_upper_right_corner_is_borderline
+- test_gap_bull_leads_full_bear_span_at_bull_floor
+- test_gap_lower_boundary_bear_39_is_clean_buy
+- test_gap_upper_boundary_bear_55_is_conflicting_not_gap
+- test_gap_neighbor_trailing_side_in_55_to_70_is_conflicting_not_gap
+- test_gap_boundary_bull_69_is_near_threshold_not_gap
+- test_gap_bear_leads_lower_left_corner_is_borderline
+- test_gap_bear_leads_upper_right_corner_is_borderline
+- test_gap_bear_leads_lower_boundary_bull_39_is_clean_sell
+- test_gap_bear_leads_upper_boundary_bull_55_is_conflicting_not_gap
+- test_gap_bear_leads_boundary_bear_69_is_near_threshold_not_gap
+- test_both_scores_high_and_ge_70_is_conflicting_not_a_clean_row
+- test_both_scores_high_and_tied_defaults_to_buy
+- test_near_threshold_floor_59_bull_is_no_conviction
+- test_near_threshold_floor_60_bull_is_borderline
+- test_near_threshold_floor_59_bear_is_no_conviction
+- test_near_threshold_floor_60_bear_is_borderline
+- test_near_threshold_fires_even_when_trailing_score_is_in_gap_zone
+- test_conflict_threshold_54_54_is_no_conviction
+- test_conflict_threshold_55_55_is_conflicting
+- test_conflict_threshold_asymmetric_54_55_is_no_conviction (2 parametrized cases)
+- test_low_tied_scores_are_not_borderline
+- test_zero_tied_scores_are_not_borderline
+- test_borderline_paths_agree_between_decision_and_borderline_case (8 parametrized cases)
+- test_non_borderline_paths_never_produce_a_borderline_case (5 parametrized cases)
+
+### tests/unit/council/test_finnhub_news_calendar.py
+
+- test_successful_fetch_with_high_impact_events_found
+- test_successful_fetch_with_no_matching_events_returns_empty_list_not_none
+- test_non_2xx_http_response_returns_none
+- test_network_timeout_error_returns_none
+- test_network_url_error_returns_none
+- test_malformed_json_returns_none
+- test_unexpected_json_shape_returns_none
+- test_currency_filtering_excludes_other_countries
+- test_high_impact_only_filtering_excludes_low_and_medium
+- test_unmapped_currency_fails_safe_without_any_http_call
+- test_second_call_within_ttl_does_not_re_hit_http_client
+- test_call_outside_ttl_re_hits_http_client
+
+### tests/unit/council/test_mql5_calendar_provider.py
+
+- test_successful_fetch_with_high_impact_events_found
+- test_no_matching_events_returns_empty_list_not_none
+- test_missing_file_returns_none
+- test_file_just_past_staleness_threshold_returns_none
+- test_file_within_staleness_threshold_is_still_used
+- test_file_exactly_at_staleness_threshold_is_still_used
+- test_long_stale_file_returns_none
+- test_malformed_rows_are_skipped_individually_not_fatal
+- test_unparseable_header_returns_none
+- test_header_with_columns_in_wrong_order_returns_none
+- test_header_with_missing_column_returns_none
+- test_currency_filtering_excludes_other_currencies
+- test_currency_with_zero_events_in_otherwise_populated_valid_file_returns_empty_list
+- test_high_impact_only_filtering_excludes_low_and_moderate
+- test_events_outside_window_are_excluded
+- test_constructor_appends_files_subfolder_under_the_parent_commondata_path
+- test_naive_clock_rejected_at_construction_with_clear_error
+- test_clock_that_turns_naive_after_construction_fails_safe_not_raises
+- test_resolve_commondata_path_returns_path_when_terminal_info_available
+- test_resolve_commondata_path_returns_none_when_terminal_info_unavailable
+- test_csv_columns_matches_mql5_exporters_header_write_call
+
+### tests/unit/council/test_news_calendar.py
+
+- test_stub_always_returns_none
+- test_stub_returns_none_regardless_of_currency_or_window
+
+### tests/unit/council/test_order_construction.py
+
+- test_buy_raw_distance_within_clamp_range_used_as_is
+- test_buy_raw_distance_too_narrow_clamped_up_to_sl_min_atr
+- test_buy_raw_distance_too_wide_clamped_down_to_sl_max_atr
+- test_sell_raw_distance_within_clamp_range_used_as_is
+- test_sell_raw_distance_too_narrow_clamped_up_to_sl_min_atr
+- test_sell_raw_distance_too_wide_clamped_down_to_sl_max_atr
+- test_buy_raw_distance_exactly_at_sl_min_atr_boundary_uses_it_unclamped
+- test_buy_raw_distance_exactly_at_sl_max_atr_boundary_uses_it_unclamped
+- test_invalid_direction_raises_value_error
+- test_no_confirmed_swing_returns_none
+
+### tests/unit/council/test_risk_voice.py
+
+- test_clean_state_is_not_vetoed
+- test_condition1_spread_multiple_breach
+- test_condition1_spread_xauusd_absolute_breach
+- test_condition1_xauusd_ceiling_does_not_apply_to_other_symbols
+- test_condition1_spread_multiple_exactly_at_ceiling_is_not_blocked
+- test_condition1_xauusd_spread_exactly_at_35_points_is_not_blocked
+- test_condition2_news_blocks_when_high_impact_event_in_window
+- test_condition2_news_fetch_failure_is_treated_as_there_is_news_and_vetoes
+- test_condition2_news_empty_list_is_not_a_fetch_failure_and_does_not_veto
+- test_condition2_only_queries_currencies_relevant_to_the_symbol
+- test_condition3_stop_distance_exceeds_atr_ceiling
+- test_condition3_stop_distance_at_exactly_the_ceiling_is_not_blocked
+- test_condition4_outside_session_hours_blocks
+- test_condition4_inside_session_hours_does_not_block
+- test_condition4_session_end_hour_is_exclusive_and_blocks
+- test_condition4_hour_just_before_session_end_does_not_block
+- test_condition5_friday_after_close_hour_blocks
+- test_condition5_friday_before_close_hour_does_not_block
+- test_condition5_friday_exactly_at_close_hour_blocks
+- test_condition5_friday_hour_just_before_close_does_not_block
+- test_condition6_atr_panic_breach
+- test_condition6_atr_panic_exactly_at_ceiling_is_not_blocked
+- test_reasons_lists_every_triggered_condition
+- test_callable_twice_clean_both_times_stays_not_vetoed
+- test_get_symbol_currencies_returns_empty_tuple_for_unlisted_symbol
+- test_get_symbol_currencies_returns_configured_tuple_for_listed_symbol
+- test_unlisted_symbol_news_condition_fails_safe_and_vetoes
+- test_listed_symbol_with_same_always_failing_provider_does_veto
+- test_recheck_catches_a_newly_appeared_news_event_between_calls
+
+### tests/unit/council/test_scoring.py
+
+- test_bull_trend_alignment_scores_30_when_ema20_gt_50_gt_200
+- test_bull_trend_alignment_scores_15_when_only_ema20_gt_ema50
+- test_bull_trend_alignment_scores_0_when_ema20_not_above_ema50
+- test_bear_trend_alignment_scores_30_when_ema20_lt_50_lt_200
+- test_bear_trend_alignment_scores_15_when_only_ema20_lt_ema50
+- test_bear_trend_alignment_scores_0_when_ema20_not_below_ema50
+- test_bull_momentum_rsi_scores_20_within_50_70_band
+- test_bear_momentum_rsi_scores_0_on_the_same_bull_band_series
+- test_bear_momentum_rsi_scores_20_within_30_50_band
+- test_bull_momentum_rsi_scores_0_when_overbought
+- test_bear_momentum_rsi_scores_0_when_oversold
+- test_bull_momentum_macd_scores_15_when_positive_and_expanding
+- test_bear_momentum_macd_scores_15_when_negative_and_contracting
+- test_momentum_macd_scores_0_on_a_flat_series_for_both_voices
+- test_momentum_macd_scores_0_at_as_of_index_zero_no_prior_bar
+- test_bull_market_structure_scores_20_on_confirmed_higher_low
+- test_bull_market_structure_scores_0_without_a_second_confirmed_swing
+- test_bear_market_structure_scores_20_on_confirmed_lower_high
+- test_bear_market_structure_scores_0_without_a_second_confirmed_swing
+- test_confluence_scores_15_when_near_a_round_number
+- test_confluence_scores_0_when_far_from_any_level
+- test_confluence_scores_15_when_near_the_daily_pivot_specifically
+- test_score_equals_sum_of_its_components
+- test_score_bull_voice_raises_on_out_of_bounds_as_of_index
+- test_score_bear_voice_raises_on_out_of_bounds_as_of_index
+
+### tests/unit/council/test_trivial_signal.py
+
+- test_generate_trivial_signal_fires_buy_exactly_on_the_crossover_bar
+- test_generate_trivial_signal_fires_sell_exactly_on_the_crossover_bar
+- test_generate_trivial_signal_none_when_as_of_index_is_zero_or_out_of_bounds
+- test_build_trade_idea_returns_none_when_no_confirmed_swing_yet
+- test_build_trade_idea_composes_signal_swing_and_order_construction_for_buy
+- test_build_trade_idea_composes_signal_swing_and_order_construction_for_sell
+
+---
+
+## Dashboard — Web UI for viewing trades and daily reports
+
+### tests/unit/dashboard/test_app.py
+
+- test_trades_empty_state
+- test_trades_shows_seeded_trade_field_values
+- test_trades_newest_first_ordering
+- test_trades_and_daily_show_server_time_banner
+- test_current_server_time_displayed_when_available
+- test_current_server_time_unavailable_shows_clear_message_not_error
+- test_get_current_server_time_returns_none_when_mt5_session_raises
+- test_get_current_server_time_passes_a_short_timeout_ms_to_mt5_session
+- test_page_still_renders_200_when_mt5_session_raises
+- test_trades_export_returns_valid_xlsx_with_seeded_trade_values
+- test_trades_export_respects_date_range_filter
+- test_trades_export_empty_db_returns_valid_header_only_xlsx
+- test_trades_export_malformed_start_param_does_not_500
+- test_trades_export_end_param_includes_selected_day
+- test_trades_end_param_includes_selected_day
+- test_daily_empty_db_shows_empty_state_not_error
+- test_daily_cross_checks_against_build_daily_report_directly
+- test_daily_defaults_to_most_recent_trade_day
+- test_index_redirects_to_trades
+- test_trades_malformed_start_param_does_not_500
+- test_trades_malformed_end_param_does_not_500
+- test_daily_malformed_date_param_does_not_500
+- test_trades_negative_page_clamped_not_shown_raw
+- test_newest_first_reverses_ascending_order
+- test_paginate_slices_by_page
+- test_paginate_clamps_below_page_one
+- test_parse_date_param_none_and_valid
+- test_default_daily_date_picks_latest_exit_time
+- test_default_daily_date_none_when_no_trades
+- test_trades_to_export_rows_matches_to_trade_row_field_values
+- test_trades_to_export_rows_empty_list
+- test_trades_to_export_rows_escapes_formula_injection_prefixes
+- test_trades_to_export_rows_does_not_touch_safe_string_values
+
+---
+
+## Execution — MT5 broker adapter, order placement, position management
+
+### tests/unit/execution/test_demo_adapter.py
+
+- test_successful_order_send_returns_correct_order_result
+- test_throttle_refuses_second_call_within_cooldown_without_touching_mt5
+- test_throttle_allows_call_again_after_cooldown_elapses
+- test_rejected_retcode_returns_failure_without_raising
+- test_fill_mismatch_beyond_tolerance_logs_warning_but_still_succeeds
+- test_get_equity_reads_account_info_equity
+- test_get_equity_raises_when_account_info_returns_none
+- test_get_balance_reads_account_info_balance
+- test_get_balance_raises_when_account_info_returns_none
+- test_missing_tick_returns_failure_without_sending_order
+- test_zero_time_tick_is_treated_same_as_missing_tick
+- test_order_send_returning_none_is_reported_as_failure
+- test_sell_direction_uses_bid_price_not_ask
+- test_invalid_direction_raises_value_error
+- test_partial_fill_retcode_reports_success_with_partial_message
+- test_fill_volume_mismatch_beyond_tolerance_logs_warning_but_still_succeeds
+- test_get_open_positions_returns_empty_list_when_no_open_positions
+- test_get_open_positions_maps_broker_symbol_and_computes_risk_pct
+- test_get_open_positions_maps_sell_type_to_sell_direction
+- test_get_open_positions_skips_position_with_unmapped_broker_symbol
+- test_get_open_positions_treats_missing_stop_loss_as_unbounded_risk
+- test_get_open_positions_sl_zero_treated_as_unbounded_risk_blocks_new_entries
+- test_get_open_positions_raises_when_positions_get_returns_none
+- test_get_open_positions_reverse_maps_broker_suffix_to_canonical_symbol
+- test_get_open_positions_raises_when_account_info_returns_none
+- test_throttle_boundary_elapsed_exactly_equal_to_minimum_is_allowed
+- test_place_order_retries_on_requote_then_succeeds
+- test_place_order_exhausts_retries_and_logs_execution_failed
+- test_place_order_retry_never_varies_request_between_attempts
+- test_place_order_none_result_retried_then_fails
+- test_place_order_zero_retries_sends_exactly_once
+- test_partial_fill_flags_partial_fill_true_on_order_result
+- test_full_fill_leaves_partial_fill_false
+- test_abnormal_slippage_within_rr_floor_logs_but_stays_open
+- test_abnormal_slippage_below_rr_floor_closes_position_immediately
+- test_abnormal_slippage_self_close_writes_trade_record
+- test_abnormal_slippage_self_close_sends_trade_closed_notify
+- test_place_order_retry_request_identical_across_all_three_attempts
+- test_place_order_does_not_retry_terminal_no_money_retcode
+- test_place_order_does_not_retry_none_result_to_avoid_double_fill_on_market_order
+- test_abnormal_slippage_close_failure_retries_and_alerts_critical_when_still_failing
+- test_abnormal_slippage_close_not_found_retries_and_records_position_for_next_watchman_cycle
+- test_no_current_atr_supplied_skips_slippage_check_entirely
+- test_modify_stop_loss_success
+- test_modify_stop_loss_clamps_to_broker_stops_level
+- test_modify_stop_loss_sell_direction_clamps_upward
+- test_modify_stop_loss_no_clamp_needed_when_already_far_enough
+- test_modify_stop_loss_ticket_not_found_returns_failure
+- test_modify_stop_loss_exhausts_retries_and_logs_execution_failed
+- test_close_position_full_close
+- test_close_position_partial_close_uses_requested_volume
+- test_close_position_sell_position_uses_buy_to_close
+- test_close_position_requested_volume_exceeds_open_volume_returns_failure
+- test_close_position_ticket_not_found_returns_failure
+- test_close_position_exhausts_retries_and_logs_execution_failed
+- test_get_closed_trade_info_sl_hit_maps_to_stop_loss
+- test_get_closed_trade_info_tp_hit_maps_to_take_profit
+- test_get_closed_trade_info_expert_closed_maps_to_manual
+- test_get_closed_trade_info_stop_out_maps_to_unknown_and_logs_warning
+- test_get_closed_trade_info_aggregates_gross_pnl_and_cost_across_all_deals
+- test_get_closed_trade_info_no_deals_in_history_returns_none
+- test_get_closed_trade_info_only_entry_deal_no_exit_yet_returns_none
+- test_get_closed_trade_info_query_failure_returns_none
+- test_execution_failed_on_rejected_order_records_anomaly_event
+- test_abnormal_slippage_records_anomaly_event
+
+### tests/unit/execution/test_noop_adapter.py
+
+- test_place_order_always_succeeds_and_echoes_request
+- test_get_equity_returns_configured_fixed_value
+- test_get_balance_returns_same_fixed_value_as_get_equity
+- test_get_open_positions_always_returns_empty_list
+- test_place_order_ignores_current_atr_and_never_flags_slippage
+- test_modify_stop_loss_always_succeeds_and_echoes_new_sl
+- test_close_position_full_close_echoes_ticket_and_none_volume
+- test_close_position_partial_close_echoes_requested_volume
+
+---
+
+## Features — Technical indicators, price levels, swing detection
+
+### tests/unit/features/test_indicators.py
+
+- test_ema_matches_hand_traced_recursive_formula
+- test_rsi_matches_independent_exact_fraction_trace
+- test_atr_matches_independent_exact_fraction_trace
+- test_rsi_is_100_when_every_bar_is_a_gain_no_losses_at_all
+- test_rsi_is_0_when_every_bar_is_a_loss_no_gains_at_all
+- test_macd_histogram_matches_independent_from_scratch_loop
+- test_rolling_average_uses_full_window_when_enough_history_exists
+- test_rolling_average_uses_only_available_bars_when_history_shorter_than_window
+- test_rolling_average_at_index_zero_returns_just_that_one_value
+- test_rolling_average_never_looks_ahead_of_as_of_index
+
+### tests/unit/features/test_levels.py
+
+- test_daily_pivot_is_average_of_high_low_close
+- test_prior_day_ohlc_uses_the_last_fully_completed_server_day_only
+- test_prior_day_ohlc_raises_when_no_completed_prior_day_exists
+- test_nearest_round_number_gold_rounds_to_nearest_half
+- test_nearest_round_number_forex_rounds_to_nearest_50_pip_level
+- test_is_near_key_level_true_within_half_atr
+- test_is_near_key_level_false_outside_half_atr
+- test_is_near_key_level_true_at_exact_threshold_boundary
+- test_is_near_key_level_false_just_past_threshold_boundary
+- test_is_near_key_level_false_with_empty_levels_list
+- test_prior_day_ohlc_raises_on_negative_as_of_index
+- test_prior_day_ohlc_raises_on_as_of_index_beyond_frame
+- test_prior_day_ohlc_on_first_bar_of_new_day_still_excludes_that_day
+
+### tests/unit/features/test_swing.py
+
+- test_detect_swings_finds_the_single_known_swing_low_and_nothing_else
+- test_latest_confirmed_swing_low_not_visible_two_bars_after_forming
+- test_latest_confirmed_swing_low_becomes_visible_exactly_three_bars_after_forming
+- test_latest_confirmed_swing_low_raises_on_out_of_bounds_as_of_index
+- test_latest_confirmed_swing_low_finds_both_swing_lows_in_order
+- test_is_higher_low_true_once_second_higher_swing_low_confirmed_and_price_holds_above_it
+- test_is_lower_high_true_once_second_lower_swing_high_confirmed_and_price_holds_below_it
+- test_latest_confirmed_swing_high_symmetric_to_swing_low
+- test_latest_confirmed_swing_high_raises_on_out_of_bounds_as_of_index
+- test_latest_confirmed_swing_low_raises_on_negative_as_of_index
+- test_detect_swings_finds_nothing_when_df_too_short_for_any_pivot
+- test_detect_swings_ties_are_not_swings_strictly_greater_required
+- test_latest_confirmed_swing_low_returns_none_exactly_at_the_boundary_last_allowed_less_than_pivot_bars
+- test_is_higher_low_false_with_zero_confirmed_swings
+- test_is_lower_high_false_with_zero_confirmed_swings
+
+---
+
+## GUI — Control panel, environment file management
+
+### tests/unit/gui/test_control.py
+
+- test_build_status_nothing_active
+- test_build_status_loop_running_only
+- test_build_status_kill_switch_active_only
+- test_build_status_stop_pending_only
+- test_build_status_running_and_kill_switch_active_combined
+- test_build_status_stale_pid_reports_not_running
+- test_build_status_all_combined
+- test_can_start_true_when_nothing_active
+- test_can_start_false_when_loop_running
+- test_can_start_false_when_kill_switch_active
+- test_can_start_false_when_both_active
+- test_can_start_true_when_only_stop_pending
+- test_start_bot_invokes_control_script_with_start_argv
+- test_stop_bot_invokes_control_script_with_stop_argv
+- test_emergency_stop_bot_invokes_control_script_with_confirm_flag
+- test_format_status_includes_running_pid_and_kill_switch_reason
+
+### tests/unit/gui/test_env_file.py
+
+- test_round_trip_real_env_example
+- test_round_trip_synthetic_fixture
+- test_set_existing_key_only_changes_that_lines_value
+- test_set_preserves_value_containing_equals_signs
+- test_set_new_key_appends_at_end
+- test_set_new_key_on_text_without_trailing_newline
+- test_validate_mt5_login_accepts_digits
+- test_validate_mt5_login_rejects_non_digits
+- test_validate_mt5_login_allows_blank
+- test_validate_field_other_keys_always_none
+- test_secret_keys_contains_exactly_the_expected_set
+- test_secret_keys_excludes_non_secret_fields
+- test_ensure_env_exists_creates_copy_when_absent
+- test_ensure_env_exists_leaves_existing_file_untouched
+- test_write_env_atomic_writes_content_and_leaves_no_temp_file
+- test_write_env_atomic_leaves_original_untouched_on_replace_failure
+
+---
+
+## Notify — Event notifications, Telegram control, gate state tracking
+
+### tests/unit/notify/test_gate_state.py
+
+- test_promotion_gate_first_eval_always_changed
+- test_promotion_gate_check_alone_does_not_persist
+- test_promotion_gate_same_result_twice_is_silent_after_recording
+- test_promotion_gate_null_to_true_counts_as_changed
+- test_promotion_gate_false_to_true_counts_as_changed
+- test_promotion_gate_missing_state_file_treated_as_no_prior_state
+- test_promotion_gate_corrupt_state_file_treated_as_no_prior_state
+- test_promotion_gate_independent_gates_tracked_separately
+- test_promotion_gate_persists_across_separate_record_calls
+- test_record_promotion_gate_not_reflected_until_recorded
+- test_demotion_first_eval_always_changed_even_for_none_action
+- test_demotion_same_action_twice_is_silent_after_recording
+- test_demotion_none_to_revert_to_paper_counts_as_changed
+- test_demotion_missing_state_file_treated_as_no_prior_state
+- test_demotion_corrupt_state_file_treated_as_no_prior_state
+- test_promotion_and_demotion_state_coexist_in_same_file
+
+### tests/unit/notify/test_telegram.py
+
+- test_notify_posts_correct_url_and_payload
+- test_notify_swallows_network_exception_and_returns_false
+- test_notify_swallows_http_error_and_returns_false
+- test_notify_never_raises_on_unexpected_exception
+- test_notify_makes_zero_http_calls_when_credentials_missing
+- test_notify_makes_zero_http_calls_when_notifications_disabled
+- test_notify_defaults_timeout_sec_to_4_0
+- test_notify_swallows_socket_timeout_and_returns_false
+- test_notify_failure_log_never_contains_raw_token (4 parametrized cases)
+- test_notify_swallows_exception_from_load_telegram_credentials
+- test_notify_swallows_exception_from_load_yaml_config
+- test_notify_swallows_attribute_error_when_yaml_config_root_is_not_a_dict
+- test_notify_disabled_short_circuits_even_with_real_valid_looking_env_credentials
+- test_send_message_posts_correct_url_and_payload
+- test_send_message_sends_even_when_notifications_disabled
+- test_notify_still_respects_notifications_disabled_unlike_send_message
+- test_send_message_makes_zero_http_calls_when_credentials_missing
+- test_send_message_swallows_network_exception_and_returns_false
+- test_send_message_failure_log_never_contains_raw_token
+
+### tests/unit/notify/test_telegram_control.py
+
+- test_is_authorized_matches_int_chat_id_against_str_config
+- test_is_authorized_rejects_non_matching_chat_id
+- test_is_authorized_false_when_no_message_key
+- test_is_authorized_false_when_no_chat_key
+- test_is_authorized_false_when_no_id_key
+- test_is_authorized_never_raises_on_completely_malformed_update
+- test_has_text_message_true_for_plain_text_message
+- test_has_text_message_false_when_no_message
+- test_has_text_message_false_when_message_has_no_text
+- test_parse_command_start
+- test_parse_command_case_insensitive
+- test_parse_command_strips_botname_suffix
+- test_parse_command_unknown_text
+- test_parse_command_empty_string
+- test_emergency_stop_generates_code_and_does_not_call_emergency_stop_bot
+- test_correct_code_within_window_calls_emergency_stop_bot_exactly_once_and_clears_state
+- test_wrong_code_does_not_call_emergency_stop_bot
+- test_code_presented_after_expiry_does_not_call_emergency_stop_bot
+- test_second_emergency_stop_invalidates_first_code
+- test_second_emergency_stop_leaves_the_new_code_working
+- test_start_command_calls_start_bot_and_reports_success
+- test_start_command_reports_failure_with_returncode_and_stderr
+- test_stop_command_calls_stop_bot_and_reports_success
+- test_status_command_calls_build_status_and_format_status
+- test_help_command_returns_usage_text_listing_all_four_commands
+- test_unknown_command_returns_usage_text
+- test_trades_command_empty_db_returns_no_trades_message
+- test_trades_command_shows_seeded_trade_field_values
+- test_trades_command_caps_at_ten_most_recent
+- test_daily_command_empty_db_returns_no_trades_message
+- test_daily_command_cross_checks_against_build_daily_report_directly
+- test_trades_command_returns_graceful_reply_not_exception_when_journal_raises
+- test_daily_command_returns_graceful_reply_not_exception_when_journal_raises
+- test_daily_command_returns_graceful_reply_when_build_daily_report_raises
+- test_help_command_lists_trades_and_daily_commands
+- test_unauthorized_sender_never_dispatches_to_any_gui_control_function
+- test_unauthorized_sender_cannot_reach_trades_or_daily_commands
+- test_unrelated_message_while_pending_clears_state_with_explicit_reply
+- test_correct_code_after_interleaved_message_no_longer_works
+- test_wrong_code_guess_still_gets_the_original_did_not_match_reply
+- test_unrelated_message_with_no_pending_confirmation_gets_usage_text
+- test_confirmation_code_is_always_a_zero_padded_4_digit_string
+- test_confirmation_code_generation_uses_secrets_randbelow_of_10000
+- test_start_command_gui_control_raising_returns_graceful_reply_not_exception
+- test_stop_command_gui_control_raising_returns_graceful_reply
+- test_emergency_stop_confirm_gui_control_raising_returns_graceful_reply
+
+---
+
+## Orchestrator — Main trading loop orchestration
+
+### tests/unit/orchestrator/test_shadow_loop.py
+
+- test_kill_switch_active_blocks_adapter_and_evaluates_no_signal
+- test_circuit_breaker_tripped_blocks_adapter
+- test_floating_pnl_from_equity_minus_balance_feeds_daily_loss_gate
+- test_no_conviction_does_not_call_adapter_or_raise
+- test_clean_buy_decision_places_order_via_adapter
+- test_clean_buy_decision_notifies_once_with_key_order_facts
+- test_clean_buy_decision_notify_message_matches_actual_placed_order_facts
+- test_rejected_order_does_not_notify
+- test_clean_sell_decision_places_sell_order_with_stop_above_entry
+- test_decision_without_confirmed_swing_places_no_order_but_still_appends_bar
+- test_shield_blocked_trade_never_reaches_cfo_sizing_or_place_order
+- test_shield_blocked_trade_logs_warning_with_reason
+- test_shield_approved_trade_proceeds_to_cfo_sizing_and_records_trade_opened
+- test_shield_approved_but_lot_size_below_minimum_does_not_record_trade_opened
+- test_shield_record_trade_opened_not_called_when_order_rejected
+- test_on_new_bar_raises_key_error_for_unseeded_symbol
+- test_lot_size_below_broker_minimum_places_no_order
+- test_rejected_order_result_does_not_raise_and_leaves_history_appended
+- test_multiple_symbols_are_tracked_and_processed_independently
+- test_history_is_trimmed_to_max_history_bars_configured_limit
+- test_duplicate_bar_is_skipped_without_reevaluating
+- test_transient_get_equity_error_skips_this_bar_but_loop_keeps_running
+- test_keyboard_interrupt_during_bar_processing_is_not_swallowed
+- test_borderline_case_is_logged_to_jsonl_and_no_trade_placed
+- test_borderline_case_jsonl_round_trips_every_field
+- test_borderline_log_write_failure_does_not_crash_loop_and_skips_this_bar
+- test_risk_voice_veto_blocks_before_shield_is_consulted
+- test_risk_voice_veto_logs_warning_with_reason
+- test_default_news_provider_is_stub_and_vetoes_every_trade
+- test_stale_signal_recheck_vetoes_and_skips_placing_order
+- test_successful_trade_records_position_metadata
+- test_place_order_receives_current_atr_kwarg
+- test_ticket_none_does_not_record_position_metadata
+- test_run_wires_watchman_cycle_as_on_iteration_end_hook_when_given
+- test_run_passes_non_none_on_iteration_end_even_without_watchman_loop
+- test_no_conviction_records_blocked_signal
+- test_risk_voice_veto_records_blocked_signal
+- test_shield_blocked_trade_records_blocked_signal
+- test_stop_request_with_no_open_positions_exits_loop_clears_flag_and_notifies
+- test_stop_request_with_open_positions_exits_loop_clears_flag_and_warns_in_notify
+- test_stop_request_when_get_open_positions_raises_still_clears_flag_stops_loop_and_notifies
+- test_no_stop_request_does_not_notify_or_raise
+- test_stale_stop_request_flag_from_previous_session_does_not_instantly_stop_a_fresh_run
+- test_stop_requested_mid_cycle_still_processes_every_remaining_symbol_before_stopping
+
+---
+
+## Risk — Portfolio risk management, position sizing, circuit breaker
+
+### tests/unit/risk/test_circuit_breaker.py
+
+- test_no_gates_tripped_in_clean_state
+- test_daily_loss_limit_trips_and_blocks_new_entries
+- test_daily_loss_uses_realized_plus_floating_pnl
+- test_daily_loss_resets_at_next_server_day
+- test_three_consecutive_losses_halts_for_24_hours
+- test_consecutive_loss_halt_expires_after_24_hours
+- test_a_win_resets_the_consecutive_loss_streak
+- test_drawdown_from_peak_halts_entirely
+- test_drawdown_halt_does_not_auto_clear_on_time_or_equity_recovery
+- test_daily_loss_exactly_at_limit_trips_boundary_is_inclusive
+- test_daily_loss_just_under_limit_does_not_trip
+- test_drawdown_exactly_at_threshold_halts_boundary_is_inclusive
+- test_drawdown_just_under_threshold_does_not_halt
+- test_live_downgrade_exactly_at_threshold_signals_boundary_is_inclusive
+- test_consecutive_loss_halt_boundary_now_equal_to_halt_until_is_not_halted
+- test_a_4th_consecutive_loss_extends_the_halt_window_further
+- test_daily_loss_not_evaluated_when_no_equity_recorded_yet
+- test_equity_15pct_below_live_start_signals_downgrade_without_blocking
+- test_default_state_path_lives_under_data_db
+- test_state_survives_a_fresh_instance_pointed_at_the_same_file
+- test_active_drawdown_halt_survives_a_simulated_restart
+- test_manual_clear_of_drawdown_halt_persists_across_a_restart
+- test_no_state_path_means_no_file_written
+- test_missing_state_file_is_a_clean_start_not_an_error
+- test_corrupt_state_file_fails_closed_with_drawdown_halt_active
+- test_active_consecutive_loss_halt_survives_a_simulated_restart
+- test_full_state_round_trip_preserves_every_persisted_field
+- test_daily_loss_halt_records_one_anomaly_event
+- test_consecutive_loss_halt_records_one_anomaly_event
+- test_drawdown_halt_records_one_anomaly_event_even_across_repeated_record_equity_calls
+- test_downgrade_signal_records_one_anomaly_event
+- test_gate_edge_re_reports_after_clearing_and_re_tripping
+
+### tests/unit/risk/test_sizing.py
+
+- test_known_inputs_known_output
+- test_lot_rounds_down_never_up
+- test_below_min_lot_returns_none_no_trade
+- test_lot_capped_at_volume_max
+- test_volatility_halving_stacks_with_natural_stop_distance_effect
+- test_entry_equal_stop_loss_raises
+- test_equity_must_be_positive
+- test_risk_per_trade_pct_must_be_positive
+- test_point_value_must_be_positive
+- test_lot_exactly_at_volume_min_is_accepted_not_rejected
+- test_volatility_ratio_exactly_at_threshold_does_not_trigger_halving
+- test_avg_atr_20d_zero_is_treated_as_no_volatility_data_no_division_error
+- test_sell_direction_stop_above_entry_uses_absolute_distance
+
+---
+
+## Shield — Trade entry guard rails, correlation, rule enforcement
+
+### tests/unit/shield/test_checkpoint.py
+
+- test_clean_state_is_approved
+- test_rule1_min_rr_blocks_when_reward_risk_below_minimum
+- test_rule2_correlation_blocks_same_direction_correlated_open_position
+- test_rule2_correlation_does_not_block_opposite_direction
+- test_rule3_max_per_symbol_blocks_second_position_same_symbol
+- test_rule4_max_total_blocks_at_portfolio_wide_ceiling
+- test_rule5_risk_ceiling_not_blocked_when_exactly_at_ceiling
+- test_rule5_risk_ceiling_blocks_when_pushed_over
+- test_rule6_cooldown_blocks_same_swing_index_within_window
+- test_rule6_cooldown_approved_after_window_elapses_same_swing
+- test_rule6_cooldown_bypassed_by_different_swing_index_within_window
+- test_rule6_cooldown_only_applies_to_same_symbol_and_direction
+- test_multiple_rules_can_block_simultaneously
+- test_multiple_rules_block_reasons_lists_every_triggered_rule_exactly
+- test_rule1_min_rr_exactly_at_minimum_is_not_blocked
+- test_rule1_min_rr_just_under_minimum_blocks
+- test_rule2_correlation_guard_finds_correlated_position_even_when_not_first_in_list
+- test_rule2_correlation_does_not_block_when_corr_exactly_equals_max_correlation
+- test_rule2_correlation_does_not_block_when_corr_just_below_max_correlation
+- test_rule6_cooldown_never_blocks_brand_new_symbol_direction_even_with_other_state_recorded
+
+### tests/unit/shield/test_correlation.py
+
+- test_same_symbol_correlation_is_always_one
+- test_known_pair_is_symmetric
+- test_known_correlated_pair_returns_configured_value
+- test_unlisted_pair_defaults_to_zero_uncorrelated
+
+---
+
+## Store — Trade journal, database models, event logging
+
+### tests/unit/store/test_journal.py
+
+- test_wal_mode_enabled
+- test_record_and_query_closed_trade_round_trips_every_field
+- test_record_closed_trade_returns_true_on_genuine_insert
+- test_record_closed_trade_returns_false_on_swallowed_duplicate_ticket
+- test_record_and_query_blocked_signal_round_trips
+- test_record_and_query_anomaly_event_round_trips
+- test_record_anomaly_event_notifies_once_with_event_details
+- test_record_anomaly_event_still_persists_when_notify_raises
+- test_count_blocked_signals_groups_by_block_source
+- test_trade_at_exact_day_start_belongs_to_that_day
+- test_trade_one_microsecond_before_day_end_belongs_to_that_day_not_the_next
+- test_trades_bucketed_by_exit_time_not_entry_time
+- test_get_trades_in_range_spans_multiple_days
+- test_get_trades_for_day_with_no_trades_returns_empty_list
+- test_get_anomaly_events_for_day_ordered_by_timestamp
+- test_get_anomaly_events_for_day_includes_midnight_start_excludes_midnight_end
+- test_get_anomaly_events_in_range_spans_multiple_days
+
+### tests/unit/store/test_models.py
+
+- test_get_engine_returns_same_engine_for_the_same_explicit_path
+- test_get_engine_returns_different_engines_for_different_paths
+- test_get_engine_default_and_explicit_default_path_share_one_engine
+
+---
+
+## Watchman — Trade exit management, news protection, stop-loss trailing
+
+### tests/unit/watchman/test_connectivity_watchdog.py
+
+- test_check_returns_false_when_no_connection_ever_recorded
+- test_check_returns_false_within_timeout_window
+- test_check_returns_false_exactly_at_the_boundary
+- test_check_returns_true_and_logs_critical_once_timeout_exceeded
+- test_check_alerts_only_once_per_outage_not_every_call
+- test_check_alerts_once_across_checks_at_different_times_during_one_ongoing_outage
+- test_record_connected_resets_and_rearms_the_alert
+- test_check_records_one_anomaly_event_per_outage_not_every_call
+- test_journal_timestamp_uses_journal_clock_not_the_elapsed_duration_clock
+- test_journal_clock_defaults_to_the_main_clock_when_not_given
+
+### tests/unit/watchman/test_evaluate.py
+
+- test_structure_invalidation_wins_over_a_simultaneous_sl_update_opportunity
+- test_time_stop_wins_over_a_simultaneous_sl_update_opportunity
+- test_time_stop_wins_over_a_simultaneous_full_trailing_update_not_just_breakeven
+- test_structure_invalidation_wins_over_a_simultaneous_time_stop
+- test_clean_sl_update_only_case
+- test_genuine_no_action_case
+
+### tests/unit/watchman/test_exit_conditions.py
+
+- test_buy_close_below_swing_low_invalidates
+- test_buy_close_exactly_at_swing_low_is_not_invalidated_boundary_is_strict
+- test_buy_close_above_swing_low_is_not_invalidated
+- test_sell_close_above_swing_high_invalidates
+- test_sell_close_exactly_at_swing_high_is_not_invalidated_boundary_is_strict
+- test_sell_close_below_swing_high_is_not_invalidated
+- test_entry_swing_index_equal_to_as_of_index_is_allowed
+- test_entry_swing_index_after_as_of_index_raises
+- test_entry_swing_index_after_as_of_index_raises_valueerror_with_both_indices_in_message
+- test_invalid_direction_raises
+- test_before_time_stop_hours_never_closes_even_if_dead
+- test_exactly_at_time_stop_hours_boundary_is_inclusive
+- test_after_time_stop_hours_but_outside_r_band_does_not_close
+- test_r_band_upper_boundary_is_inclusive_buy
+- test_r_band_lower_boundary_is_inclusive_buy
+- test_r_band_just_outside_lower_boundary_does_not_close
+- test_sell_direction_mirrors_buy
+- test_invalid_direction_raises_for_time_stop
+- test_nonpositive_initial_stop_distance_raises_for_time_stop
+
+### tests/unit/watchman/test_loop.py
+
+- test_get_open_positions_success_records_connected_and_checks
+- test_get_open_positions_failure_skips_record_connected_but_still_checks
+- test_corrupt_metadata_store_halts_management_but_does_not_crash
+- test_one_position_raising_does_not_stop_others_from_being_evaluated
+- test_missing_metadata_skips_that_position_without_crashing
+- test_missing_history_for_symbol_skips_that_position
+- test_close_decision_closes_position_and_removes_metadata
+- test_close_decision_failure_leaves_metadata_intact
+- test_modify_sl_decision_calls_modify_stop_loss
+- test_no_action_decision_still_runs_news_protection_check
+- test_close_decision_skips_news_protection_entirely
+- test_close_half_and_breakeven_closes_half_and_moves_sl_to_entry
+- test_close_half_volume_rounds_down_to_broker_step
+- test_close_half_below_volume_min_falls_back_to_full_close
+- test_close_half_failure_does_not_attempt_breakeven_modify
+- test_news_close_all_removes_metadata
+- test_middle_of_three_positions_raising_still_evaluates_before_and_after
+- test_news_protection_close_half_fires_once_then_suppressed_for_remainder_of_window
+- test_reconciliation_writes_trade_record_for_ticket_gone_from_open_positions
+- test_reconciliation_no_history_found_yet_retains_metadata_and_does_not_crash
+- test_reconciliation_skips_tickets_still_open
+- test_partial_close_does_not_trigger_reconciliation_or_remove_metadata
+- test_explicit_close_writes_trade_record_immediately_without_history_query
+- test_explicit_close_is_not_double_counted_by_reconciliation_same_or_later_cycle
+- test_remove_position_metadata_failure_after_explicit_close_does_not_double_write
+- test_duplicate_trade_record_write_does_not_also_double_notify
+- test_explicit_close_notifies_once_with_key_trade_facts
+- test_reconciliation_close_notifies_once_with_key_trade_facts
+
+### tests/unit/watchman/test_news_protection.py
+
+- test_below_profit_threshold_is_no_action_even_with_news_incoming
+- test_profitable_but_no_news_is_no_action
+- test_profitable_with_news_closes_half_and_breakeven_by_default
+- test_profitable_with_news_and_close_mode_all_closes_everything
+- test_sell_direction_profit_computed_correctly
+- test_invalid_direction_raises_value_error
+- test_calendar_unavailable_triggers_protection_not_skips_it
+- test_stub_always_protects_once_profitable_documented_consequence
+- test_unmapped_symbol_currency_fails_safe_to_protection
+- test_news_window_uses_configured_minutes_not_risk_voice_window
+
+### tests/unit/watchman/test_position_metadata.py
+
+- test_default_state_path_lives_under_data_db
+- test_get_position_metadata_missing_ticket_returns_none
+- test_record_and_get_round_trips_every_field
+- test_state_survives_a_fresh_process_pointed_at_the_same_file
+- test_multiple_tickets_coexist_independently
+- test_record_position_opened_overwrites_existing_ticket
+- test_remove_position_metadata_deletes_the_record
+- test_remove_position_metadata_missing_ticket_is_a_no_op
+- test_remove_does_not_affect_other_tickets
+- test_corrupt_state_file_raises_corrupt_position_metadata_error
+- test_no_state_path_uses_default_path_argument_is_optional
+
+### tests/unit/watchman/test_stop_logic.py
+
+- test_buy_below_breakeven_r_returns_current_sl_unchanged
+- test_buy_at_breakeven_r_moves_sl_to_entry
+- test_buy_between_breakeven_and_trail_r_stays_at_breakeven
+- test_buy_at_trail_start_r_trails_by_atr
+- test_buy_trail_never_retreats_below_current_sl_even_if_trail_candidate_is_lower
+- test_sell_below_breakeven_r_returns_current_sl_unchanged
+- test_sell_at_breakeven_r_moves_sl_to_entry
+- test_sell_at_trail_start_r_trails_by_atr
+- test_sell_trail_never_retreats_above_current_sl
+- test_invalid_direction_raises
+- test_nonpositive_initial_stop_distance_raises
+- test_buy_sl_is_monotonically_non_decreasing_across_an_adversarial_price_path
+- test_buy_sl_locks_at_peak_trail_even_when_pullback_drops_below_breakeven_price
+- test_sell_sl_locks_at_peak_trail_even_when_pullback_drops_below_breakeven_price
+- test_buy_sl_across_multiple_rally_pullback_cycles_with_an_exact_tie_candidate
+- test_sell_sl_across_multiple_rally_pullback_cycles_with_an_exact_tie_candidate
+- test_buy_trail_candidate_wins_over_breakeven_well_beyond_trail_start_r
+- test_sell_trail_candidate_wins_over_breakeven_well_beyond_trail_start_r
+- test_buy_breakeven_wins_when_trail_candidate_is_less_favorable_despite_being_active
+- test_sell_breakeven_wins_when_trail_candidate_is_less_favorable_despite_being_active
+- test_sl_monotonicity_holds_across_a_wide_range_of_initial_stop_distances (12 parametrized cases)
+- test_sell_sl_is_monotonically_non_increasing_across_an_adversarial_price_path
+
+---
+
+## Scripts & CLI — Top-level scripts and entry points
+
+### tests/unit/test_autotrade_control.py
+
+- test_do_start_refuses_when_kill_switch_active
+- test_do_start_launches_run_shadow_loop_in_new_console_when_not_halted
+- test_do_stop_requests_stop_flag_with_reason
+- test_do_emergency_stop_without_confirm_refuses_and_does_not_shell_out
+- test_do_emergency_stop_with_confirm_invokes_kill_switch_script
+- test_do_emergency_stop_relays_nonzero_exit_code
+- test_do_status_reports_not_running_no_kill_switch_no_stop_flag
+- test_do_status_reports_running_when_pid_alive
+- test_do_status_reports_not_running_when_pid_stale
+- test_do_status_reports_kill_switch_active
+- test_do_status_reports_pending_stop_flag
+- test_do_status_reports_running_and_kill_switch_active_simultaneously
+- test_do_status_reports_lingering_stop_flag_while_loop_not_actually_running
+- test_main_requires_a_subcommand
+- test_main_dispatches_start
+- test_main_dispatches_stop
+- test_main_dispatches_status
+- test_main_dispatches_emergency_stop_with_confirm_flag
+- test_main_dispatches_emergency_stop_without_confirm_flag
+
+### tests/unit/test_clock.py
+
+- test_real_clock_now_returns_tz_aware_utc_within_call_bounds
+
+### tests/unit/test_config.py
+
+- test_load_mt5_credentials_success
+- test_load_mt5_credentials_login_is_coerced_to_int
+- test_load_mt5_credentials_includes_terminal_path_when_set
+- test_load_mt5_credentials_raises_when_a_required_var_is_missing (3 parametrized cases)
+- test_load_mt5_credentials_raises_when_all_vars_missing
+- test_load_mt5_credentials_treats_blank_string_as_missing
+- test_mt5_credentials_repr_masks_password
+- test_load_finnhub_api_key_returns_key_when_set
+- test_load_finnhub_api_key_returns_none_when_unset
+- test_load_finnhub_api_key_treats_blank_string_as_none
+- test_load_fmp_api_key_returns_key_when_set
+- test_load_fmp_api_key_returns_none_when_unset
+- test_load_fmp_api_key_treats_blank_string_as_none
+- test_load_eodhd_api_token_returns_token_when_set
+- test_load_eodhd_api_token_returns_none_when_unset
+- test_load_eodhd_api_token_treats_blank_string_as_none
+- test_load_telegram_credentials_returns_pair_when_both_set
+- test_load_telegram_credentials_returns_none_when_both_unset
+- test_load_telegram_credentials_returns_none_when_only_token_set
+- test_load_telegram_credentials_returns_none_when_only_chat_id_set
+- test_load_telegram_credentials_treats_blank_strings_as_missing
+- test_load_yaml_config_reads_real_base_config
+- test_load_yaml_config_missing_file_raises_file_not_found_error
+- test_load_yaml_config_empty_file_returns_empty_dict
+
+### tests/unit/test_historical_download.py
+
+- test_download_historical_raises_when_copy_rates_range_returns_none
+- test_download_historical_raises_when_copy_rates_range_returns_empty
+- test_download_historical_dedups_counts_gaps_and_saves_csv
+- test_download_historical_reports_zero_unexplained_gaps_for_clean_data
+- test_download_historical_drops_still_forming_last_bar
+- test_download_historical_keeps_last_bar_once_it_has_fully_closed
+
+### tests/unit/test_historical_gaps.py
+
+- test_friday_to_sunday_is_weekend_gap
+- test_friday_to_monday_is_weekend_gap
+- test_midweek_gap_is_not_weekend_gap
+- test_gap_longer_than_typical_weekend_is_not_classified_as_weekend
+
+### tests/unit/test_kill_switch_flag.py
+
+- test_is_active_false_when_no_flag_file
+- test_activate_writes_readable_flag_with_reason
+- test_activate_rejects_empty_reason
+- test_activate_creates_parent_directory
+- test_deactivate_clears_flag
+- test_deactivate_is_a_noop_when_not_active
+- test_get_status_returns_none_when_not_active
+- test_get_status_survives_corrupt_flag_file_as_active
+- test_default_flag_path_lives_under_data_db
+
+### tests/unit/test_kill_switch_script.py
+
+- test_close_all_open_positions_returns_empty_list_when_none_open
+- test_close_all_open_positions_raises_when_positions_get_fails
+- test_close_all_open_positions_closes_buy_with_sell_and_vice_versa
+- test_close_all_open_positions_reports_order_send_none_as_failure
+- test_close_all_open_positions_reports_rejected_retcode_as_failure
+- test_close_all_open_positions_reports_missing_tick_as_failure
+- test_do_activate_rejects_empty_reason
+- test_do_activate_writes_flag_before_closing_even_if_close_fails
+- test_do_activate_notifies_manual_intervention_required_when_a_close_fails
+- test_do_activate_notifies_once_with_reason
+- test_do_activate_notifies_before_attempting_to_close_positions
+- test_do_activate_succeeds_with_zero_positions
+- test_do_activate_succeeds_when_all_positions_close
+- test_do_activate_reports_partial_failure_when_some_positions_fail_to_close
+- test_do_activate_reports_connection_failure_loudly_without_pretending_success
+- test_do_status_reports_inactive_without_touching_mt5
+- test_do_status_reports_active_with_reason
+- test_do_deactivate_requires_confirm
+- test_do_deactivate_clears_flag_when_confirmed
+- test_do_deactivate_is_clean_noop_when_not_active
+- test_main_dispatches_status_flag_to_do_status
+- test_main_dispatches_activate_flag_with_reason_to_do_activate
+- test_main_dispatches_deactivate_with_confirm_to_do_deactivate
+- test_main_requires_one_of_the_mutually_exclusive_flags
+- test_main_rejects_activate_and_status_together
+
+### tests/unit/test_mt5_connection.py
+
+- test_mt5_session_success_yields_and_shuts_down
+- test_mt5_session_passes_login_password_server_to_initialize
+- test_mt5_session_includes_terminal_path_when_set
+- test_mt5_session_omits_timeout_kwarg_by_default
+- test_mt5_session_passes_timeout_ms_through_to_initialize_when_given
+- test_mt5_session_raises_when_initialize_fails_and_does_not_shutdown
+- test_mt5_session_raises_and_shuts_down_when_account_info_is_none
+- test_mt5_session_shuts_down_even_if_body_raises
+- test_mt5_session_nested_calls_initialize_once_and_shutdown_once_at_outermost_exit
+- test_mt5_session_sequential_calls_each_initialize_and_shutdown
+
+### tests/unit/test_mt5_time.py
+
+- test_server_now_reads_tick_time_as_naive_server_time
+- test_server_now_raises_when_tick_is_none
+- test_server_now_raises_on_zero_filled_placeholder_tick
+- test_server_clock_now_matches_server_now_convention
+
+### tests/unit/test_pid_file.py
+
+- test_read_returns_none_when_no_file
+- test_write_then_read_round_trips
+- test_write_creates_parent_directory
+- test_read_returns_none_for_corrupt_file
+- test_write_raises_and_does_not_overwrite_when_existing_pid_is_alive
+- test_write_removes_stale_pid_file_and_retries_successfully
+- test_write_treats_unreadable_existing_file_as_stale_and_overwrites
+- test_write_does_not_shell_out_to_tasklist_when_no_pre_existing_file
+- test_remove_deletes_file
+- test_remove_is_a_noop_when_no_file
+- test_is_running_false_when_no_file
+- test_is_running_true_when_pid_alive
+- test_is_running_false_when_pid_stale
+- test_default_pid_path_lives_under_data_db
+- test_is_pid_running_true_for_this_process_real_tasklist_call
+- test_is_pid_running_false_for_an_implausibly_large_pid_real_tasklist_call
+- test_is_pid_running_true_when_stdout_contains_an_exact_matching_row
+- test_is_pid_running_false_when_target_pid_is_only_a_substring_of_other_running_pids
+- test_is_pid_running_false_when_tasklist_reports_no_matching_tasks
+
+### tests/unit/test_poller.py
+
+- test_fetch_last_closed_bar_success_reads_position_1_not_0
+- test_fetch_last_closed_bar_raises_when_copy_rates_returns_none
+- test_fetch_last_closed_bar_raises_when_copy_rates_returns_empty
+- test_fetch_last_closed_bar_unknown_timeframe_raises_key_error
+- test_poll_new_bars_calls_back_once_per_new_closed_bar
+- test_poll_new_bars_swallows_bar_fetch_error_and_continues
+- test_poll_new_bars_tracks_each_symbol_independently
+- test_on_iteration_end_called_once_per_iteration_after_all_symbols
+- test_poll_new_bars_on_new_bar_sequence_unchanged_with_or_without_iteration_hook
+- test_on_iteration_end_none_by_default_never_called
+
+### tests/unit/test_run_auditor.py
+
+- test_cmd_daily_with_explicit_date_skips_mt5_entirely
+- test_cmd_daily_with_explicit_date_and_seeded_trade
+- test_cmd_daily_without_notify_flag_never_calls_notify
+- test_cmd_daily_notify_sends_on_first_run_and_updates_state
+- test_cmd_daily_notify_dedupes_same_server_date
+- test_cmd_daily_notify_sends_again_for_a_new_server_date
+- test_cmd_daily_notify_corrupt_state_file_does_not_crash_and_still_sends
+- test_cmd_daily_notify_missing_state_dir_does_not_crash_and_still_sends
+- test_cmd_daily_notify_message_contains_real_report_content
+- test_cmd_daily_notify_failure_does_not_mark_as_sent_and_retries_next_run
+- test_cmd_daily_defaults_to_server_date_not_local_today
+- test_server_today_uses_mt5_server_now_not_local_clock
+- test_cmd_promotion_gate_backtest_smoke_test
+- test_cmd_promotion_notify_sends_on_first_evaluation
+- test_cmd_promotion_notify_silent_when_result_unchanged
+- test_cmd_promotion_notify_failure_does_not_persist_and_retries_next_run
+- test_cmd_promotion_without_notify_flag_never_calls_notify_or_touches_gate_state
+- test_cmd_promotion_without_notify_does_not_suppress_a_later_notify_call
+- test_cmd_promotion_notify_sends_again_when_result_changes
+- test_cmd_promotion_gate_backtest_missing_envelope_returns_error
+- test_cmd_promotion_gate_paper_smoke_test_on_empty_db
+- test_cmd_promotion_gate_live_smoke_test_with_drawdown_halt_event
+- test_cmd_promotion_gate_live_daily_loss_halt_does_not_block
+- test_cmd_promotion_gate_live_consecutive_loss_halt_does_not_block
+- test_cmd_promotion_gate_live_both_light_and_heavy_cb_events_still_blocks
+- test_cmd_demotion_smoke_test_on_empty_db
+- test_cmd_demotion_missing_envelope_returns_error
+- test_cmd_demotion_notify_sends_on_first_evaluation
+- test_cmd_demotion_notify_silent_when_action_unchanged
+- test_cmd_demotion_notify_failure_does_not_persist_and_retries_next_run
+- test_cmd_demotion_without_notify_flag_never_calls_notify
+- test_cmd_demotion_without_notify_flag_never_touches_gate_state
+- test_cmd_demotion_without_notify_does_not_suppress_a_later_notify_call
+- test_cmd_borderline_no_cases_logged_yet
+- test_cmd_borderline_skips_symbol_with_no_historical_data_and_stays_mt5_free
+- test_cmd_borderline_full_replay_with_mocked_mt5
+
+### tests/unit/test_run_backtest.py
+
+- test_filter_by_date_range_start_only_keeps_bars_at_or_after
+- test_filter_by_date_range_end_only_is_exclusive
+- test_filter_by_date_range_both_bounds_narrows_to_the_slice
+- test_filter_by_date_range_no_bounds_returns_everything
+- test_filter_by_date_range_out_of_range_returns_empty_not_an_error
+- test_filter_by_date_range_returns_reindexed_copy_does_not_mutate_input
+- test_build_envelope_cost_model_complete_true_when_commission_set_and_min_spread_convention
+- test_build_envelope_cost_model_complete_false_when_commission_zero
+- test_build_envelope_cost_model_complete_false_when_slippage_explicitly_overridden
+- test_run_and_persist_writes_a_loadable_envelope
+- test_run_and_persist_risk_voice_cfg_marks_envelope_as_modeled
+- test_main_constructs_risk_voice_cfg_from_config_with_every_field_mapped_correctly
+- test_main_writes_an_envelope_with_risk_voice_modeled_true
+
+### tests/unit/test_run_shadow_loop.py
+
+- test_build_adapter_noop_returns_noop_broker_adapter
+- test_build_adapter_demo_returns_throttled_demo_adapter
+- test_build_adapter_demo_threads_journal_db_path_through
+- test_build_adapter_unknown_name_raises_value_error
+- test_seed_history_converts_rates_to_dataframe_with_datetime_time_column
+- test_seed_history_raises_when_copy_rates_returns_none
+- test_seed_history_raises_when_copy_rates_returns_empty
+- test_seed_history_uses_broker_mapped_symbol_name
+- test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols
+- test_main_mode_live_routes_journal_writes_to_the_live_db
+- test_main_mode_demo_adapter_also_gets_the_resolved_journal_db_path
+- test_main_uses_finnhub_provider_when_api_key_configured
+- test_main_prefers_mql5_provider_over_finnhub_when_commondata_path_resolves
+- test_build_news_provider_selects_mql5_even_when_export_file_not_yet_written
+- test_build_news_provider_selects_mql5_over_finnhub_even_without_finnhub_key
+- test_build_news_provider_falls_back_to_stub_when_neither_mql5_nor_finnhub_available
+- test_main_unknown_adapter_choice_rejected_by_argparse
+- test_main_sends_startup_notify_after_mt5_connects
+- test_main_double_launch_guard_proceeds_when_no_pid_file
+- test_main_double_launch_guard_refuses_when_pid_is_alive
+- test_main_double_launch_guard_proceeds_and_overwrites_stale_pid
+- test_main_writes_pid_file_during_run_and_removes_it_on_clean_exit
+- test_main_removes_pid_file_even_when_run_raises_keyboard_interrupt
+- test_main_removes_pid_file_even_when_run_raises_unhandled_exception
+
+### tests/unit/test_run_telegram_control.py
+
+- test_main_returns_1_and_prints_error_when_credentials_missing
+- test_main_polls_when_credentials_present
+- test_startup_backlog_is_discarded_and_offset_advances_past_it
+- test_startup_backlog_discard_drains_multiple_pages
+- test_fresh_update_after_backlog_skip_produces_a_sent_reply
+- test_backlog_discard_retries_on_transient_exception_then_succeeds
+- test_backlog_discard_gives_up_after_max_retries_and_still_starts_the_main_loop
+- test_backlog_discard_exception_message_never_logged_with_bot_token
+- test_exception_from_poll_fn_is_swallowed_and_loop_continues
+- test_exception_message_never_logged_with_bot_token
+
+### tests/unit/test_stop_request_flag.py
+
+- test_is_requested_false_when_no_flag_file
+- test_request_writes_readable_flag_with_reason
+- test_request_rejects_empty_reason
+- test_request_creates_parent_directory
+- test_clear_clears_flag
+- test_clear_is_a_noop_when_not_requested
+- test_get_status_returns_none_when_not_requested
+- test_get_status_survives_corrupt_flag_file_as_requested
+- test_default_flag_path_lives_under_data_db
+
+### tests/unit/test_symbols.py
+
+- test_to_broker_name_known_symbol_maps_correctly
+- test_to_broker_name_unknown_symbol_raises_with_available_choices_listed
+- test_to_broker_name_falls_back_to_yaml_config_when_no_map_given
+- test_get_symbol_spec_success_maps_all_fields
+- test_get_symbol_spec_raises_when_symbol_select_fails
+- test_get_symbol_spec_raises_when_symbol_info_returns_none
+- test_get_symbol_spec_unknown_canonical_symbol_raises_before_touching_mt5
