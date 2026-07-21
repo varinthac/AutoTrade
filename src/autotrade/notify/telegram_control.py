@@ -1,0 +1,163 @@
+"""Pure dispatch logic for Telegram inbound control commands (start/stop/
+status/emergency-stop) -- no network I/O here, see
+scripts/run_telegram_control.py for the polling/`urllib` boundary. Kept
+separate so the authorization/confirmation/dispatch logic is unit-testable
+without mocking `urllib` at all.
+"""
+from __future__ import annotations
+
+import secrets
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+from autotrade.common.clock import Clock
+from autotrade.gui import control as gui_control
+
+UNKNOWN_COMMAND = "unknown"
+
+_CONFIRMATION_WINDOW_SEC = 60
+_STDERR_TRUNCATE_CHARS = 300
+
+_COMMANDS = {"/start", "/stop", "/status", "/emergency_stop", "/help"}
+
+_USAGE_TEXT = (
+    "AutoTrade control commands:\n"
+    "/start - launch the shadow loop\n"
+    "/stop - request a graceful stop\n"
+    "/status - report loop/kill-switch/stop-flag state\n"
+    "/emergency_stop - halt trading AND close every open position at market (requires confirmation)"
+)
+
+
+def is_authorized(update: dict, configured_chat_id: str) -> bool:
+    try:
+        sender_chat_id = update["message"]["chat"]["id"]
+    except (KeyError, TypeError):
+        return False
+    return str(sender_chat_id) == str(configured_chat_id)
+
+
+def has_text_message(update: dict) -> bool:
+    message = update.get("message")
+    if not isinstance(message, dict):
+        return False
+    return isinstance(message.get("text"), str)
+
+
+def parse_command(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return UNKNOWN_COMMAND
+
+    token = stripped.split()[0].lower()
+    token = token.split("@", 1)[0]
+    return token if token in _COMMANDS else UNKNOWN_COMMAND
+
+
+def _looks_like_confirmation_attempt(text: str) -> bool:
+    stripped = text.strip()
+    return len(stripped) == 4 and stripped.isdigit()
+
+
+@dataclass
+class PendingConfirmation:
+    """Holds at most one pending `/emergency_stop` confirmation. The code is
+    random-per-request (not a fixed phrase) so a stray/replayed message can
+    never accidentally trigger a real emergency stop, and state lives only
+    in memory (never persisted to disk) so a process restart can't leave a
+    dangling pending code the operator no longer remembers issuing."""
+
+    code: str | None = None
+    expires_at: datetime | None = None
+
+    def request(self, clock: Clock) -> str:
+        # secrets.randbelow (not random.randint) even though the real
+        # security here is chat-id gating + single-guess-then-clear, not
+        # code unpredictability -- CSPRNG-backed generation is free, so
+        # there's no reason to leave a non-cryptographic RNG in a
+        # security-adjacent code path.
+        code = f"{secrets.randbelow(10000):04d}"
+        self.code = code
+        self.expires_at = clock.now() + timedelta(seconds=_CONFIRMATION_WINDOW_SEC)
+        return code
+
+    def confirm(self, text: str, clock: Clock) -> bool:
+        matched = (
+            self.code is not None
+            and self.expires_at is not None
+            and clock.now() <= self.expires_at
+            and text.strip() == self.code
+        )
+        self.clear()
+        return matched
+
+    def clear(self) -> None:
+        self.code = None
+        self.expires_at = None
+
+
+def _format_result(result, success_text: str) -> str:
+    if result.returncode == 0:
+        return success_text
+    stderr = (result.stderr or "").strip()
+    if len(stderr) > _STDERR_TRUNCATE_CHARS:
+        stderr = stderr[:_STDERR_TRUNCATE_CHARS] + "..."
+    return f"Failed (exit code {result.returncode}): {stderr}"
+
+
+def _run_gui_action(command: str, action, success_text: str) -> str:
+    # Distinct from _format_result's "ran but returned non-zero exit code"
+    # path: an unexpected exception (e.g. a bad interpreter path) here means
+    # the action never ran at all, so the operator -- who may be mid-emergency
+    # for /emergency_stop specifically -- must get an explicit reply rather
+    # than silence (the exception would otherwise only surface in the poll
+    # loop's own log, not back to whoever sent the command).
+    try:
+        result = action()
+    except Exception as exc:
+        return f"Failed to execute {command}: {exc}. Check the console/logs."
+    return _format_result(result, success_text)
+
+
+def handle_update(
+    update: dict, configured_chat_id: str, pending: PendingConfirmation, clock: Clock,
+) -> str | None:
+    if not is_authorized(update, configured_chat_id):
+        return None
+
+    text = update["message"]["text"]
+    command = parse_command(text)
+
+    if command == "/start":
+        return _run_gui_action("/start", gui_control.start_bot, "AutoTrade start requested.")
+    if command == "/stop":
+        return _run_gui_action("/stop", gui_control.stop_bot, "Graceful stop requested.")
+    if command == "/status":
+        return gui_control.format_status(gui_control.build_status())
+    if command == "/emergency_stop":
+        code = pending.request(clock)
+        return (
+            "EMERGENCY STOP requested -- this halts trading AND closes every open "
+            f"position at market. Reply with {code} within 60 seconds to confirm."
+        )
+    if command == "/help":
+        return _USAGE_TEXT
+
+    had_pending = pending.code is not None
+    if pending.confirm(text, clock):
+        return _run_gui_action("/emergency_stop", gui_control.emergency_stop_bot, "Emergency stop executed.")
+
+    if _looks_like_confirmation_attempt(text):
+        return "Confirmation code did not match or has expired -- emergency stop NOT executed."
+
+    if had_pending:
+        # PendingConfirmation.confirm() already cleared the state above (same
+        # single-guess-then-clear property as a wrong code) -- this branch
+        # only changes the REPLY, so the operator knows an interleaved
+        # message cancelled it rather than reading it as their code timing out.
+        return (
+            "Emergency-stop confirmation cancelled (a different message was received first). "
+            "Re-issue /emergency_stop if you still want to close all positions."
+        )
+
+    return _USAGE_TEXT

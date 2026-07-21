@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 _LOG_TRUNCATE_CHARS = 200
 
 
+def _post_message(token: str, chat_id: str, text: str, timeout_sec: float) -> None:
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
+
+    request = urllib.request.Request(url, data=data, method="POST")
+    with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+        response.read()
+
+
 def notify(text: str, *, timeout_sec: float = 4.0) -> bool:
     """Send `text` to the configured Telegram chat. Never raises -- EVERY
     call site (including safety-critical ones like `scripts/kill_switch.py`'s
@@ -58,14 +67,34 @@ def notify(text: str, *, timeout_sec: float = 4.0) -> bool:
             return False
 
         token, chat_id = creds
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
-
-        request = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(request, timeout=timeout_sec) as response:
-            response.read()
+        _post_message(token, chat_id, text, timeout_sec)
         return True
     except Exception as exc:
         truncated = text if len(text) <= _LOG_TRUNCATE_CHARS else text[:_LOG_TRUNCATE_CHARS] + "..."
         logger.warning("notify: failed (%s) for message: %r", exc, truncated)
+        return False
+
+
+def send_message(text: str, *, timeout_sec: float = 4.0) -> bool:
+    """Send `text` to the configured Telegram chat unconditionally of
+    `notifications.enabled` -- this is for command REPLIES on the inbound
+    control channel (scripts/run_telegram_control.py), where the user is
+    actively waiting for a response to a command they just sent, not a
+    best-effort outbound notification `notify()`'s toggle is meant to gate.
+    Still a no-op (returns False) if credentials are missing, same as
+    `notify()`."""
+    try:
+        creds = load_telegram_credentials()
+        if creds is None:
+            logger.debug(
+                "send_message: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not configured -- skipping"
+            )
+            return False
+
+        token, chat_id = creds
+        _post_message(token, chat_id, text, timeout_sec)
+        return True
+    except Exception as exc:
+        truncated = text if len(text) <= _LOG_TRUNCATE_CHARS else text[:_LOG_TRUNCATE_CHARS] + "..."
+        logger.warning("send_message: failed (%s) for message: %r", exc, truncated)
         return False
