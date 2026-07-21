@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 
 import MetaTrader5 as mt5
 import pandas as pd
 
+from autotrade.common import pid_file
 from autotrade.common.clock import RealClock
 from autotrade.common.config import (
     MT5Credentials,
@@ -37,6 +39,7 @@ from autotrade.execution.adapter import BrokerAdapter
 from autotrade.execution.demo_adapter import ThrottledDemoAdapter
 from autotrade.execution.noop_adapter import NoOpBrokerAdapter
 from autotrade.feed.poller import TIMEFRAME_MAP
+from autotrade.notify.telegram import notify
 from autotrade.orchestrator.shadow_loop import ShadowLoop, ShadowLoopConfig
 from autotrade.risk.circuit_breaker import DEFAULT_STATE_PATH, CircuitBreaker
 from autotrade.shield.checkpoint import Shield
@@ -154,6 +157,26 @@ def main() -> int:
     args = parser.parse_args()
 
     creds = load_mt5_credentials()
+
+    # Double-launch guard (start/stop workflow, scripts/autotrade_control.py):
+    # refuse to start a second instance while a previous one's PID file shows
+    # it's genuinely still running -- checked here, before touching MT5 at
+    # all, so a refused start never opens a second competing terminal
+    # connection. A PID file left behind by a prior crash (process no longer
+    # running) is stale and simply overwritten below once startup proceeds.
+    existing_pid = pid_file.read()
+    if existing_pid is not None and pid_file.is_pid_running(existing_pid):
+        logger.error(
+            "Start requested but AutoTrade is already running (PID %d) -- refusing to start a "
+            "second instance.", existing_pid,
+        )
+        notify(f"[AutoTrade] ⚠️ Start requested but AutoTrade is already running (PID {existing_pid}).")
+        return 1
+    if existing_pid is not None:
+        logger.warning(
+            "Stale PID file found (pid=%d not running) -- proceeding, will overwrite it.", existing_pid,
+        )
+
     cfg = load_yaml_config("base")
     symbols = list(cfg["symbols"].keys())
     symbol_map = cfg["symbols"]
@@ -219,64 +242,91 @@ def main() -> int:
     # of opening a second, separate session further down. mt5_session() is
     # reentrant (common/mt5_connection.py), so this is just a scope widening,
     # not a behavior change for anything that was already inside it.
-    with mt5_session(creds):
-        # RealClock is fine here too -- the Finnhub provider's cache TTL
-        # only needs monotonically-advancing wall-clock time, not server
-        # time (same rationale as adapter_clock above).
-        news_provider = build_news_provider(adapter_clock)
+    # Double-launch guard already passed above -- PID file is written now,
+    # before entering the polling loop, and removed via `finally` on every
+    # exit path (normal stop-flag-triggered return, KeyboardInterrupt, or any
+    # unhandled exception) so a clean-enough shutdown never leaves it stale.
+    # A hard process kill (taskkill /F, power loss, ...) is the one exit path
+    # that CAN still leave it stale -- accepted, documented limitation; the
+    # double-launch guard above self-heals from exactly that case on the next
+    # start.
+    try:
+        pid_file.write(os.getpid())
+    except FileExistsError as exc:
+        logger.error(
+            "Start requested but AutoTrade is already running -- refusing to start a second "
+            "instance (lost the race to claim the PID file: %s).", exc,
+        )
+        notify("[AutoTrade] ⚠️ Start requested but AutoTrade is already running (lost a startup race).")
+        return 1
 
-        watchman_config = WatchmanConfig(
-            breakeven_at_r=cfg["watchman"]["breakeven_at_r"],
-            trail_start_r=cfg["watchman"]["trail_start_r"],
-            trail_distance_atr=cfg["watchman"]["trail_distance_atr"],
-            time_stop_hours=cfg["watchman"]["time_stop_hours"],
-            dead_trade_r_band=cfg["watchman"]["dead_trade_r_band"],
-        )
-        news_protection_cfg = NewsProtectionConfig(
-            news_window_minutes=cfg["watchman"]["news_window_minutes"],
-            profit_threshold_r=cfg["watchman"]["news_profit_threshold_r"],
-            close_mode=cfg["watchman"]["news_close_mode"],
-        )
-        # Connectivity's own elapsed-duration/reconnect-detection math is a
-        # wall-clock-elapsed-time question ("how long has it actually
-        # been"), not a server-day-boundary one -- RealClock, same rationale
-        # as adapter_clock/news_provider's clock above. The journal write
-        # (AnomalyEventRecord.timestamp) is different: store/journal.py's
-        # day-boundary queries bucket by MT5 SERVER day, so that timestamp
-        # must come from loop_clock (the same ServerClock already wired for
-        # CircuitBreaker/ShadowLoop/WatchmanLoop) instead, per
-        # connectivity_watchdog.py's module docstring.
-        connectivity_watchdog = ConnectivityWatchdog(
-            adapter_clock, ConnectivityWatchdogConfig(timeout_minutes=cfg["watchman"]["connectivity_timeout_minutes"]),
-            journal_clock=loop_clock,
-        )
-        watchman_loop = WatchmanLoop(
-            adapter=adapter, watchman_config=watchman_config, news_provider=news_provider,
-            news_protection_config=news_protection_cfg, connectivity_watchdog=connectivity_watchdog,
-            symbol_map=symbol_map, state_path=DEFAULT_POSITION_METADATA_PATH,
-        )
+    try:
+        with mt5_session(creds):
+            # Sent for both --adapter noop and --adapter demo (not just demo)
+            # -- even a dry-run noop start is worth a Telegram confirmation
+            # that it actually launched and reached a connected MT5 session,
+            # rather than leaving the user checking a silent console window.
+            notify(f"[AutoTrade] 🟢 AutoTrade started (adapter={args.adapter}, symbols={symbols}).")
 
-        initial_history = {
-            symbol: seed_history(symbol, timeframe, args.seed_bars, symbol_map) for symbol in symbols
-        }
-        for symbol, df in initial_history.items():
-            logger.info(
-                "Seeded %s with %d bars (%s -> %s)", symbol, len(df), df["time"].iloc[0], df["time"].iloc[-1],
+            # RealClock is fine here too -- the Finnhub provider's cache TTL
+            # only needs monotonically-advancing wall-clock time, not server
+            # time (same rationale as adapter_clock above).
+            news_provider = build_news_provider(adapter_clock)
+
+            watchman_config = WatchmanConfig(
+                breakeven_at_r=cfg["watchman"]["breakeven_at_r"],
+                trail_start_r=cfg["watchman"]["trail_start_r"],
+                trail_distance_atr=cfg["watchman"]["trail_distance_atr"],
+                time_stop_hours=cfg["watchman"]["time_stop_hours"],
+                dead_trade_r_band=cfg["watchman"]["dead_trade_r_band"],
+            )
+            news_protection_cfg = NewsProtectionConfig(
+                news_window_minutes=cfg["watchman"]["news_window_minutes"],
+                profit_threshold_r=cfg["watchman"]["news_profit_threshold_r"],
+                close_mode=cfg["watchman"]["news_close_mode"],
+            )
+            # Connectivity's own elapsed-duration/reconnect-detection math is a
+            # wall-clock-elapsed-time question ("how long has it actually
+            # been"), not a server-day-boundary one -- RealClock, same rationale
+            # as adapter_clock/news_provider's clock above. The journal write
+            # (AnomalyEventRecord.timestamp) is different: store/journal.py's
+            # day-boundary queries bucket by MT5 SERVER day, so that timestamp
+            # must come from loop_clock (the same ServerClock already wired for
+            # CircuitBreaker/ShadowLoop/WatchmanLoop) instead, per
+            # connectivity_watchdog.py's module docstring.
+            connectivity_watchdog = ConnectivityWatchdog(
+                adapter_clock, ConnectivityWatchdogConfig(timeout_minutes=cfg["watchman"]["connectivity_timeout_minutes"]),
+                journal_clock=loop_clock,
+            )
+            watchman_loop = WatchmanLoop(
+                adapter=adapter, watchman_config=watchman_config, news_provider=news_provider,
+                news_protection_config=news_protection_cfg, connectivity_watchdog=connectivity_watchdog,
+                symbol_map=symbol_map, state_path=DEFAULT_POSITION_METADATA_PATH,
             )
 
-        shadow_loop = ShadowLoop(
-            adapter=adapter, circuit_breaker=circuit_breaker, shield=shield, cfg=loop_cfg,
-            initial_history=initial_history, symbol_map=symbol_map, clock=loop_clock,
-            news_provider=news_provider, risk_voice_cfg=risk_voice_cfg,
-            watchman_loop=watchman_loop, position_metadata_path=DEFAULT_POSITION_METADATA_PATH,
-        )
-        logger.info(
-            "Shadow loop starting: symbols=%s timeframe=%s adapter=%s -- waiting for next bar close",
-            symbols, timeframe, args.adapter,
-        )
-        shadow_loop.run(
-            symbols, timeframe, poll_interval_sec=args.poll_interval_sec, max_iterations=args.max_iterations,
-        )
+            initial_history = {
+                symbol: seed_history(symbol, timeframe, args.seed_bars, symbol_map) for symbol in symbols
+            }
+            for symbol, df in initial_history.items():
+                logger.info(
+                    "Seeded %s with %d bars (%s -> %s)", symbol, len(df), df["time"].iloc[0], df["time"].iloc[-1],
+                )
+
+            shadow_loop = ShadowLoop(
+                adapter=adapter, circuit_breaker=circuit_breaker, shield=shield, cfg=loop_cfg,
+                initial_history=initial_history, symbol_map=symbol_map, clock=loop_clock,
+                news_provider=news_provider, risk_voice_cfg=risk_voice_cfg,
+                watchman_loop=watchman_loop, position_metadata_path=DEFAULT_POSITION_METADATA_PATH,
+            )
+            logger.info(
+                "Shadow loop starting: symbols=%s timeframe=%s adapter=%s -- waiting for next bar close",
+                symbols, timeframe, args.adapter,
+            )
+            shadow_loop.run(
+                symbols, timeframe, poll_interval_sec=args.poll_interval_sec, max_iterations=args.max_iterations,
+            )
+    finally:
+        pid_file.remove()
 
     return 0
 

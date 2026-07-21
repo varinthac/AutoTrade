@@ -49,6 +49,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from autotrade.notify.telegram import notify
 from autotrade.store.models import (
     AnomalyEventRecord,
     BlockedSignalRecord,
@@ -95,12 +96,18 @@ def record_closed_trade(
     actual_slippage: float | None = None,
     broker_ticket: int | None = None,
     db_path: Path | None = None,
-) -> None:
+) -> bool:
     """Persist one fully-closed trade. Called exactly once per broker ticket
     by whichever of `watchman/loop.py`'s two paths observed the close --
     a second attempt for the same `broker_ticket` (the narrow error-recovery
     race described in the module docstring's "Idempotency" section) hits the
-    `UNIQUE` constraint and is swallowed here rather than raised."""
+    `UNIQUE` constraint and is swallowed here rather than raised.
+
+    Returns `True` if this call genuinely inserted a new `TradeRecord`,
+    `False` if it was a swallowed duplicate (nothing new was written) --
+    callers that trigger a caller-visible side effect per close (e.g.
+    `watchman/loop.py`'s trade-close `notify()`) must check this so a
+    swallowed duplicate write doesn't ALSO duplicate that side effect."""
     engine = get_engine(db_path)
     record = TradeRecord(
         symbol=symbol, direction=direction, entry_time=entry_time, entry_price=entry_price,
@@ -122,6 +129,8 @@ def record_closed_trade(
                 "recorded), never in normal operation. Skipping this duplicate write rather than "
                 "crashing the watchman loop or double-counting the trade.", broker_ticket,
             )
+            return False
+    return True
 
 
 def record_blocked_signal(
@@ -160,6 +169,8 @@ def record_anomaly_event(
     with Session(engine) as session:
         session.add(record)
         session.commit()
+
+    notify(f"[AutoTrade] Anomaly ({event_type}) at {timestamp.isoformat()}: {details}")
 
 
 def get_trades_in_range(

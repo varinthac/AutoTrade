@@ -157,6 +157,63 @@ def test_do_activate_writes_flag_before_closing_even_if_close_fails(flag_path, m
     assert kill_switch_flag.is_active(flag_path) is True
 
 
+def test_do_activate_notifies_manual_intervention_required_when_a_close_fails(flag_path, monkeypatch):
+    # A user relying on Telegram alone (not the console/log) must still
+    # learn that a position failed to close -- not just that the kill
+    # switch was activated.
+    monkeypatch.setattr(kill_switch, "load_mt5_credentials", lambda: CREDS)
+    monkeypatch.setattr(kill_switch, "mt5_session", _fake_session)
+    monkeypatch.setattr(mt5, "positions_get", lambda: (_FakePosition(42, "XAUUSD", 0.1, mt5.POSITION_TYPE_BUY),))
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda symbol: _FakeTick())
+    monkeypatch.setattr(mt5, "order_send", lambda request: None)
+    monkeypatch.setattr(mt5, "last_error", lambda: (2, "no connection"))
+    calls = []
+    monkeypatch.setattr(kill_switch, "notify", lambda text: calls.append(text))
+
+    exit_code = kill_switch.do_activate("testing manual intervention notify")
+
+    assert exit_code == 1
+    assert len(calls) == 2
+    assert "MANUAL INTERVENTION REQUIRED" in calls[1]
+    assert "42" in calls[1]
+
+
+def test_do_activate_notifies_once_with_reason(flag_path, monkeypatch):
+    monkeypatch.setattr(kill_switch, "load_mt5_credentials", lambda: CREDS)
+    monkeypatch.setattr(kill_switch, "mt5_session", _fake_session)
+    monkeypatch.setattr(mt5, "positions_get", lambda: ())
+    calls = []
+    monkeypatch.setattr(kill_switch, "notify", lambda text: calls.append(text))
+
+    exit_code = kill_switch.do_activate("testing notify")
+
+    assert exit_code == 0  # existing behavior unaffected by notify being mocked
+    assert len(calls) == 1
+    assert "testing notify" in calls[0]
+
+
+def test_do_activate_notifies_before_attempting_to_close_positions(flag_path, monkeypatch):
+    # Same "flag first" fail-safe ordering as the halt flag itself -- notify
+    # must fire even when connecting to MT5 to close positions fails. Two
+    # notifies now: the initial activation, and a second one reporting that
+    # closing positions itself failed (so a user relying only on Telegram
+    # -- not the console -- still learns positions may still be open).
+    def _raise_creds():
+        raise RuntimeError("MT5_LOGIN not set")
+
+    monkeypatch.setattr(kill_switch, "load_mt5_credentials", _raise_creds)
+    calls = []
+    monkeypatch.setattr(kill_switch, "notify", lambda text: calls.append(text))
+
+    exit_code = kill_switch.do_activate("testing notify before close attempt")
+
+    assert exit_code == 1
+    assert len(calls) == 2
+    assert "testing notify before close attempt" in calls[0]
+    assert "FAILED" in calls[1]
+    assert "check the terminal manually" in calls[1]
+
+
 def test_do_activate_succeeds_with_zero_positions(flag_path, monkeypatch):
     monkeypatch.setattr(kill_switch, "load_mt5_credentials", lambda: CREDS)
     monkeypatch.setattr(kill_switch, "mt5_session", _fake_session)

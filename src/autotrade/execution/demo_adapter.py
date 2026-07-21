@@ -57,6 +57,7 @@ from autotrade.execution.adapter import (
     OrderResult,
     TradeRequest,
 )
+from autotrade.notify.telegram import notify
 from autotrade.store import journal
 
 logger = logging.getLogger(__name__)
@@ -227,13 +228,19 @@ class ThrottledDemoAdapter(BrokerAdapter):
         net_pnl = info.gross_pnl - info.cost
         r_multiple = net_pnl / risk_amount if risk_amount else 0.0
 
-        journal.record_closed_trade(
+        inserted = journal.record_closed_trade(
             symbol=request.symbol, direction=request.direction, entry_time=entry_time,
             entry_price=entry_price, exit_time=info.close_time, exit_price=info.close_price,
             exit_reason="abnormal_slippage", lot_size=info.closed_volume,
             gross_pnl=info.gross_pnl, cost=info.cost, net_pnl=net_pnl, r_multiple=r_multiple,
             entry_spread_points=entry_spread_points, actual_slippage=actual_slippage,
             recorded_at=self._clock.now(), broker_ticket=ticket, db_path=self._journal_db_path,
+        )
+        if not inserted:
+            return  # swallowed duplicate write (see record_closed_trade docstring) -- do not double-notify
+        notify(
+            f"[AutoTrade] Trade CLOSED {request.symbol} {request.direction} entry={entry_price:.5f} "
+            f"exit={info.close_price:.5f} reason=abnormal_slippage net_pnl={net_pnl:.2f} R={r_multiple:.2f}"
         )
 
     def place_order(self, request: TradeRequest, current_atr: float | None = None) -> OrderResult:

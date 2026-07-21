@@ -9,6 +9,7 @@ only its downstream collaborator (orchestrator/shadow_loop.py) was tested.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from autotrade.common import pid_file
 from autotrade.common.clock import RealClock
 from autotrade.common.config import MT5Credentials
 from autotrade.common.mt5_time import ServerClock
@@ -143,10 +145,14 @@ _BASE_CFG = {
 }
 
 
-def _patch_common_main_wiring(monkeypatch) -> None:
+def _patch_common_main_wiring(monkeypatch, tmp_path) -> None:
     """Everything test_main_*() needs mocked EXCEPT load_finnhub_api_key
     (each test controls that one directly, since it's what decides which
-    news_provider gets wired in)."""
+    news_provider gets wired in). The PID file is redirected to tmp_path --
+    same "never let a test touch data/db/'s real files" rule as
+    tests/conftest.py's trade-journal isolation -- so main()'s double-launch
+    guard/PID-file write+remove never touches the repo's real
+    data/db/shadow_loop.pid."""
     monkeypatch.setattr(sys, "argv", ["run_shadow_loop.py", "--adapter", "noop", "--max-iterations", "1"])
     monkeypatch.setattr(run_shadow_loop, "load_mt5_credentials", lambda: CREDS)
     monkeypatch.setattr(run_shadow_loop, "load_yaml_config", lambda name: _BASE_CFG)
@@ -155,14 +161,15 @@ def _patch_common_main_wiring(monkeypatch) -> None:
         "time": [datetime(2026, 1, 1, tzinfo=timezone.utc)],
         "open": [100.0], "high": [101.0], "low": [99.0], "close": [100.0],
     }))
+    monkeypatch.setattr(pid_file, "DEFAULT_PID_PATH", tmp_path / "shadow_loop.pid")
 
 
-def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(monkeypatch):
+def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(monkeypatch, tmp_path):
     """Full integration of main()'s wiring, with MT5/credentials/config all
     mocked -- verifies the CLI actually builds a ShadowLoop for every
     configured symbol and calls .run() with the CLI's own args, rather than
     silently doing nothing or crashing before it gets there."""
-    _patch_common_main_wiring(monkeypatch)
+    _patch_common_main_wiring(monkeypatch, tmp_path)
     monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
 
     run_calls = {}
@@ -204,11 +211,11 @@ def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(mon
     assert run_calls["init_kwargs"]["cfg"].bull_threshold == 70
 
 
-def test_main_uses_finnhub_provider_when_api_key_configured(monkeypatch):
+def test_main_uses_finnhub_provider_when_api_key_configured(monkeypatch, tmp_path):
     """When FINNHUB_API_KEY is set (and the MQL5 calendar path can't be
     resolved -- no active MT5 session in this test), main() wires in
     FinnhubNewsCalendarProvider instead of the always-vetoing stub."""
-    _patch_common_main_wiring(monkeypatch)
+    _patch_common_main_wiring(monkeypatch, tmp_path)
     monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: "fake-key")
 
     run_calls = {}
@@ -228,12 +235,12 @@ def test_main_uses_finnhub_provider_when_api_key_configured(monkeypatch):
     assert isinstance(run_calls["init_kwargs"]["news_provider"], run_shadow_loop.FinnhubNewsCalendarProvider)
 
 
-def test_main_prefers_mql5_provider_over_finnhub_when_commondata_path_resolves(monkeypatch):
+def test_main_prefers_mql5_provider_over_finnhub_when_commondata_path_resolves(monkeypatch, tmp_path):
     """MQL5CalendarProvider is the top-priority candidate (see
     build_news_provider's docstring) -- even with FINNHUB_API_KEY also
     configured, main() wires in MQL5CalendarProvider whenever
     resolve_commondata_path() (an active MT5 session) succeeds."""
-    _patch_common_main_wiring(monkeypatch)
+    _patch_common_main_wiring(monkeypatch, tmp_path)
     monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: "fake-key")
     monkeypatch.setattr(run_shadow_loop, "resolve_commondata_path", lambda: r"C:\fake\Terminal\Common")
 
@@ -312,3 +319,125 @@ def test_main_unknown_adapter_choice_rejected_by_argparse(monkeypatch, capsys):
 
     with pytest.raises(SystemExit):
         run_shadow_loop.main()
+
+
+# --- Start/stop workflow: startup notify + PID double-launch guard ----------
+
+
+class _FakeShadowLoop:
+    def __init__(self, **kwargs):
+        pass
+
+    def run(self, symbols, timeframe, poll_interval_sec, max_iterations):
+        pass
+
+
+def test_main_sends_startup_notify_after_mt5_connects(monkeypatch, tmp_path):
+    _patch_common_main_wiring(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
+    monkeypatch.setattr(run_shadow_loop, "ShadowLoop", _FakeShadowLoop)
+    calls = []
+    monkeypatch.setattr(run_shadow_loop, "notify", lambda text: calls.append(text))
+
+    exit_code = run_shadow_loop.main()
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert "started" in calls[0]
+    assert "noop" in calls[0]
+    assert "XAUUSD" in calls[0]
+
+
+def test_main_double_launch_guard_proceeds_when_no_pid_file(monkeypatch, tmp_path):
+    _patch_common_main_wiring(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
+    monkeypatch.setattr(run_shadow_loop, "ShadowLoop", _FakeShadowLoop)
+
+    assert pid_file.read() is None
+    exit_code = run_shadow_loop.main()
+
+    assert exit_code == 0
+
+
+def test_main_double_launch_guard_refuses_when_pid_is_alive(monkeypatch, tmp_path):
+    _patch_common_main_wiring(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
+    pid_file.write(4242)
+    monkeypatch.setattr(pid_file, "is_pid_running", lambda pid: pid == 4242)
+
+    mt5_session_calls = []
+    monkeypatch.setattr(run_shadow_loop, "mt5_session", lambda creds: mt5_session_calls.append(creds) or _fake_session(creds))
+    notify_calls = []
+    monkeypatch.setattr(run_shadow_loop, "notify", lambda text: notify_calls.append(text))
+
+    exit_code = run_shadow_loop.main()
+
+    assert exit_code == 1
+    assert mt5_session_calls == []  # never even attempted a second MT5 connection
+    assert len(notify_calls) == 1
+    assert "already running" in notify_calls[0]
+    assert "4242" in notify_calls[0]
+    assert pid_file.read() == 4242  # untouched -- refused before overwriting it
+
+
+def test_main_double_launch_guard_proceeds_and_overwrites_stale_pid(monkeypatch, tmp_path):
+    _patch_common_main_wiring(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
+    monkeypatch.setattr(run_shadow_loop, "ShadowLoop", _FakeShadowLoop)
+    pid_file.write(9999)
+    monkeypatch.setattr(pid_file, "is_pid_running", lambda pid: False)  # stale -- not actually running
+
+    exit_code = run_shadow_loop.main()
+
+    assert exit_code == 0
+
+
+def test_main_writes_pid_file_during_run_and_removes_it_on_clean_exit(monkeypatch, tmp_path):
+    _patch_common_main_wiring(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
+
+    written_pid_seen = {}
+
+    class _ObservingShadowLoop(_FakeShadowLoop):
+        def run(self, symbols, timeframe, poll_interval_sec, max_iterations):
+            written_pid_seen["pid"] = pid_file.read()  # PID file must exist WHILE the loop runs
+
+    monkeypatch.setattr(run_shadow_loop, "ShadowLoop", _ObservingShadowLoop)
+
+    exit_code = run_shadow_loop.main()
+
+    assert exit_code == 0
+    assert written_pid_seen["pid"] == os.getpid()
+    assert pid_file.read() is None  # removed once main() returns (the stop-flag-triggered exit path)
+
+
+def test_main_removes_pid_file_even_when_run_raises_keyboard_interrupt(monkeypatch, tmp_path):
+    _patch_common_main_wiring(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
+
+    class _InterruptingShadowLoop(_FakeShadowLoop):
+        def run(self, symbols, timeframe, poll_interval_sec, max_iterations):
+            raise KeyboardInterrupt()
+
+    monkeypatch.setattr(run_shadow_loop, "ShadowLoop", _InterruptingShadowLoop)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_shadow_loop.main()
+
+    assert pid_file.read() is None  # finally still removed it despite the interrupt
+
+
+def test_main_removes_pid_file_even_when_run_raises_unhandled_exception(monkeypatch, tmp_path):
+    _patch_common_main_wiring(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
+
+    class _CrashingShadowLoop(_FakeShadowLoop):
+        def run(self, symbols, timeframe, poll_interval_sec, max_iterations):
+            raise RuntimeError("simulated crash")
+
+    monkeypatch.setattr(run_shadow_loop, "ShadowLoop", _CrashingShadowLoop)
+
+    with pytest.raises(RuntimeError):
+        run_shadow_loop.main()
+
+    assert pid_file.read() is None

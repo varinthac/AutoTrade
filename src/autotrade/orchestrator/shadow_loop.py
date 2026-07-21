@@ -93,7 +93,7 @@ from typing import Callable
 
 import pandas as pd
 
-from autotrade.common import kill_switch_flag
+from autotrade.common import kill_switch_flag, stop_request_flag
 from autotrade.common.clock import Clock
 from autotrade.common.config import REPO_ROOT
 from autotrade.common.symbols import SymbolSpec, get_symbol_spec
@@ -105,6 +105,7 @@ from autotrade.feed.poller import poll_new_bars
 from autotrade.feed.snapshot import Bar, MarketSnapshot
 from autotrade.features.indicators import atr
 from autotrade.features.swing import latest_confirmed_swing_high, latest_confirmed_swing_low
+from autotrade.notify.telegram import notify
 from autotrade.risk.circuit_breaker import CircuitBreaker
 from autotrade.risk.sizing import compute_lot_size
 from autotrade.shield.checkpoint import OpenPositionInfo, Shield
@@ -115,6 +116,16 @@ from autotrade.watchman.loop import WatchmanLoop
 logger = logging.getLogger(__name__)
 
 DEFAULT_BORDERLINE_LOG_PATH = REPO_ROOT / "data" / "db" / "borderline_log.jsonl"
+
+
+class _StopLoopRequested(Exception):
+    """Internal sentinel raised by `ShadowLoop._check_stop_request()` to
+    break out of `feed.poller.poll_new_bars`'s otherwise-unconditional loop
+    once a graceful stop has been requested (`common/stop_request_flag.py`).
+    `poll_new_bars` has no built-in early-exit mechanism (by design -- it's a
+    plain blocking loop), so this reuses the same "raise through the
+    on_iteration_end hook, catch it in run()" approach rather than modifying
+    that lower-level module. Never escapes `ShadowLoop.run()`."""
 
 # council/decision_matrix.py's four `borderline_reason` values, mapped to
 # store/journal.py's finer-grained BlockSource vocabulary -- fine enough to
@@ -254,15 +265,84 @@ class ShadowLoop:
         """Blocking call -- runs `feed.poller.poll_new_bars` forever (or for
         `max_iterations`), dispatching every new closed bar to `on_new_bar`.
         If a `watchman_loop` was injected, its per-cycle position management
-        also runs once per iteration (see module docstring)."""
-        poll_new_bars(
-            symbols, timeframe, self.on_new_bar,
-            poll_interval_sec=poll_interval_sec, max_iterations=max_iterations,
-            on_iteration_end=self._run_watchman_cycle if self._watchman_loop is not None else None,
-        )
+        also runs once per iteration (see module docstring).
+
+        A pending stop-request flag left over from a previous, abnormally-
+        ended session is cleared before entering the polling loop -- a stale
+        flag from last time must never instantly stop a fresh run. Once
+        running, `common/stop_request_flag.py` is checked once per full poll
+        cycle (not per symbol/per-signal-evaluation, unlike the kill switch
+        in `_process_bar`) via the same `on_iteration_end` hook the Watchman
+        cycle uses; when triggered, this clears the flag, notifies (with the
+        open-position count), logs, and returns promptly."""
+        if stop_request_flag.is_requested():
+            logger.warning(
+                "Stale stop-request flag found at startup (left over from a previous session) -- "
+                "clearing it so it can't instantly stop this fresh run."
+            )
+            stop_request_flag.clear()
+
+        try:
+            poll_new_bars(
+                symbols, timeframe, self.on_new_bar,
+                poll_interval_sec=poll_interval_sec, max_iterations=max_iterations,
+                on_iteration_end=self._on_iteration_end,
+            )
+        except _StopLoopRequested:
+            pass
+
+    def _on_iteration_end(self) -> None:
+        if self._watchman_loop is not None:
+            self._run_watchman_cycle()
+        self._check_stop_request()
 
     def _run_watchman_cycle(self) -> None:
         self._watchman_loop.run_cycle(self._history, self._clock.now())
+
+    def _check_stop_request(self) -> None:
+        if not stop_request_flag.is_requested():
+            return
+
+        # get_open_positions() can raise (e.g. ThrottledDemoAdapter surfaces
+        # a transient MT5 positions_get()/account_info() hiccup as a plain
+        # RuntimeError) -- a requested stop must still actually happen even
+        # if the position count can't be determined, so this is caught and
+        # degraded to "unknown" rather than left to crash the whole loop
+        # with an uncaught exception (nothing between here and run() catches
+        # a plain RuntimeError, only _StopLoopRequested).
+        try:
+            count: int | None = len(self._adapter.get_open_positions())
+        except Exception:
+            logger.exception(
+                "Graceful stop requested, but get_open_positions() failed -- stopping anyway with "
+                "an unknown open-position count rather than letting this crash the stop itself."
+            )
+            count = None
+
+        # Only cleared once the stop is actually about to happen (position
+        # count resolved or degraded to unknown, notify about to fire) --
+        # never before, so a get_open_positions() failure can never "consume"
+        # the user's stop request without the stop actually completing.
+        stop_request_flag.clear()
+
+        if count is None:
+            notify(
+                "[AutoTrade] \U0001F6D1 AutoTrade stopped (graceful stop requested) -- open-position "
+                "count could not be determined (check the terminal manually)."
+            )
+        elif count == 0:
+            notify("[AutoTrade] \U0001F6D1 AutoTrade stopped (graceful stop requested) -- no open positions.")
+        else:
+            notify(
+                f"[AutoTrade] \U0001F6D1 AutoTrade stopped (graceful stop requested) -- {count} "
+                "position(s) still open and will NOT be managed until restarted. Use the "
+                "emergency stop button if you need them closed."
+            )
+        logger.info(
+            "Graceful stop requested -- exiting shadow loop poll cycle (open_positions=%s)",
+            count if count is not None else "unknown",
+        )
+        raise _StopLoopRequested()
 
     def on_new_bar(self, snapshot: MarketSnapshot) -> None:
         if snapshot.symbol not in self._history:
@@ -479,6 +559,11 @@ class ShadowLoop:
             logger.info(
                 "%s %s: order PLACED %s lot=%.2f entry=%.5f sl=%.5f tp=%.5f -- %s",
                 symbol, bar.time, plan.direction, lot, plan.entry, plan.stop_loss, plan.take_profit, result.message,
+            )
+            notify(
+                f"[AutoTrade] Trade OPENED {symbol} {plan.direction} lot={lot:.2f} "
+                f"entry={plan.entry:.5f} sl={plan.stop_loss:.5f} tp={plan.take_profit:.5f} "
+                f"filled={result.filled_price}"
             )
             self._shield.record_trade_opened(
                 symbol=symbol, direction=plan.direction, opened_at=opened_at, swing_index=swing_index,

@@ -4,12 +4,24 @@ daily trade-autopsy reports (§5.1), promotion-gate evaluation (§5.2),
 demotion-rule evaluation (§5.3), and borderline-case expectancy tracking
 (§5.4).
 
-    python scripts/run_auditor.py daily [--date YYYY-MM-DD] [--mode paper|live] [--db-path PATH]
-    python scripts/run_auditor.py promotion --gate backtest --envelope PATH
-    python scripts/run_auditor.py promotion --gate paper --envelope PATH --weeks-elapsed 10 [--db-path PATH]
-    python scripts/run_auditor.py promotion --gate live --months-elapsed 3 [--db-path PATH]
-    python scripts/run_auditor.py demotion --envelope PATH [--as-of-date YYYY-MM-DD] [--mode live] [--db-path PATH]
+    python scripts/run_auditor.py daily [--date YYYY-MM-DD] [--mode paper|live] [--db-path PATH] [--notify]
+    python scripts/run_auditor.py promotion --gate backtest --envelope PATH [--notify]
+    python scripts/run_auditor.py promotion --gate paper --envelope PATH --weeks-elapsed 10 [--db-path PATH] [--notify]
+    python scripts/run_auditor.py promotion --gate live --months-elapsed 3 [--db-path PATH] [--notify]
+    python scripts/run_auditor.py demotion --envelope PATH [--as-of-date YYYY-MM-DD] [--mode live] [--db-path PATH] [--notify]
     python scripts/run_auditor.py borderline [--log-path PATH] [--commission-per-lot 0.0]
+
+`--notify` (daily/promotion/demotion only) sends a Telegram message
+(notify/telegram.py) -- `daily --notify` de-dupes on the report's own
+`server_date` via a small state file (`data/db/notify_last_daily.json`) so a
+double-invocation can't double-send; `promotion --notify`/`demotion --notify`
+only send when the evaluated result differs from the last-known one
+(notify/gate_state.py). This CLI does not build or run a scheduler itself --
+`daily --notify` is meant to be invoked once per day, comfortably after the
+broker server-day rollover, by an OS-level scheduled task, e.g. on Windows:
+
+    schtasks /Create /TN "AutoTrade Daily Report" /SC DAILY /ST 00:15 ^
+        /TR "C:/path/to/.venv/Scripts/python.exe C:/path/to/scripts/run_auditor.py daily --mode live --notify"
 
 `--date`/`--as-of-date` default to the current MT5 broker SERVER date
 (`common/mt5_time.server_now()`, same convention this codebase uses
@@ -28,6 +40,7 @@ a human operator must currently do that archival by hand.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from datetime import date, datetime, timedelta
@@ -47,11 +60,13 @@ from autotrade.auditor.promotion import (
     evaluate_paper_to_live_gate,
 )
 from autotrade.backtest.cost_model import CostModelConfig
-from autotrade.common.config import load_mt5_credentials, load_yaml_config
+from autotrade.common.config import REPO_ROOT, load_mt5_credentials, load_yaml_config
 from autotrade.common.mt5_connection import mt5_session
 from autotrade.common.mt5_time import server_now
 from autotrade.common.symbols import get_symbol_spec, to_broker_name
 from autotrade.feed.historical import HISTORICAL_DIR
+from autotrade.notify import gate_state
+from autotrade.notify.telegram import notify
 from autotrade.orchestrator.shadow_loop import DEFAULT_BORDERLINE_LOG_PATH
 from autotrade.risk.circuit_breaker import HEAVY_CB_MARKER
 from autotrade.store import journal
@@ -66,6 +81,8 @@ _EPOCH = datetime(2000, 1, 1)
 _FAR_FUTURE = datetime(2100, 1, 1)
 
 _MODE_DB_PATHS = {"paper": DEFAULT_PAPER_DB_PATH, "live": DEFAULT_LIVE_DB_PATH}
+
+DEFAULT_NOTIFY_DAILY_STATE_PATH = REPO_ROOT / "data" / "db" / "notify_last_daily.json"
 
 
 def _resolve_db_path(mode: str | None, db_path: Path | None) -> Path | None:
@@ -94,6 +111,24 @@ def _server_today(cfg: dict) -> date:
         return server_now(broker_name).date()
 
 
+def _load_last_notified_daily_date(path: Path) -> str | None:
+    """The server date (ISO string) `daily --notify` last actually sent, or
+    `None` if never sent / the state file is missing/corrupt -- treated as
+    "never sent" rather than an error, same fail-open convention as
+    `notify/gate_state.py`'s state file."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("server_date")
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _save_last_notified_daily_date(server_date: date, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"server_date": server_date.isoformat()}), encoding="utf-8")
+
+
 def _print_gate_result(title: str, result) -> None:
     print(f"=== {title} ===")
     print(f"passed: {result.passed}")
@@ -111,6 +146,19 @@ def cmd_daily(args: argparse.Namespace) -> int:
     db_path = _resolve_db_path(args.mode, args.db_path)
     report = build_daily_report(server_date, db_path=db_path)
     print(format_daily_report(report))
+
+    if getattr(args, "notify", False):
+        last_sent = _load_last_notified_daily_date(DEFAULT_NOTIFY_DAILY_STATE_PATH)
+        if last_sent == server_date.isoformat():
+            logger.info("daily --notify: already sent for server_date=%s -- skipping", server_date)
+        elif notify(format_daily_report(report)):
+            _save_last_notified_daily_date(server_date, DEFAULT_NOTIFY_DAILY_STATE_PATH)
+        else:
+            logger.warning(
+                "daily --notify: Telegram send failed for server_date=%s -- NOT marking it sent, so "
+                "this is re-attempted on the next run instead of being lost.", server_date,
+            )
+
     return 0
 
 
@@ -120,6 +168,22 @@ def _load_envelope_or_error(path: Path):
     except BacktestReportEnvelopeError as exc:
         logger.error("Could not load backtest report envelope: %s", exc)
         return None
+
+
+def _notify_promotion_gate_if_changed(args: argparse.Namespace, gate: str, passed: bool) -> None:
+    if not getattr(args, "notify", False):
+        return
+    changed, description = gate_state.check_promotion_gate_changed(gate, passed)
+    if not changed:
+        logger.info("promotion --notify: gate=%s unchanged (passed=%s) -- skipping", gate, passed)
+        return
+    if notify(f"[AutoTrade] {description}"):
+        gate_state.record_promotion_gate(gate, passed)
+    else:
+        logger.warning(
+            "promotion --notify: gate=%s changed but the Telegram send failed -- NOT persisting the "
+            "new state, so this change is re-attempted on the next run instead of being lost.", gate,
+        )
 
 
 def cmd_promotion(args: argparse.Namespace) -> int:
@@ -135,6 +199,7 @@ def cmd_promotion(args: argparse.Namespace) -> int:
             return 1
         result = evaluate_backtest_to_paper_gate(envelope, thresholds)
         _print_gate_result("Backtest -> Paper", result)
+        _notify_promotion_gate_if_changed(args, "backtest", result.passed)
         return 0
 
     if args.gate == "paper":
@@ -152,6 +217,7 @@ def cmd_promotion(args: argparse.Namespace) -> int:
             trade_count=paper_metrics.trade_count, thresholds=thresholds,
         )
         _print_gate_result("Paper -> Live ramp", result)
+        _notify_promotion_gate_if_changed(args, "paper", result.passed)
         return 0
 
     # args.gate == "live"
@@ -180,6 +246,7 @@ def cmd_promotion(args: argparse.Namespace) -> int:
         thresholds=thresholds,
     )
     _print_gate_result("Live ramp -> Full size", result)
+    _notify_promotion_gate_if_changed(args, "live", result.passed)
     return 0
 
 
@@ -204,6 +271,24 @@ def cmd_demotion(args: argparse.Namespace) -> int:
             print(f"  - {reason}")
     else:
         print("  (no demotion conditions matched)")
+
+    if getattr(args, "notify", False):
+        changed, description = gate_state.check_demotion_changed(result.action)
+        if not changed:
+            logger.info("demotion --notify: action unchanged (%s) -- skipping", result.action)
+        else:
+            message = f"[AutoTrade] {description}"
+            if result.reasons:
+                message += ": " + "; ".join(result.reasons)
+            if notify(message):
+                gate_state.record_demotion(result.action)
+            else:
+                logger.warning(
+                    "demotion --notify: action changed but the Telegram send failed -- NOT "
+                    "persisting the new state, so this change is re-attempted on the next run "
+                    "instead of being lost."
+                )
+
     return 0
 
 
@@ -263,6 +348,10 @@ def main() -> int:
     daily_parser.add_argument("--date", help="YYYY-MM-DD server date (default: current MT5 server date)")
     daily_parser.add_argument("--mode", choices=["paper", "live"], default=None)
     daily_parser.add_argument("--db-path", type=Path, default=None)
+    daily_parser.add_argument(
+        "--notify", action="store_true",
+        help="Send the report via Telegram, de-duped per server_date (see module docstring)",
+    )
     daily_parser.set_defaults(func=cmd_daily)
 
     promotion_parser = subparsers.add_parser("promotion", help="Appendix A §5.2 promotion gates")
@@ -277,6 +366,10 @@ def main() -> int:
         "--starting-equity", type=float, default=10_000.0, help="For --gate live's drawdown calc",
     )
     promotion_parser.add_argument("--db-path", type=Path, default=None)
+    promotion_parser.add_argument(
+        "--notify", action="store_true",
+        help="Send a Telegram message only if this gate's passed/failed result changed since last run",
+    )
     promotion_parser.set_defaults(func=cmd_promotion)
 
     demotion_parser = subparsers.add_parser("demotion", help="Appendix A §5.3 demotion rules")
@@ -286,6 +379,10 @@ def main() -> int:
     demotion_parser.add_argument("--as-of-date", help="YYYY-MM-DD server date (default: current MT5 server date)")
     demotion_parser.add_argument("--mode", choices=["paper", "live"], default="live")
     demotion_parser.add_argument("--db-path", type=Path, default=None)
+    demotion_parser.add_argument(
+        "--notify", action="store_true",
+        help="Send a Telegram message only if the demotion action changed since last run",
+    )
     demotion_parser.set_defaults(func=cmd_demotion)
 
     borderline_parser = subparsers.add_parser("borderline", help="Appendix A §5.4 borderline-case expectancy")

@@ -31,3 +31,6 @@ Thumbs.db
 .ruff_cache/
 htmlcov/
 .coverage
+
+# Runtime logs
+logs/

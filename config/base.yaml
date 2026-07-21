@@ -120,6 +120,15 @@ watchman:
 # auditor/borderline.py's expectancy-signal thresholds respectively --
 # none of those modules read this file themselves (scripts/run_auditor.py
 # does, same RiskVoiceConfig-style injection convention as council/risk_voice.py).
+# Telegram notifications (notify/telegram.py) -- best-effort, single chat,
+# no rate-limiting/dedupe (fires on every safety event, trade open/close,
+# daily summary, promotion/demotion gate change). Requires TELEGRAM_BOT_TOKEN
+# + TELEGRAM_CHAT_ID in .env; missing credentials silently no-op regardless
+# of `enabled` here.
+notifications:
+  enabled: true
+  timeout_sec: 4.0
+
 auditor:
   current_stage: backtest
   promotion:

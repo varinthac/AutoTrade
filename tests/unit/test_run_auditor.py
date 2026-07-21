@@ -85,6 +85,142 @@ def test_cmd_daily_with_explicit_date_and_seeded_trade(tmp_path, capsys):
     assert "Trades: 1" in out
 
 
+def test_cmd_daily_without_notify_flag_never_calls_notify(tmp_path, capsys, monkeypatch):
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    args = argparse.Namespace(config="base", date="2026-07-19", mode=None, db_path=tmp_path / "journal.sqlite")
+    rc = run_auditor.cmd_daily(args)
+    assert rc == 0
+    assert calls == []
+
+
+def test_cmd_daily_notify_sends_on_first_run_and_updates_state(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor, "DEFAULT_NOTIFY_DAILY_STATE_PATH", tmp_path / "notify_last_daily.json")
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    args = argparse.Namespace(
+        config="base", date="2026-07-19", mode=None, db_path=tmp_path / "journal.sqlite", notify=True,
+    )
+    rc = run_auditor.cmd_daily(args)
+    assert rc == 0
+    assert len(calls) == 1
+    assert "2026-07-19" in calls[0]
+
+
+def test_cmd_daily_notify_dedupes_same_server_date(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor, "DEFAULT_NOTIFY_DAILY_STATE_PATH", tmp_path / "notify_last_daily.json")
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    args = argparse.Namespace(
+        config="base", date="2026-07-19", mode=None, db_path=tmp_path / "journal.sqlite", notify=True,
+    )
+    run_auditor.cmd_daily(args)
+    rc = run_auditor.cmd_daily(args)  # a second invocation for the SAME server_date
+
+    assert rc == 0
+    assert len(calls) == 1  # only the first call actually sent
+
+
+def test_cmd_daily_notify_sends_again_for_a_new_server_date(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor, "DEFAULT_NOTIFY_DAILY_STATE_PATH", tmp_path / "notify_last_daily.json")
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    args1 = argparse.Namespace(
+        config="base", date="2026-07-19", mode=None, db_path=tmp_path / "journal.sqlite", notify=True,
+    )
+    args2 = argparse.Namespace(
+        config="base", date="2026-07-20", mode=None, db_path=tmp_path / "journal.sqlite", notify=True,
+    )
+    run_auditor.cmd_daily(args1)
+    run_auditor.cmd_daily(args2)
+
+    assert len(calls) == 2
+
+
+def test_cmd_daily_notify_corrupt_state_file_does_not_crash_and_still_sends(tmp_path, capsys, monkeypatch):
+    # Fail-open convention (same as notify/gate_state.py): an unreadable
+    # dedupe state file must be treated as "never sent" -- so it still
+    # notifies -- rather than crashing or silently staying quiet forever.
+    state_path = tmp_path / "notify_last_daily.json"
+    state_path.write_text("{not valid json at all", encoding="utf-8")
+    monkeypatch.setattr(run_auditor, "DEFAULT_NOTIFY_DAILY_STATE_PATH", state_path)
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    args = argparse.Namespace(
+        config="base", date="2026-07-19", mode=None, db_path=tmp_path / "journal.sqlite", notify=True,
+    )
+    rc = run_auditor.cmd_daily(args)
+
+    assert rc == 0
+    assert len(calls) == 1
+
+
+def test_cmd_daily_notify_missing_state_dir_does_not_crash_and_still_sends(tmp_path, capsys, monkeypatch):
+    # The state file's parent directory not existing yet (first-ever run on
+    # a fresh machine) must not crash cmd_daily.
+    state_path = tmp_path / "does" / "not" / "exist" / "notify_last_daily.json"
+    monkeypatch.setattr(run_auditor, "DEFAULT_NOTIFY_DAILY_STATE_PATH", state_path)
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    args = argparse.Namespace(
+        config="base", date="2026-07-19", mode=None, db_path=tmp_path / "journal.sqlite", notify=True,
+    )
+    rc = run_auditor.cmd_daily(args)
+
+    assert rc == 0
+    assert len(calls) == 1
+    assert state_path.exists()
+
+
+def test_cmd_daily_notify_message_contains_real_report_content(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor, "DEFAULT_NOTIFY_DAILY_STATE_PATH", tmp_path / "notify_last_daily.json")
+    db_path = tmp_path / "journal.sqlite"
+    journal.record_closed_trade(
+        symbol="XAUUSD", direction="BUY", entry_time=datetime(2026, 7, 19, 9, 0),
+        entry_price=2400.0, exit_time=datetime(2026, 7, 19, 10, 0), exit_price=2410.0,
+        exit_reason="take_profit", lot_size=0.1, gross_pnl=100.0, cost=2.0, net_pnl=98.0,
+        r_multiple=1.96, recorded_at=datetime(2026, 7, 19, 10, 0, 1), broker_ticket=1, db_path=db_path,
+    )
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    args = argparse.Namespace(config="base", date="2026-07-19", mode=None, db_path=db_path, notify=True)
+    rc = run_auditor.cmd_daily(args)
+
+    assert rc == 0
+    assert len(calls) == 1
+    # Not just "was called with some string" -- the seeded trade's actual
+    # facts must be present in the notified text, matching what capsys shows
+    # was printed for the same report.
+    out = capsys.readouterr().out
+    assert "Trades: 1" in out
+    assert "Trades: 1" in calls[0]
+    assert calls[0] == out.rstrip("\n")  # notify() sent the exact same report text that was printed
+
+
+def test_cmd_daily_notify_failure_does_not_mark_as_sent_and_retries_next_run(tmp_path, capsys, monkeypatch):
+    # Regression guard: a Telegram outage during a daily report must not
+    # permanently lose that day's notification -- unlike a genuinely
+    # unchanged gate result, a failed SEND must be retried on the next run.
+    monkeypatch.setattr(run_auditor, "DEFAULT_NOTIFY_DAILY_STATE_PATH", tmp_path / "notify_last_daily.json")
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or False)
+
+    args = argparse.Namespace(
+        config="base", date="2026-07-19", mode=None, db_path=tmp_path / "journal.sqlite", notify=True,
+    )
+    run_auditor.cmd_daily(args)
+    run_auditor.cmd_daily(args)  # same server_date, notify still failing
+
+    assert len(calls) == 2  # both attempts actually tried to send, neither was skipped as "already sent"
+
+
 def test_cmd_daily_defaults_to_server_date_not_local_today(tmp_path, capsys, monkeypatch):
     # No --date given -- must resolve via _server_today (MT5 server time),
     # never date.today()'s local wall-clock.
@@ -127,6 +263,135 @@ def test_cmd_promotion_gate_backtest_smoke_test(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Backtest -> Paper" in out
     assert "passed: True" in out
+
+
+def test_cmd_promotion_notify_sends_on_first_evaluation(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor.gate_state, "DEFAULT_STATE_PATH", tmp_path / "notify_gate_state.json")
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    envelope_path = _write_envelope(tmp_path / "envelope.json")
+    args = argparse.Namespace(
+        config="base", gate="backtest", envelope=envelope_path, weeks_elapsed=None,
+        months_elapsed=None, starting_equity=10000.0, db_path=None, notify=True,
+    )
+    rc = run_auditor.cmd_promotion(args)
+    assert rc == 0
+    assert len(calls) == 1
+    assert "backtest" in calls[0]
+
+
+def test_cmd_promotion_notify_silent_when_result_unchanged(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor.gate_state, "DEFAULT_STATE_PATH", tmp_path / "notify_gate_state.json")
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    envelope_path = _write_envelope(tmp_path / "envelope.json")
+    args = argparse.Namespace(
+        config="base", gate="backtest", envelope=envelope_path, weeks_elapsed=None,
+        months_elapsed=None, starting_equity=10000.0, db_path=None, notify=True,
+    )
+    run_auditor.cmd_promotion(args)
+    rc = run_auditor.cmd_promotion(args)  # same envelope -- same passed=True result again
+
+    assert rc == 0
+    assert len(calls) == 1  # only the first (changed) evaluation notified
+
+
+def test_cmd_promotion_notify_failure_does_not_persist_and_retries_next_run(tmp_path, capsys, monkeypatch):
+    # Regression guard: a Telegram outage exactly when a promotion gate
+    # changes must not permanently lose that notification -- gate_state
+    # must NOT be updated on a failed send, so the next run (even with the
+    # same unchanged result) still sees "changed" and retries.
+    monkeypatch.setattr(run_auditor.gate_state, "DEFAULT_STATE_PATH", tmp_path / "notify_gate_state.json")
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or False)
+
+    envelope_path = _write_envelope(tmp_path / "envelope.json")
+    args = argparse.Namespace(
+        config="base", gate="backtest", envelope=envelope_path, weeks_elapsed=None,
+        months_elapsed=None, starting_equity=10000.0, db_path=None, notify=True,
+    )
+    run_auditor.cmd_promotion(args)
+    run_auditor.cmd_promotion(args)  # same result again, but notify still failing
+
+    assert len(calls) == 2  # both attempts tried to send -- neither was skipped as "already notified"
+
+
+def test_cmd_promotion_without_notify_flag_never_calls_notify_or_touches_gate_state(
+    tmp_path, capsys, monkeypatch,
+):
+    state_path = tmp_path / "notify_gate_state.json"
+    monkeypatch.setattr(run_auditor.gate_state, "DEFAULT_STATE_PATH", state_path)
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    envelope_path = _write_envelope(tmp_path / "envelope.json")
+    args = argparse.Namespace(
+        config="base", gate="backtest", envelope=envelope_path, weeks_elapsed=None,
+        months_elapsed=None, starting_equity=10000.0, db_path=None,
+        # `notify` attribute intentionally omitted, mirroring argparse when --notify wasn't passed
+    )
+    rc = run_auditor.cmd_promotion(args)
+
+    assert rc == 0
+    assert calls == []
+    assert not state_path.exists()  # merely checking (without --notify) must never mutate gate state
+
+
+def test_cmd_promotion_without_notify_does_not_suppress_a_later_notify_call(tmp_path, monkeypatch):
+    # Regression guard: if cmd_promotion ever called gate_state.check_* even
+    # when --notify wasn't passed, that would silently consume the
+    # "first-ever evaluation is always changed" signal, so a LATER genuine
+    # `--notify` run would wrongly see "unchanged" and stay silent.
+    state_path = tmp_path / "notify_gate_state.json"
+    monkeypatch.setattr(run_auditor.gate_state, "DEFAULT_STATE_PATH", state_path)
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    envelope_path = _write_envelope(tmp_path / "envelope.json")
+    args_no_notify = argparse.Namespace(
+        config="base", gate="backtest", envelope=envelope_path, weeks_elapsed=None,
+        months_elapsed=None, starting_equity=10000.0, db_path=None,
+    )
+    run_auditor.cmd_promotion(args_no_notify)
+    run_auditor.cmd_promotion(args_no_notify)
+
+    args_with_notify = argparse.Namespace(
+        config="base", gate="backtest", envelope=envelope_path, weeks_elapsed=None,
+        months_elapsed=None, starting_equity=10000.0, db_path=None, notify=True,
+    )
+    run_auditor.cmd_promotion(args_with_notify)
+
+    assert len(calls) == 1  # the first-ever --notify evaluation still notified
+
+
+def test_cmd_promotion_notify_sends_again_when_result_changes(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor.gate_state, "DEFAULT_STATE_PATH", tmp_path / "notify_gate_state.json")
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    passing_envelope = _write_envelope(tmp_path / "passing.json")
+    failing_envelope = _write_envelope(tmp_path / "failing.json", report={
+        "trade_count": 200, "win_count": 80, "loss_count": 120, "win_rate": 0.4,
+        "gross_profit": 1000.0, "gross_loss": 3000.0, "profit_factor": 0.5,
+        "total_net_pnl": -2000.0, "avg_r_multiple": -0.5, "max_drawdown_pct": 25.0,
+        "profit_factor_excluding_top_5": 0.4,
+    })
+    args_pass = argparse.Namespace(
+        config="base", gate="backtest", envelope=passing_envelope, weeks_elapsed=None,
+        months_elapsed=None, starting_equity=10000.0, db_path=None, notify=True,
+    )
+    args_fail = argparse.Namespace(
+        config="base", gate="backtest", envelope=failing_envelope, weeks_elapsed=None,
+        months_elapsed=None, starting_equity=10000.0, db_path=None, notify=True,
+    )
+    run_auditor.cmd_promotion(args_pass)
+    run_auditor.cmd_promotion(args_fail)
+
+    assert len(calls) == 2
+    assert "PASSED" in calls[0]
+    assert "FAILED" in calls[1]
 
 
 def test_cmd_promotion_gate_backtest_missing_envelope_returns_error():
@@ -258,6 +523,107 @@ def test_cmd_demotion_missing_envelope_returns_error(tmp_path):
     )
     rc = run_auditor.cmd_demotion(args)
     assert rc == 1
+
+
+def test_cmd_demotion_notify_sends_on_first_evaluation(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor.gate_state, "DEFAULT_STATE_PATH", tmp_path / "notify_gate_state.json")
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    envelope_path = _write_envelope(tmp_path / "envelope.json")
+    args = argparse.Namespace(
+        config="base", envelope=envelope_path, as_of_date="2026-07-19",
+        mode=None, db_path=tmp_path / "live.sqlite", notify=True,
+    )
+    rc = run_auditor.cmd_demotion(args)
+    assert rc == 0
+    assert len(calls) == 1
+    assert "none" in calls[0]
+
+
+def test_cmd_demotion_notify_silent_when_action_unchanged(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor.gate_state, "DEFAULT_STATE_PATH", tmp_path / "notify_gate_state.json")
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    envelope_path = _write_envelope(tmp_path / "envelope.json")
+    args = argparse.Namespace(
+        config="base", envelope=envelope_path, as_of_date="2026-07-19",
+        mode=None, db_path=tmp_path / "live.sqlite", notify=True,
+    )
+    run_auditor.cmd_demotion(args)
+    rc = run_auditor.cmd_demotion(args)  # same empty DB -- same action="none" again
+
+    assert rc == 0
+    assert len(calls) == 1
+
+
+def test_cmd_demotion_notify_failure_does_not_persist_and_retries_next_run(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor.gate_state, "DEFAULT_STATE_PATH", tmp_path / "notify_gate_state.json")
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or False)
+
+    envelope_path = _write_envelope(tmp_path / "envelope.json")
+    args = argparse.Namespace(
+        config="base", envelope=envelope_path, as_of_date="2026-07-19",
+        mode=None, db_path=tmp_path / "live.sqlite", notify=True,
+    )
+    run_auditor.cmd_demotion(args)
+    run_auditor.cmd_demotion(args)  # same action again, but notify still failing
+
+    assert len(calls) == 2  # both attempts tried to send -- neither was skipped as "already notified"
+
+
+def test_cmd_demotion_without_notify_flag_never_calls_notify(tmp_path, capsys, monkeypatch):
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    envelope_path = _write_envelope(tmp_path / "envelope.json")
+    args = argparse.Namespace(
+        config="base", envelope=envelope_path, as_of_date="2026-07-19",
+        mode=None, db_path=tmp_path / "live.sqlite",
+    )
+    rc = run_auditor.cmd_demotion(args)
+    assert rc == 0
+    assert calls == []
+
+
+def test_cmd_demotion_without_notify_flag_never_touches_gate_state(tmp_path, monkeypatch):
+    state_path = tmp_path / "notify_gate_state.json"
+    monkeypatch.setattr(run_auditor.gate_state, "DEFAULT_STATE_PATH", state_path)
+    monkeypatch.setattr(run_auditor, "notify", lambda text: None)
+
+    envelope_path = _write_envelope(tmp_path / "envelope.json")
+    args = argparse.Namespace(
+        config="base", envelope=envelope_path, as_of_date="2026-07-19",
+        mode=None, db_path=tmp_path / "live.sqlite",
+    )
+    run_auditor.cmd_demotion(args)
+
+    assert not state_path.exists()
+
+
+def test_cmd_demotion_without_notify_does_not_suppress_a_later_notify_call(tmp_path, monkeypatch):
+    state_path = tmp_path / "notify_gate_state.json"
+    monkeypatch.setattr(run_auditor.gate_state, "DEFAULT_STATE_PATH", state_path)
+    calls = []
+    monkeypatch.setattr(run_auditor, "notify", lambda text: calls.append(text) or True)
+
+    envelope_path = _write_envelope(tmp_path / "envelope.json")
+    args_no_notify = argparse.Namespace(
+        config="base", envelope=envelope_path, as_of_date="2026-07-19",
+        mode=None, db_path=tmp_path / "live.sqlite",
+    )
+    run_auditor.cmd_demotion(args_no_notify)
+    run_auditor.cmd_demotion(args_no_notify)
+
+    args_with_notify = argparse.Namespace(
+        config="base", envelope=envelope_path, as_of_date="2026-07-19",
+        mode=None, db_path=tmp_path / "live.sqlite", notify=True,
+    )
+    run_auditor.cmd_demotion(args_with_notify)
+
+    assert len(calls) == 1  # the first-ever --notify evaluation still notified
 
 
 # --- borderline ---

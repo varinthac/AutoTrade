@@ -811,3 +811,116 @@ def test_remove_position_metadata_failure_after_explicit_close_does_not_double_w
     trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
     assert len(trades) == 1  # still exactly one -- the duplicate write was rejected, not appended
     assert position_metadata.get_position_metadata(1, tmp_path / "position_metadata.json") is None
+
+
+def test_duplicate_trade_record_write_does_not_also_double_notify(tmp_path, monkeypatch, caplog):
+    # Same crash-then-duplicate-write race as
+    # test_remove_position_metadata_failure_after_explicit_close_does_not_double_write,
+    # but asserting on notify() instead of the TradeRecord count: the module
+    # docstring promises "called exactly once per broker ticket" for
+    # journal.record_closed_trade's IntegrityError-swallow guard, so a
+    # rejected duplicate write must not ALSO fire a second Telegram
+    # notification for the same real-world close.
+    _record_metadata(tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0)
+    adapter = SpyAdapter([_position(ticket=1, symbol="XAUUSD", direction="BUY")])
+    adapter.close_result = OrderResult(
+        success=True, broker_ticket=1, filled_price=2410.0, filled_volume=0.1,
+        retcode=None, message="closed",
+    )
+    wl = _loop(adapter, tmp_path)
+
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(
+            action="CLOSE", new_stop_loss=None,
+            reason="structure invalidation: entry swing has been violated by a closed-bar close",
+        ),
+    )
+
+    calls = []
+    monkeypatch.setattr(loop_module, "notify", lambda text: calls.append(text))
+
+    real_remove_position_metadata = position_metadata.remove_position_metadata
+
+    def _simulate_crash_after_explicit_close_write(ticket, state_path=None):
+        raise RuntimeError("simulated crash between explicit-close write and metadata removal")
+
+    monkeypatch.setattr(loop_module, "remove_position_metadata", _simulate_crash_after_explicit_close_write)
+
+    with caplog.at_level(logging.ERROR):
+        wl.run_cycle({"XAUUSD": _history()}, NOW)  # must not raise
+
+    assert len(calls) == 1  # the genuine first close notified
+
+    # A later cycle: reconciliation re-observes the still-tracked ticket and
+    # attempts to record (and would notify for) it again.
+    monkeypatch.setattr(loop_module, "remove_position_metadata", real_remove_position_metadata)
+    adapter._open_positions = []
+    adapter.closed_trade_info[1] = ClosedTradeInfo(
+        close_price=2410.0, close_time=NOW, closed_volume=0.1,
+        gross_pnl=150.0, cost=3.0, exit_reason="take_profit",
+    )
+
+    wl.run_cycle({}, NOW)  # must not raise despite the duplicate broker_ticket
+
+    trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert len(trades) == 1  # confirmed: still only one TradeRecord (the write was rejected)
+    assert len(calls) == 1  # so notify() must also still have fired only once total
+
+
+# --- notify() hook (mocked, not the HTTP layer) ---------------------------
+
+
+def test_explicit_close_notifies_once_with_key_trade_facts(tmp_path, monkeypatch):
+    _record_metadata(tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0)
+    adapter = SpyAdapter([_position(ticket=1, symbol="XAUUSD", direction="BUY")])
+    adapter.close_result = OrderResult(
+        success=True, broker_ticket=1, filled_price=2410.0, filled_volume=0.1,
+        retcode=None, message="closed",
+    )
+    wl = _loop(adapter, tmp_path)
+
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(
+            action="CLOSE", new_stop_loss=None,
+            reason="structure invalidation: entry swing has been violated by a closed-bar close",
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(loop_module, "notify", lambda text: calls.append(text))
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    assert len(calls) == 1
+    assert "XAUUSD" in calls[0]
+    assert "BUY" in calls[0]
+    assert "2395.00000" in calls[0]  # entry
+    assert "2410.00000" in calls[0]  # exit
+    assert "structure_invalidation" in calls[0]
+
+    # Existing behavior (the whole point of Phase 8a) unaffected by notify being mocked.
+    trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert len(trades) == 1
+
+
+def test_reconciliation_close_notifies_once_with_key_trade_facts(tmp_path, monkeypatch):
+    _record_metadata(tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0)
+    adapter = SpyAdapter([])  # ticket=1 no longer open -- broker-side close
+    adapter.closed_trade_info[1] = ClosedTradeInfo(
+        close_price=2410.0, close_time=NOW, closed_volume=0.1,
+        gross_pnl=150.0, cost=3.0, exit_reason="take_profit",
+    )
+    wl = _loop(adapter, tmp_path)
+
+    calls = []
+    monkeypatch.setattr(loop_module, "notify", lambda text: calls.append(text))
+
+    wl.run_cycle({}, NOW)
+
+    assert len(calls) == 1
+    assert "XAUUSD" in calls[0]
+    assert "take_profit" in calls[0]
+
+    trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert len(trades) == 1

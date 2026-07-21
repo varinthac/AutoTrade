@@ -11,6 +11,7 @@ import pytest
 from autotrade.common.config import MT5Credentials
 from autotrade.council.order_construction import OrderPlan
 from autotrade.execution.adapter import TradeRequest
+from autotrade.execution import demo_adapter as demo_adapter_module
 from autotrade.execution.demo_adapter import ThrottledDemoAdapter, mt5
 from autotrade.shield.checkpoint import OpenPositionInfo, Shield
 from autotrade.store import journal
@@ -833,6 +834,55 @@ def test_abnormal_slippage_self_close_writes_trade_record(monkeypatch, caplog):
 
     events = journal.get_anomaly_events_for_day(date(2026, 7, 19))
     assert any(e.event_type == "abnormal_slippage" for e in events)
+
+
+def test_abnormal_slippage_self_close_sends_trade_closed_notify(monkeypatch, caplog):
+    # This self-close path writes a real TradeRecord (see the test above)
+    # through the same journal.record_closed_trade() call watchman/loop.py
+    # uses for its own close paths -- it must also fire the same
+    # "Trade CLOSED" notify() those paths do, for consistency across every
+    # code path that closes a P&L-bearing position.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2401.9, ask=2402.0))
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2402.0, volume=0.1,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=77, tp=2405.0),
+        ) if kwargs.get("ticket") == 77 else (),
+    )
+
+    def routed_order_send(request):
+        if "position" in request:
+            return _FakeSendResult(retcode=mt5.TRADE_RETCODE_DONE, order=77, price=2402.0, volume=0.1)
+        return _FakeSendResult(retcode=mt5.TRADE_RETCODE_DONE, order=77, price=2402.0, volume=0.1)
+
+    monkeypatch.setattr(mt5, "order_send", routed_order_send)
+
+    deals = (
+        _FakeDeal(entry=mt5.DEAL_ENTRY_IN, reason=mt5.DEAL_REASON_CLIENT, profit=0.0,
+                  price=2402.0, time=1_784_455_200, volume=0.1),
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_CLIENT, profit=-5.0,
+                  commission=-1.0, swap=0.0, price=2401.5, time=1_784_455_260, volume=0.1),
+    )
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals if kwargs.get("position") == 77 else ())
+
+    calls = []
+    monkeypatch.setattr(demo_adapter_module, "notify", lambda text: calls.append(text))
+
+    request = TradeRequest(
+        symbol="XAUUSD", direction="BUY", lot_size=0.1,
+        entry=2400.0, stop_loss=2395.0, take_profit=2401.5,
+    )
+    clock = FakeClock(datetime(2026, 7, 19, 10, 0))
+    adapter = _adapter(clock=clock)
+    with caplog.at_level(logging.ERROR):
+        adapter.place_order(request, current_atr=5.0)
+
+    assert len(calls) == 1
+    assert "Trade CLOSED" in calls[0]
+    assert "XAUUSD" in calls[0]
+    assert "abnormal_slippage" in calls[0]
 
 
 def test_place_order_retry_request_identical_across_all_three_attempts(monkeypatch):

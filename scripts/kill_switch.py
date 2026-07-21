@@ -27,6 +27,7 @@ import MetaTrader5 as mt5
 from autotrade.common import kill_switch_flag
 from autotrade.common.config import load_mt5_credentials
 from autotrade.common.mt5_connection import mt5_session
+from autotrade.notify.telegram import notify
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -110,16 +111,21 @@ def do_activate(reason: str) -> int:
         return 1
 
     kill_switch_flag.activate(reason)
+    notify(f"[AutoTrade] KILL SWITCH ACTIVATED: {reason}")
     logger.warning("KILL SWITCH ACTIVATED: %s", reason)
 
     try:
         creds = load_mt5_credentials()
         with mt5_session(creds):
             results = close_all_open_positions()
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "Kill switch: halt flag is set, but connecting to MT5 / closing positions FAILED. "
             "Trading is halted but existing positions may still be open -- check the terminal manually."
+        )
+        notify(
+            f"[AutoTrade] \U0001F6A8 KILL SWITCH: halt flag is set, but closing positions FAILED "
+            f"({exc}). Existing positions may still be OPEN -- check the terminal manually."
         )
         return 1
 
@@ -137,6 +143,12 @@ def do_activate(reason: str) -> int:
             "%d/%d position(s) FAILED to close -- MANUAL INTERVENTION REQUIRED. "
             "Trading is halted (flag set) but not all positions are flat.",
             len(failures), len(results),
+        )
+        failed_tickets = ", ".join(str(r.ticket) for r in failures)
+        notify(
+            f"[AutoTrade] \U0001F6A8 KILL SWITCH: {len(failures)}/{len(results)} position(s) FAILED "
+            f"to close (tickets: {failed_tickets}) -- MANUAL INTERVENTION REQUIRED. Trading is "
+            "halted but not all positions are flat."
         )
         return 1
 

@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytest
 
+from autotrade.common import stop_request_flag
 from autotrade.common.symbols import SymbolSpec
 from autotrade.council.news_calendar import NewsEvent
 from autotrade.council.risk_voice import RiskVoiceConfig
@@ -332,6 +333,82 @@ def test_clean_buy_decision_places_order_via_adapter(monkeypatch, tmp_path):
     assert request.stop_loss < request.entry < request.take_profit
     assert request.lot_size > 0
     assert len(loop._history["XAUUSD"]) == AS_OF + 1
+
+
+def test_clean_buy_decision_notifies_once_with_key_order_facts(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+    calls = []
+    monkeypatch.setattr(shadow_loop_module, "notify", lambda text: calls.append(text))
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert len(adapter.place_order_calls) == 1  # existing behavior unaffected by notify being mocked
+    assert len(calls) == 1
+    assert "XAUUSD" in calls[0]
+    assert "BUY" in calls[0]
+    assert "100.00000" in calls[0]  # entry
+
+
+def test_clean_buy_decision_notify_message_matches_actual_placed_order_facts(monkeypatch, tmp_path):
+    # Stronger content check than the sibling test above: asserts the
+    # notified lot size/SL/TP/fill price match the SAME request object that
+    # was actually sent to the adapter, catching a bug where the right hook
+    # fires but with garbled/wrong data (e.g. sl/tp swapped or a stale lot).
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+    calls = []
+    monkeypatch.setattr(shadow_loop_module, "notify", lambda text: calls.append(text))
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert len(adapter.place_order_calls) == 1
+    request = adapter.place_order_calls[0]
+    assert len(calls) == 1
+    message = calls[0]
+    assert f"entry={request.entry:.5f}" in message
+    assert f"sl={request.stop_loss:.5f}" in message
+    assert f"tp={request.take_profit:.5f}" in message
+    assert f"lot={request.lot_size:.2f}" in message
+    # FakeAdapter.place_order() fills at request.entry -- confirms the
+    # notified fill price is the real filled price, not e.g. the raw entry.
+    assert f"filled={request.entry}" in message
+
+
+def test_rejected_order_does_not_notify(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+
+    class RejectingAdapter(FakeAdapter):
+        def place_order(self, request: TradeRequest, current_atr: float | None = None) -> OrderResult:
+            self.place_order_calls.append(request)
+            return OrderResult(
+                success=False, broker_ticket=None, filled_price=None,
+                filled_volume=None, retcode=None, message="rejected",
+            )
+
+    adapter = RejectingAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+    calls = []
+    monkeypatch.setattr(shadow_loop_module, "notify", lambda text: calls.append(text))
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert len(adapter.place_order_calls) == 1
+    assert calls == []
 
 
 def test_clean_sell_decision_places_sell_order_with_stop_above_entry(monkeypatch, tmp_path):
@@ -1014,7 +1091,12 @@ def test_run_wires_watchman_cycle_as_on_iteration_end_hook_when_given(monkeypatc
     assert now_arg == BASE_TIME
 
 
-def test_run_passes_none_on_iteration_end_when_no_watchman_loop_given(monkeypatch, tmp_path):
+def test_run_passes_non_none_on_iteration_end_even_without_watchman_loop(monkeypatch, tmp_path):
+    # Unlike the pre-stop-flag-feature behavior, on_iteration_end is now
+    # always given -- it must run the stop-request check every cycle
+    # regardless of whether a watchman_loop was injected (see run()'s
+    # docstring). Calling it here (no watchman_loop, no stop flag set) must
+    # not raise and must not try to touch a watchman_loop that doesn't exist.
     seed = _council_df().iloc[:AS_OF].reset_index(drop=True)
     adapter = FakeAdapter()
     breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
@@ -1024,11 +1106,12 @@ def test_run_passes_none_on_iteration_end_when_no_watchman_loop_given(monkeypatc
 
     def fake_poll_new_bars(symbols, timeframe, on_new_bar, poll_interval_sec, max_iterations, on_iteration_end):
         captured_kwargs["on_iteration_end"] = on_iteration_end
+        on_iteration_end()
 
     monkeypatch.setattr(shadow_loop_module, "poll_new_bars", fake_poll_new_bars)
     loop.run(["XAUUSD"], "H1", poll_interval_sec=0.0, max_iterations=1)
 
-    assert captured_kwargs["on_iteration_end"] is None
+    assert captured_kwargs["on_iteration_end"] is not None
 
 
 # --- Phase 8a: blocked-signal recording (store/journal.py) ------------------
@@ -1103,3 +1186,205 @@ def test_shield_blocked_trade_records_blocked_signal(monkeypatch, tmp_path):
         new_bar.time.date(), db_path=borderline_log_path.parent / "trade_journal.sqlite",
     )
     assert counts == {"shield": 1}
+
+
+# --- Start/stop workflow: graceful stop-request flag wiring -----------------
+
+
+@pytest.fixture
+def stop_flag_path(tmp_path, monkeypatch):
+    path = tmp_path / "stop_request.flag"
+    monkeypatch.setattr(stop_request_flag, "DEFAULT_FLAG_PATH", path)
+    return path
+
+
+def _run_one_iteration(loop, monkeypatch, symbols=("XAUUSD",), before_iteration=None):
+    """Drives ShadowLoop.run() through a single fake poll_new_bars iteration
+    that only invokes on_iteration_end (no new bar) -- same fake-poller
+    pattern test_run_wires_watchman_cycle_as_on_iteration_end_hook_when_given
+    already uses, reused here for the stop-flag checks. `before_iteration`,
+    if given, runs just before on_iteration_end -- simulating a stop request
+    arriving mid-run (AFTER run()'s own startup stale-flag clear), not one
+    already present before run() was even called."""
+    def fake_poll_new_bars(symbols_, timeframe, on_new_bar, poll_interval_sec, max_iterations, on_iteration_end):
+        if before_iteration is not None:
+            before_iteration()
+        on_iteration_end()
+
+    monkeypatch.setattr(shadow_loop_module, "poll_new_bars", fake_poll_new_bars)
+    loop.run(list(symbols), "H1", poll_interval_sec=0.0, max_iterations=1)
+
+
+def test_stop_request_with_no_open_positions_exits_loop_clears_flag_and_notifies(
+    monkeypatch, tmp_path, stop_flag_path,
+):
+    seed = _council_df().iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter()  # no open_positions given -> []
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    calls = []
+    monkeypatch.setattr(shadow_loop_module, "notify", lambda text: calls.append(text))
+
+    # Request the stop mid-run (after run()'s own startup stale-flag clear),
+    # not before run() is even called -- see _run_one_iteration's docstring.
+    _run_one_iteration(
+        loop, monkeypatch, before_iteration=lambda: stop_request_flag.request("manual stop button"),
+    )
+
+    assert stop_request_flag.is_requested() is False  # cleared immediately
+    assert len(calls) == 1
+    assert "no open positions" in calls[0]
+
+
+def test_stop_request_with_open_positions_exits_loop_clears_flag_and_warns_in_notify(
+    monkeypatch, tmp_path, stop_flag_path,
+):
+    seed = _council_df().iloc[:AS_OF].reset_index(drop=True)
+    open_positions = [
+        BrokerPosition(ticket=101, symbol="XAUUSD", direction="BUY", risk_pct=0.5, current_sl=99.0, current_price=100.0, volume=0.1),
+        BrokerPosition(ticket=102, symbol="EURUSD", direction="SELL", risk_pct=0.5, current_sl=1.10, current_price=1.09, volume=0.1),
+    ]
+    adapter = FakeAdapter(open_positions=open_positions)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    calls = []
+    monkeypatch.setattr(shadow_loop_module, "notify", lambda text: calls.append(text))
+
+    _run_one_iteration(
+        loop, monkeypatch, before_iteration=lambda: stop_request_flag.request("manual stop button"),
+    )
+
+    assert stop_request_flag.is_requested() is False
+    assert len(calls) == 1
+    assert "2" in calls[0]
+    assert "NOT be managed" in calls[0]
+    assert "emergency stop" in calls[0]
+
+
+def test_stop_request_when_get_open_positions_raises_still_clears_flag_stops_loop_and_notifies(
+    monkeypatch, tmp_path, stop_flag_path,
+):
+    """Guards the exact hazard _check_stop_request's own comment calls out:
+    a get_open_positions() failure must never (a) leave the flag set (so a
+    retry is needed) or (b) let the loop silently resume polling instead of
+    stopping -- the stop must still complete, just with an "unknown" count."""
+    seed = _council_df().iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    def _raise_get_open_positions():
+        raise RuntimeError("MT5 positions_get() hiccup")
+
+    monkeypatch.setattr(adapter, "get_open_positions", _raise_get_open_positions)
+
+    calls = []
+    monkeypatch.setattr(shadow_loop_module, "notify", lambda text: calls.append(text))
+
+    _run_one_iteration(
+        loop, monkeypatch, before_iteration=lambda: stop_request_flag.request("manual stop button"),
+    )
+
+    assert stop_request_flag.is_requested() is False  # cleared despite the failure, not left pending
+    assert len(calls) == 1
+    assert "could not be determined" in calls[0]
+
+
+def test_no_stop_request_does_not_notify_or_raise(monkeypatch, tmp_path, stop_flag_path):
+    seed = _council_df().iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    calls = []
+    monkeypatch.setattr(shadow_loop_module, "notify", lambda text: calls.append(text))
+
+    _run_one_iteration(loop, monkeypatch)  # no stop flag set -- must complete normally
+
+    assert calls == []
+
+
+def test_stale_stop_request_flag_from_previous_session_does_not_instantly_stop_a_fresh_run(
+    monkeypatch, tmp_path, stop_flag_path,
+):
+    seed = _council_df().iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    stop_request_flag.request("stale flag from a previous, abnormally-ended session")
+    assert stop_request_flag.is_requested() is True
+
+    iteration_calls = {"count": 0}
+
+    def fake_poll_new_bars(symbols_, timeframe, on_new_bar, poll_interval_sec, max_iterations, on_iteration_end):
+        # A fresh run() must clear the stale flag BEFORE poll_new_bars is
+        # ever invoked -- so on_iteration_end() here must complete without
+        # finding a (re-set) stop request and without raising.
+        iteration_calls["count"] += 1
+        on_iteration_end()
+
+    monkeypatch.setattr(shadow_loop_module, "poll_new_bars", fake_poll_new_bars)
+    calls = []
+    monkeypatch.setattr(shadow_loop_module, "notify", lambda text: calls.append(text))
+
+    loop.run(["XAUUSD"], "H1", poll_interval_sec=0.0, max_iterations=1)
+
+    assert iteration_calls["count"] == 1  # the fake loop actually ran, wasn't skipped
+    assert stop_request_flag.is_requested() is False  # cleared at startup
+    assert calls == []  # the stale flag must never trigger a stop notification
+
+
+def test_stop_requested_mid_cycle_still_processes_every_remaining_symbol_before_stopping(
+    monkeypatch, tmp_path, stop_flag_path,
+):
+    """Proves the granularity is once-per-FULL-CYCLE, not once-per-symbol:
+    a stop request that appears while symbol A is being processed must NOT
+    cut the cycle short -- symbol B (later in the same `symbols` list) must
+    still be dispatched to on_new_bar before the stop-request check (which
+    only runs from on_iteration_end, i.e. after poll_new_bars' own
+    `for symbol in symbols` loop has already finished -- see
+    feed/poller.py's poll_new_bars) is ever consulted. Uses a spy in place
+    of the real on_new_bar (council wiring is irrelevant here -- this is
+    purely about run()'s cycle-vs-symbol granularity), and a fake poller
+    that mirrors poll_new_bars' real call order: on_new_bar for every symbol
+    first, on_iteration_end only once at the very end."""
+    seed = _council_df().iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    processed_symbols: list[str] = []
+
+    def spy_on_new_bar(snapshot: MarketSnapshot) -> None:
+        processed_symbols.append(snapshot.symbol)
+        if snapshot.symbol == "XAUUSD":
+            # Simulate the operator hitting "stop" WHILE the first symbol of
+            # this cycle is still being processed.
+            stop_request_flag.request("manual stop button")
+
+    monkeypatch.setattr(loop, "on_new_bar", spy_on_new_bar)
+
+    bar = _bar_from_row(_council_df(), AS_OF)
+    symbols = ["XAUUSD", "EURUSD"]
+
+    def fake_poll_new_bars(symbols_, timeframe, on_new_bar, poll_interval_sec, max_iterations, on_iteration_end):
+        assert symbols_ == symbols
+        for symbol in symbols_:
+            on_new_bar(MarketSnapshot(symbol=symbol, timeframe=timeframe, bar=bar))
+        on_iteration_end()
+
+    monkeypatch.setattr(shadow_loop_module, "poll_new_bars", fake_poll_new_bars)
+    notify_calls = []
+    monkeypatch.setattr(shadow_loop_module, "notify", lambda text: notify_calls.append(text))
+
+    loop.run(symbols, "H1", poll_interval_sec=0.0, max_iterations=1)
+
+    # Both symbols were dispatched in this cycle -- the stop request set
+    # mid-way through symbol A did NOT skip symbol B's processing.
+    assert processed_symbols == ["XAUUSD", "EURUSD"]
+    # Only after the whole cycle finished was the stop actually honored.
+    assert stop_request_flag.is_requested() is False
+    assert len(notify_calls) == 1

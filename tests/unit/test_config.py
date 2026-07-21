@@ -10,6 +10,7 @@ from autotrade.common.config import (
     load_finnhub_api_key,
     load_fmp_api_key,
     load_mt5_credentials,
+    load_telegram_credentials,
     load_yaml_config,
 )
 
@@ -162,6 +163,43 @@ def test_load_eodhd_api_token_treats_blank_string_as_none(monkeypatch, clean_eod
     monkeypatch.setenv("EODHD_API_TOKEN", "")
 
     assert load_eodhd_api_token(clean_eodhd_env) is None
+
+
+@pytest.fixture
+def clean_telegram_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    return tmp_path / "does_not_exist.env"
+
+
+def test_load_telegram_credentials_returns_pair_when_both_set(monkeypatch, clean_telegram_env):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token-123")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat-456")
+
+    assert load_telegram_credentials(clean_telegram_env) == ("bot-token-123", "chat-456")
+
+
+def test_load_telegram_credentials_returns_none_when_both_unset(clean_telegram_env):
+    assert load_telegram_credentials(clean_telegram_env) is None
+
+
+def test_load_telegram_credentials_returns_none_when_only_token_set(monkeypatch, clean_telegram_env):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token-123")
+
+    assert load_telegram_credentials(clean_telegram_env) is None
+
+
+def test_load_telegram_credentials_returns_none_when_only_chat_id_set(monkeypatch, clean_telegram_env):
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat-456")
+
+    assert load_telegram_credentials(clean_telegram_env) is None
+
+
+def test_load_telegram_credentials_treats_blank_strings_as_missing(monkeypatch, clean_telegram_env):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "")
+
+    assert load_telegram_credentials(clean_telegram_env) is None
 
 
 def test_load_yaml_config_reads_real_base_config():

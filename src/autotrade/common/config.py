@@ -162,6 +162,21 @@ def load_alphavantage_api_key(env_file: Path | None = None) -> str | None:
     return key or None
 
 
+def load_telegram_credentials(env_file: Path | None = None) -> tuple[str, str] | None:
+    """Telegram bot token + chat id (t.me/BotFather) for `notify/telegram.py`'s
+    best-effort notification feature. Same optional/nullable pattern as
+    `load_finnhub_api_key` -- BOTH `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`
+    must be set (non-blank) for this to return anything; otherwise `None`,
+    which `notify()` treats as "not configured" (silent no-op, not an
+    error)."""
+    load_dotenv(env_file or REPO_ROOT / ".env")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return None
+    return token, chat_id
+
+
 def load_yaml_config(name: str) -> dict:
     """Load a YAML file from config/, e.g. load_yaml_config('base')."""
     path = CONFIG_DIR / f"{name}.yaml"

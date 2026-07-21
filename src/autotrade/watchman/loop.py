@@ -77,6 +77,7 @@ from autotrade.common.symbols import SymbolSpec, get_symbol_spec
 from autotrade.council.news_calendar import NewsCalendarProvider
 from autotrade.execution.adapter import BrokerAdapter, BrokerPosition, OrderResult
 from autotrade.features.indicators import atr
+from autotrade.notify.telegram import notify
 from autotrade.store import journal
 from autotrade.watchman.connectivity_watchdog import ConnectivityWatchdog
 from autotrade.watchman.evaluate import WatchmanConfig, WatchmanDecision, evaluate_watchman
@@ -297,13 +298,19 @@ class WatchmanLoop:
         point_value = spec.tick_value / spec.tick_size if spec.tick_size else 0.0
         risk_amount = initial_stop_distance * point_value * lot_size
         r_multiple = net_pnl / risk_amount if risk_amount else 0.0
-        journal.record_closed_trade(
+        inserted = journal.record_closed_trade(
             symbol=symbol, direction=direction, entry_time=entry_time, entry_price=entry_price,
             exit_time=exit_time, exit_price=exit_price, exit_reason=exit_reason, lot_size=lot_size,
             gross_pnl=gross_pnl, cost=cost, net_pnl=net_pnl, r_multiple=r_multiple,
             entry_spread_points=entry_spread_points, actual_slippage=actual_slippage,
             broker_ticket=broker_ticket, recorded_at=recorded_at,
             db_path=self._journal_db_path,
+        )
+        if not inserted:
+            return  # swallowed duplicate write (see record_closed_trade docstring) -- do not double-notify
+        notify(
+            f"[AutoTrade] Trade CLOSED {symbol} {direction} entry={entry_price:.5f} "
+            f"exit={exit_price:.5f} reason={exit_reason} net_pnl={net_pnl:.2f} R={r_multiple:.2f}"
         )
 
     def _record_explicit_close(

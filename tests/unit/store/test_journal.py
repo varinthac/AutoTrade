@@ -52,6 +52,32 @@ def test_record_and_query_closed_trade_round_trips_every_field(db_path):
     assert trade.broker_ticket == 555
 
 
+def test_record_closed_trade_returns_true_on_genuine_insert(db_path):
+    result = journal.record_closed_trade(
+        symbol="XAUUSD", direction="BUY", entry_time=datetime(2026, 7, 19, 10, 0),
+        entry_price=2400.0, exit_time=datetime(2026, 7, 19, 12, 0), exit_price=2410.0,
+        exit_reason="take_profit", lot_size=0.1, gross_pnl=100.0, cost=2.0, net_pnl=98.0,
+        r_multiple=1.96, recorded_at=datetime(2026, 7, 19, 12, 0, 1), broker_ticket=555, db_path=db_path,
+    )
+
+    assert result is True
+
+
+def test_record_closed_trade_returns_false_on_swallowed_duplicate_ticket(db_path):
+    kwargs = dict(
+        symbol="XAUUSD", direction="BUY", entry_time=datetime(2026, 7, 19, 10, 0),
+        entry_price=2400.0, exit_time=datetime(2026, 7, 19, 12, 0), exit_price=2410.0,
+        exit_reason="take_profit", lot_size=0.1, gross_pnl=100.0, cost=2.0, net_pnl=98.0,
+        r_multiple=1.96, recorded_at=datetime(2026, 7, 19, 12, 0, 1), broker_ticket=555, db_path=db_path,
+    )
+    first = journal.record_closed_trade(**kwargs)
+    second = journal.record_closed_trade(**kwargs)  # same broker_ticket -- hits the UNIQUE constraint
+
+    assert first is True
+    assert second is False
+    assert len(journal.get_trades_for_day(date(2026, 7, 19), db_path=db_path)) == 1
+
+
 def test_record_and_query_blocked_signal_round_trips(db_path):
     journal.record_blocked_signal(
         timestamp=datetime(2026, 7, 19, 9, 0), symbol="XAUUSD", block_source="shield",
@@ -74,6 +100,37 @@ def test_record_and_query_anomaly_event_round_trips(db_path):
     assert len(events) == 1
     assert events[0].event_type == "reconnect"
     assert events[0].details == "MT5 connectivity lost for 6.0 minutes"
+
+
+def test_record_anomaly_event_notifies_once_with_event_details(db_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(journal, "notify", lambda text: calls.append(text))
+
+    journal.record_anomaly_event(
+        timestamp=datetime(2026, 7, 19, 9, 30), event_type="reconnect",
+        details="MT5 connectivity lost for 6.0 minutes", db_path=db_path,
+    )
+
+    assert len(calls) == 1
+    assert "reconnect" in calls[0]
+    assert "MT5 connectivity lost for 6.0 minutes" in calls[0]
+    assert "2026-07-19T09:30:00" in calls[0]
+
+
+def test_record_anomaly_event_still_persists_when_notify_raises(db_path, monkeypatch):
+    def _boom(text):
+        raise RuntimeError("simulated notify failure")
+
+    monkeypatch.setattr(journal, "notify", _boom)
+
+    with pytest.raises(RuntimeError):
+        journal.record_anomaly_event(
+            timestamp=datetime(2026, 7, 19, 9, 30), event_type="reconnect",
+            details="still recorded before notify runs", db_path=db_path,
+        )
+
+    events = journal.get_anomaly_events_for_day(date(2026, 7, 19), db_path=db_path)
+    assert len(events) == 1  # the DB write already committed before notify() ran
 
 
 def test_count_blocked_signals_groups_by_block_source(db_path):
