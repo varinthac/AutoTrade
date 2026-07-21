@@ -2,45 +2,55 @@
 {% block title %}Trades -- AutoTrade Dashboard{% endblock %}
 {% block content %}
 <h1>Trades</h1>
+<form class="filter-form" method="get" action="{{ url_for('trades') }}">
+  <label>Start <input type="date" name="start" value="{{ start_param }}"></label>
+  <label>End <input type="date" name="end" value="{{ end_param }}"></label>
+  <button type="submit">Filter</button>
+  <a class="export-link" href="{{ url_for('trades_export', start=start_param, end=end_param) }}">Export to Excel</a>
+</form>
 {% if rows %}
-<table>
-  <thead>
-    <tr>
-      <th>Exit time (server)</th>
-      <th>Symbol</th>
-      <th>Direction</th>
-      <th>Entry time (server)</th>
-      <th>Entry price</th>
-      <th>Exit price</th>
-      <th>Lot size</th>
-      <th>Net P&amp;L</th>
-      <th>R multiple</th>
-      <th>Exit reason</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for row in rows %}
-    <tr>
-      <td>{{ row.exit_time }}</td>
-      <td>{{ row.symbol }}</td>
-      <td>{{ row.direction }}</td>
-      <td>{{ row.entry_time }}</td>
-      <td>{{ row.entry_price }}</td>
-      <td>{{ row.exit_price }}</td>
-      <td>{{ row.lot_size }}</td>
-      <td>{{ row.net_pnl }}</td>
-      <td>{{ row.r_multiple }}</td>
-      <td>{{ row.exit_reason }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-<p>
-  {% if has_prev %}<a href="{{ url_for('trades', page=page - 1) }}">Previous</a>{% endif %}
-  Page {{ page }} ({{ total_count }} trade{{ "s" if total_count != 1 else "" }} total)
-  {% if has_next %}<a href="{{ url_for('trades', page=page + 1) }}">Next</a>{% endif %}
-</p>
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>Exit time (server)</th>
+        <th>Symbol</th>
+        <th>Direction</th>
+        <th>Entry time (server)</th>
+        <th>Entry price</th>
+        <th>Exit price</th>
+        <th>Lot size</th>
+        <th>Net P&amp;L</th>
+        <th>R multiple</th>
+        <th>Exit reason</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.exit_time }}</td>
+        <td>{{ row.symbol }}</td>
+        <td><span class="badge {{ 'badge-buy' if row.direction == 'BUY' else 'badge-sell' }}">{{ row.direction }}</span></td>
+        <td>{{ row.entry_time }}</td>
+        <td>{{ row.entry_price }}</td>
+        <td>{{ row.exit_price }}</td>
+        <td>{{ row.lot_size }}</td>
+        <td class="{{ 'pnl-positive' if row.net_pnl > 0 else ('pnl-negative' if row.net_pnl < 0 else '') }}">{{ row.net_pnl }}</td>
+        <td class="{{ 'pnl-positive' if row.r_multiple > 0 else ('pnl-negative' if row.r_multiple < 0 else '') }}">{{ row.r_multiple }}</td>
+        <td>{{ row.exit_reason }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="pagination">
+    {% if has_prev %}<a href="{{ url_for('trades', page=page - 1) }}">&larr; Previous</a>{% endif %}
+    <span>Page {{ page }} ({{ total_count }} trade{{ "s" if total_count != 1 else "" }} total)</span>
+    {% if has_next %}<a href="{{ url_for('trades', page=page + 1) }}">Next &rarr;</a>{% endif %}
+  </div>
+</div>
 {% else %}
-<p>No trades recorded yet.</p>
+<div class="card empty-state">
+  <p>No trades recorded yet.</p>
+</div>
 {% endif %}
 {% endblock %}

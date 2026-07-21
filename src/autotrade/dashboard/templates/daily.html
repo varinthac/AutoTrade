@@ -3,26 +3,56 @@
 {% block content %}
 <h1>Daily report</h1>
 {% if report is none %}
-<p>No trades recorded yet.</p>
+<div class="card empty-state">
+  <p>No trades recorded yet.</p>
+</div>
 {% else %}
 <h2>{{ report.server_date.isoformat() }}</h2>
-{% if used_default %}<p>(showing the most recent recorded day)</p>{% endif %}
-<p>Trades: {{ report.trade_count }} (win {{ report.win_count }} / loss {{ report.loss_count }})</p>
-<p>Net P&amp;L: {{ report.net_pnl }}</p>
-<p>Avg R multiple: {{ report.avg_r_multiple if report.avg_r_multiple is not none else "n/a" }}</p>
-<p>Blocked signals: {{ report.blocked_total }} total</p>
-<ul>
-  {% for source, count in report.blocked_by_source.items() %}
-  <li>{{ source }}: {{ count }}</li>
-  {% endfor %}
-</ul>
-<p>Avg entry spread (expected slippage): {{ report.avg_entry_spread_points if report.avg_entry_spread_points is not none else "n/a" }} points</p>
-<p>Avg actual slippage: {{ report.avg_actual_slippage if report.avg_actual_slippage is not none else "n/a" }} points</p>
-<p>Anomalies: {{ report.anomaly_counts.values() | sum }} total</p>
-<ul>
-  {% for event_type, count in report.anomaly_counts.items() %}
-  <li>{{ event_type }}: {{ count }}</li>
-  {% endfor %}
-</ul>
+{% if used_default %}<p class="note">(showing the most recent recorded day)</p>{% endif %}
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="label">Trades</div>
+    <div class="value">{{ report.trade_count }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Win / Loss</div>
+    <div class="value"><span class="pnl-positive">{{ report.win_count }}</span> / <span class="pnl-negative">{{ report.loss_count }}</span></div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Net P&amp;L</div>
+    <div class="value {{ 'pnl-positive' if report.net_pnl > 0 else ('pnl-negative' if report.net_pnl < 0 else '') }}">{{ report.net_pnl }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Avg R multiple</div>
+    <div class="value">{{ report.avg_r_multiple if report.avg_r_multiple is not none else "n/a" }}</div>
+  </div>
+</div>
+
+<div class="detail-list">
+  <h3>Blocked signals ({{ report.blocked_total }} total)</h3>
+  <ul>
+    {% for source, count in report.blocked_by_source.items() %}
+    <li>{{ source }}: {{ count }}</li>
+    {% endfor %}
+  </ul>
+</div>
+
+<div class="detail-list">
+  <h3>Execution quality</h3>
+  <ul>
+    <li>Avg entry spread (expected slippage): {{ report.avg_entry_spread_points if report.avg_entry_spread_points is not none else "n/a" }} points</li>
+    <li>Avg actual slippage: {{ report.avg_actual_slippage if report.avg_actual_slippage is not none else "n/a" }} points</li>
+  </ul>
+</div>
+
+<div class="detail-list">
+  <h3>Anomalies ({{ report.anomaly_counts.values() | sum }} total)</h3>
+  <ul>
+    {% for event_type, count in report.anomaly_counts.items() %}
+    <li>{{ event_type }}: {{ count }}</li>
+    {% endfor %}
+  </ul>
+</div>
 {% endif %}
 {% endblock %}

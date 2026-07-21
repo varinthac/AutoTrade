@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+import pandas as pd
 import pytest
 
 from autotrade.auditor.daily_report import build_daily_report
@@ -80,6 +81,92 @@ def test_trades_and_daily_show_server_time_banner(db_path):
     assert banner in daily_body
 
 
+# --- /trades/export --------------------------------------------------------
+
+
+def _read_xlsx_rows(tmp_path, response_data, name="export.xlsx"):
+    """Round-trips exported bytes through an on-disk tmp file (openpyxl/
+    pandas both need a real path or file-like, and writing to tmp_path here
+    is a test-only concern -- the route itself never touches disk)."""
+    xlsx_path = tmp_path / name
+    xlsx_path.write_bytes(response_data)
+    return pd.read_excel(xlsx_path).to_dict(orient="records")
+
+
+def test_trades_export_returns_valid_xlsx_with_seeded_trade_values(db_path, tmp_path):
+    _record_trade(
+        db_path, symbol="EURUSD", direction="SELL", net_pnl=-12.5,
+        exit_reason="stop_loss", broker_ticket=1,
+    )
+    client = create_app(db_path=db_path).test_client()
+    resp = client.get("/trades/export")
+
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    rows = _read_xlsx_rows(tmp_path, resp.data)
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "EURUSD"
+    assert rows[0]["direction"] == "SELL"
+    assert rows[0]["net_pnl"] == -12.5
+    assert rows[0]["exit_reason"] == "stop_loss"
+
+
+def test_trades_export_respects_date_range_filter(db_path, tmp_path):
+    _record_trade(
+        db_path, symbol="EURUSD", exit_time=datetime(2026, 7, 18, 10, 0), broker_ticket=1,
+    )
+    _record_trade(
+        db_path, symbol="GBPUSD", exit_time=datetime(2026, 7, 19, 10, 0), broker_ticket=2,
+    )
+    client = create_app(db_path=db_path).test_client()
+    resp = client.get("/trades/export?start=2026-07-19&end=2026-07-20")
+
+    rows = _read_xlsx_rows(tmp_path, resp.data)
+    symbols = [r["symbol"] for r in rows]
+    assert symbols == ["GBPUSD"]
+
+
+def test_trades_export_empty_db_returns_valid_header_only_xlsx(db_path, tmp_path):
+    client = create_app(db_path=db_path).test_client()
+    resp = client.get("/trades/export")
+
+    assert resp.status_code == 200
+    rows = _read_xlsx_rows(tmp_path, resp.data)
+    assert rows == []
+
+
+def test_trades_export_malformed_start_param_does_not_500(db_path, tmp_path):
+    _record_trade(db_path)
+    client = create_app(db_path=db_path).test_client()
+    resp = client.get("/trades/export?start=not-a-date")
+
+    assert resp.status_code == 200
+    rows = _read_xlsx_rows(tmp_path, resp.data)
+    assert len(rows) == 1
+
+
+def test_trades_export_end_param_includes_selected_day(db_path, tmp_path):
+    _record_trade(
+        db_path, symbol="EURUSD", exit_time=datetime(2026, 7, 19, 23, 30), broker_ticket=1,
+    )
+    client = create_app(db_path=db_path).test_client()
+    resp = client.get("/trades/export?end=2026-07-19")
+
+    rows = _read_xlsx_rows(tmp_path, resp.data)
+    assert [r["symbol"] for r in rows] == ["EURUSD"]
+
+
+def test_trades_end_param_includes_selected_day(db_path):
+    _record_trade(
+        db_path, symbol="EURUSD", exit_time=datetime(2026, 7, 19, 23, 30), broker_ticket=1,
+    )
+    client = create_app(db_path=db_path).test_client()
+    body = client.get("/trades?end=2026-07-19").get_data(as_text=True)
+
+    assert "EURUSD" in body
+
+
 # --- /daily -----------------------------------------------------------
 
 
@@ -105,7 +192,12 @@ def test_daily_cross_checks_against_build_daily_report_directly(db_path):
     client = create_app(db_path=db_path).test_client()
     body = client.get(f"/daily?date={day.isoformat()}").get_data(as_text=True)
 
-    assert f"Trades: {expected.trade_count} (win {expected.win_count} / loss {expected.loss_count})" in body
+    # Checks the individual values reach the page (not a hardcoded combined
+    # string) so this stays a genuine cross-check against build_daily_report
+    # regardless of how the template lays them out.
+    assert str(expected.trade_count) in body
+    assert str(expected.win_count) in body
+    assert str(expected.loss_count) in body
     assert str(expected.net_pnl) in body
 
 
@@ -206,3 +298,48 @@ def test_default_daily_date_picks_latest_exit_time():
 
 def test_default_daily_date_none_when_no_trades():
     assert views.default_daily_date([]) is None
+
+
+def test_trades_to_export_rows_matches_to_trade_row_field_values(db_path):
+    _record_trade(
+        db_path, symbol="EURUSD", direction="SELL", net_pnl=-12.5,
+        exit_reason="stop_loss", exit_time=datetime(2026, 7, 19, 14, 30), broker_ticket=1,
+    )
+    _record_trade(
+        db_path, symbol="XAUUSD", direction="BUY", net_pnl=98.0,
+        exit_reason="take_profit", exit_time=datetime(2026, 7, 20, 9, 0), broker_ticket=2,
+    )
+    all_trades = journal.get_trades_in_range(views.EPOCH, views.FAR_FUTURE, db_path=db_path)
+
+    rows = views.trades_to_export_rows(all_trades)
+
+    assert len(rows) == 2
+    assert {r["symbol"] for r in rows} == {"EURUSD", "XAUUSD"}
+    eurusd_row = next(r for r in rows if r["symbol"] == "EURUSD")
+    assert eurusd_row["direction"] == "SELL"
+    assert eurusd_row["net_pnl"] == -12.5
+    assert eurusd_row["exit_reason"] == "stop_loss"
+    assert eurusd_row["exit_time"] == "2026-07-19 14:30"
+
+
+def test_trades_to_export_rows_empty_list():
+    assert views.trades_to_export_rows([]) == []
+
+
+def test_trades_to_export_rows_escapes_formula_injection_prefixes(db_path):
+    _record_trade(db_path, exit_reason="=cmd|'/c calc'!A1", broker_ticket=1)
+    all_trades = journal.get_trades_in_range(views.EPOCH, views.FAR_FUTURE, db_path=db_path)
+
+    rows = views.trades_to_export_rows(all_trades)
+
+    assert rows[0]["exit_reason"] == "'=cmd|'/c calc'!A1"
+
+
+def test_trades_to_export_rows_does_not_touch_safe_string_values(db_path):
+    _record_trade(db_path, exit_reason="take_profit", symbol="EURUSD", broker_ticket=1)
+    all_trades = journal.get_trades_in_range(views.EPOCH, views.FAR_FUTURE, db_path=db_path)
+
+    rows = views.trades_to_export_rows(all_trades)
+
+    assert rows[0]["exit_reason"] == "take_profit"
+    assert rows[0]["symbol"] == "EURUSD"

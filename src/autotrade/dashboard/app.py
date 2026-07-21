@@ -11,9 +11,12 @@ alongside a live trading loop, and never exposed off `127.0.0.1` (see
 """
 from __future__ import annotations
 
+import io
+from datetime import date, timedelta
 from pathlib import Path
 
-from flask import Flask, redirect, render_template, request, url_for
+import pandas as pd
+from flask import Flask, redirect, render_template, request, send_file, url_for
 
 from autotrade.auditor.daily_report import build_daily_report
 from autotrade.dashboard import views
@@ -31,8 +34,13 @@ def create_app(db_path: Path | None = None) -> Flask:
 
     @app.route("/trades")
     def trades():
-        start = views.parse_date_param(request.args.get("start")) or views.EPOCH
-        end = views.parse_date_param(request.args.get("end")) or views.FAR_FUTURE
+        start_param = request.args.get("start", "")
+        end_param = request.args.get("end", "")
+        start = views.parse_date_param(start_param) or views.EPOCH
+        parsed_end = views.parse_date_param(end_param)
+        # Date pickers are inclusive from the user's perspective; get_trades_in_range's
+        # end bound is exclusive, so an explicit end date must advance by a day here.
+        end = parsed_end + timedelta(days=1) if parsed_end is not None else views.FAR_FUTURE
         # Clamped here (not just inside views.paginate) so the clamped value
         # -- not a raw/negative one a user typed into the URL -- is what
         # has_prev/has_next/the rendered "Page N" label all agree on.
@@ -48,6 +56,37 @@ def create_app(db_path: Path | None = None) -> Flask:
             has_prev=page > 1,
             has_next=page * views.TRADES_PER_PAGE < len(all_trades),
             total_count=len(all_trades),
+            start_param=start_param,
+            end_param=end_param,
+        )
+
+    @app.route("/trades/export")
+    def trades_export():
+        start_param = request.args.get("start", "")
+        end_param = request.args.get("end", "")
+        start = views.parse_date_param(start_param) or views.EPOCH
+        parsed_end = views.parse_date_param(end_param)
+        # Date pickers are inclusive from the user's perspective; get_trades_in_range's
+        # end bound is exclusive, so an explicit end date must advance by a day here.
+        end = parsed_end + timedelta(days=1) if parsed_end is not None else views.FAR_FUTURE
+
+        all_trades = journal.get_trades_in_range(start, end, db_path=resolved_db_path)
+        df = pd.DataFrame(views.trades_to_export_rows(all_trades), columns=views.EXPORT_COLUMNS)
+
+        # In-memory buffer, never a temp file -- this route must stay a pure
+        # request/response cycle with no filesystem side effect.
+        buffer = io.BytesIO()
+        df.to_excel(buffer, index=False, engine="openpyxl")
+        buffer.seek(0)
+
+        # Filename date is cosmetic, not trade data -- unlike every other
+        # date/time in this package, `date.today()` here is fine.
+        filename = f"autotrade_trades_{date.today().isoformat()}.xlsx"
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name=filename,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
     @app.route("/daily")

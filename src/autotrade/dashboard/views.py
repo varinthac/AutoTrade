@@ -8,7 +8,7 @@ module docstring) -- formatted verbatim, with zero timezone conversion.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import date, datetime
 
 from autotrade.store.models import TradeRecord
@@ -40,6 +40,12 @@ class TradeRow:
     exit_reason: str
 
 
+# Column order/names for the exported .xlsx -- kept alongside TradeRow so an
+# empty filtered result still produces a header-only sheet with real column
+# names, not a headerless blank file.
+EXPORT_COLUMNS = [f.name for f in fields(TradeRow)]
+
+
 def to_trade_row(trade: TradeRecord) -> TradeRow:
     return TradeRow(
         exit_time=format_server_time(trade.exit_time),
@@ -53,6 +59,42 @@ def to_trade_row(trade: TradeRecord) -> TradeRow:
         r_multiple=trade.r_multiple,
         exit_reason=trade.exit_reason,
     )
+
+
+# Leading characters Excel/LibreOffice will interpret a cell's content as a
+# formula (the standard CSV/Excel-formula-injection trigger set).
+_FORMULA_INJECTION_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _escape_formula_injection(value: str) -> str:
+    """Prefixes a leading apostrophe so Excel/LibreOffice force the cell to
+    text instead of evaluating it as a formula -- defense-in-depth for the
+    export path only: `symbol`/`direction`/`exit_reason` are closed-vocabulary
+    today, but `TradeRecord` has no DB-level CHECK constraint enforcing that,
+    same "assume a future bug could get here" posture as
+    `NoHistoricalNewsDataProvider`'s explicit-placeholder pattern."""
+    if value.startswith(_FORMULA_INJECTION_PREFIXES):
+        return "'" + value
+    return value
+
+
+def trades_to_export_rows(trades: list[TradeRecord]) -> list[dict]:
+    """Same fields/formatting as `to_trade_row` (server-time strings, not
+    datetime objects -- a real Excel datetime cell risks the viewer's
+    spreadsheet app re-interpreting it in local timezone, exactly the bug
+    class this package avoids everywhere else), but as plain dicts ready for
+    `pandas.DataFrame(...)` in `app.py`'s export route. String fields are
+    escaped against Excel formula injection here (not in `to_trade_row`,
+    which feeds the HTML table -- a different, already-safe rendering
+    context via Jinja2 auto-escaping)."""
+    rows = []
+    for t in trades:
+        row = asdict(to_trade_row(t))
+        for key, value in row.items():
+            if isinstance(value, str):
+                row[key] = _escape_formula_injection(value)
+        rows.append(row)
+    return rows
 
 
 def newest_first(trades: list[TradeRecord]) -> list[TradeRecord]:
