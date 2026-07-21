@@ -87,7 +87,7 @@ def test_download_historical_reports_zero_unexplained_gaps_for_clean_data(monkey
     # dropped as still-forming.
     monkeypatch.setattr(historical, "server_now", lambda broker_symbol: datetime(2026, 7, 20, 10))
 
-    result = download_historical("EURUSD", "H1", days=1)
+    result = download_historical("XAUUSD", "H1", days=1)
 
     assert result.duplicate_rows_dropped == 0
     assert result.unexplained_gaps == 0
@@ -101,7 +101,7 @@ def test_download_historical_drops_still_forming_last_bar(monkeypatch, tmp_path)
     # "now" is mid-way through the h=4 bar's hour -> h=4 hasn't closed yet.
     monkeypatch.setattr(historical, "server_now", lambda broker_symbol: datetime(2026, 7, 20, 4, 30))
 
-    result = download_historical("EURUSD", "H1", days=1)
+    result = download_historical("XAUUSD", "H1", days=1)
 
     assert result.rows == 4  # the still-forming h=4 bar is dropped
     assert result.end == datetime(2026, 7, 20, 3)
@@ -114,7 +114,7 @@ def test_download_historical_keeps_last_bar_once_it_has_fully_closed(monkeypatch
     # "now" is exactly at the h=4 bar's close boundary -> fully closed.
     monkeypatch.setattr(historical, "server_now", lambda broker_symbol: datetime(2026, 7, 20, 5))
 
-    result = download_historical("EURUSD", "H1", days=1)
+    result = download_historical("XAUUSD", "H1", days=1)
 
     assert result.rows == 5
     assert result.end == datetime(2026, 7, 20, 4)

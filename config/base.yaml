@@ -9,11 +9,22 @@ global:
 # Canonical symbol name -> broker symbol name. IC Markets uses no suffix on
 # its standard demo servers; change the right-hand side here if your account
 # shows e.g. "XAUUSD.a" in Market Watch instead.
+# Phase 9 (2026-07-21): a genuine out-of-sample backtest (2025-07-21 ->
+# 2026-07-21, real IC Markets Raw Spread commission) showed the current
+# rule-based Council only has an edge on XAUUSD (PF 1.28, net +$1,458 --
+# close to but still short of the promotion-gate threshold). EURUSD/GBPUSD/
+# USDJPY all lost money out-of-sample over the same window with the same
+# logic (PF 0.84/0.91/0.95) -- the Appendix A thresholds don't currently
+# generalize to forex majors. Commented out (not deleted) rather than
+# removed from config/historical data, so they're easy to re-enable once
+# the Council is revisited for FX specifically -- see
+# data/db/backtest_reports/{EURUSD,GBPUSD,USDJPY}_20260721T06*.json for the
+# full results.
 symbols:
   XAUUSD: XAUUSD
-  EURUSD: EURUSD
-  GBPUSD: GBPUSD
-  USDJPY: USDJPY
+  # EURUSD: EURUSD
+  # GBPUSD: GBPUSD
+  # USDJPY: USDJPY
 
 historical:
   default_days: 730 # ~2 years, enough for a first backtest pass in Phase 4

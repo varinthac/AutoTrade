@@ -49,6 +49,11 @@ def test_build_adapter_demo_returns_throttled_demo_adapter():
     assert isinstance(adapter, ThrottledDemoAdapter)
 
 
+def test_build_adapter_demo_threads_journal_db_path_through():
+    adapter = run_shadow_loop.build_adapter("demo", CREDS, RealClock(), journal_db_path="some/path.sqlite")
+    assert adapter._journal_db_path == "some/path.sqlite"
+
+
 def test_build_adapter_unknown_name_raises_value_error():
     with pytest.raises(ValueError, match="unknown"):
         run_shadow_loop.build_adapter("live", CREDS, RealClock())
@@ -209,6 +214,60 @@ def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(mon
     assert risk_voice_cfg.session_start_hour == 14
     assert risk_voice_cfg.session_end_hour == 18
     assert run_calls["init_kwargs"]["cfg"].bull_threshold == 70
+    # Phase 9: --mode defaults to "paper" -- trades from a plain
+    # `AutoTrade_Start.bat` run must land in the DB run_auditor.py's
+    # `--mode paper` gates actually read, not the generic default DB.
+    assert run_calls["init_kwargs"]["journal_db_path"] == run_shadow_loop.DEFAULT_PAPER_DB_PATH
+    assert run_calls["init_kwargs"]["watchman_loop"]._journal_db_path == run_shadow_loop.DEFAULT_PAPER_DB_PATH
+
+
+def test_main_mode_live_routes_journal_writes_to_the_live_db(monkeypatch, tmp_path):
+    _patch_common_main_wiring(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "run_shadow_loop.py", "--adapter", "noop", "--max-iterations", "1", "--mode", "live",
+    ])
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
+
+    run_calls = {}
+
+    class _FakeShadowLoop:
+        def __init__(self, **kwargs):
+            run_calls["init_kwargs"] = kwargs
+
+        def run(self, symbols, timeframe, poll_interval_sec, max_iterations):
+            pass
+
+    monkeypatch.setattr(run_shadow_loop, "ShadowLoop", _FakeShadowLoop)
+
+    exit_code = run_shadow_loop.main()
+
+    assert exit_code == 0
+    assert run_calls["init_kwargs"]["journal_db_path"] == run_shadow_loop.DEFAULT_LIVE_DB_PATH
+    assert run_calls["init_kwargs"]["watchman_loop"]._journal_db_path == run_shadow_loop.DEFAULT_LIVE_DB_PATH
+
+
+def test_main_mode_demo_adapter_also_gets_the_resolved_journal_db_path(monkeypatch, tmp_path):
+    _patch_common_main_wiring(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "run_shadow_loop.py", "--adapter", "demo", "--max-iterations", "1", "--mode", "live",
+    ])
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
+
+    run_calls = {}
+
+    class _FakeShadowLoop:
+        def __init__(self, **kwargs):
+            run_calls["init_kwargs"] = kwargs
+
+        def run(self, symbols, timeframe, poll_interval_sec, max_iterations):
+            pass
+
+    monkeypatch.setattr(run_shadow_loop, "ShadowLoop", _FakeShadowLoop)
+
+    exit_code = run_shadow_loop.main()
+
+    assert exit_code == 0
+    assert run_calls["init_kwargs"]["adapter"]._journal_db_path == run_shadow_loop.DEFAULT_LIVE_DB_PATH
 
 
 def test_main_uses_finnhub_provider_when_api_key_configured(monkeypatch, tmp_path):

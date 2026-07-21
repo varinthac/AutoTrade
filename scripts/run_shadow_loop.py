@@ -43,6 +43,7 @@ from autotrade.notify.telegram import notify
 from autotrade.orchestrator.shadow_loop import ShadowLoop, ShadowLoopConfig
 from autotrade.risk.circuit_breaker import DEFAULT_STATE_PATH, CircuitBreaker
 from autotrade.shield.checkpoint import Shield
+from autotrade.store.models import DEFAULT_LIVE_DB_PATH, DEFAULT_PAPER_DB_PATH
 from autotrade.watchman.connectivity_watchdog import ConnectivityWatchdog, ConnectivityWatchdogConfig
 from autotrade.watchman.evaluate import WatchmanConfig
 from autotrade.watchman.loop import WatchmanLoop
@@ -53,6 +54,18 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 DEFAULT_SEED_BARS = 200
+
+# Phase 9 (formal paper-trading validation, spec.md §6 row 9) -- which trade
+# journal DB this run's trades are recorded into, matching run_auditor.py's
+# own `_MODE_DB_PATHS` mode/path convention so `run_auditor.py daily/
+# promotion --mode paper` actually sees what this loop records. Defaults to
+# "paper" (the safer default -- a --mode live run should be requested
+# explicitly, same fail-safe-default philosophy as --adapter defaulting to
+# noop) even though this loop, as of Phase 9, only ever runs against the IC
+# Markets DEMO account regardless of --mode; --mode live is reserved for
+# Phase 11's actual live-account ramp, wired now so that transition needs no
+# further plumbing changes.
+_MODE_DB_PATHS = {"paper": DEFAULT_PAPER_DB_PATH, "live": DEFAULT_LIVE_DB_PATH}
 
 
 def seed_history(symbol: str, timeframe: str, bars: int, symbol_map: dict[str, str]) -> pd.DataFrame:
@@ -76,6 +89,7 @@ def seed_history(symbol: str, timeframe: str, bars: int, symbol_map: dict[str, s
 
 def build_adapter(
     name: str, creds: MT5Credentials, clock: RealClock, order_cfg: dict | None = None,
+    journal_db_path=None,
 ) -> BrokerAdapter:
     if name == "noop":
         return NoOpBrokerAdapter()
@@ -87,6 +101,7 @@ def build_adapter(
             retry_delay_sec=order_cfg.get("retry_delay_sec", 3),
             max_entry_slippage_atr=order_cfg.get("max_entry_slippage_atr", 0.3),
             min_rr_after_slippage=order_cfg.get("min_rr_after_slippage", 1.3),
+            journal_db_path=journal_db_path,
         )
     raise ValueError(f"unknown --adapter {name!r}")
 
@@ -154,8 +169,14 @@ def main() -> int:
         "--max-iterations", type=int, default=None,
         help="Stop after this many poll iterations (mainly for smoke-testing); default runs forever",
     )
+    parser.add_argument(
+        "--mode", choices=["paper", "live"], default="paper",
+        help="Which trade-journal DB to record into (default: paper), matching run_auditor.py's "
+             "--mode -- does not change which broker account is traded (that's --adapter)",
+    )
     args = parser.parse_args()
 
+    journal_db_path = _MODE_DB_PATHS[args.mode]
     creds = load_mt5_credentials()
 
     # Double-launch guard (start/stop workflow, scripts/autotrade_control.py):
@@ -186,7 +207,7 @@ def main() -> int:
     # server time specifically -- RealClock is fine here and avoids an extra
     # MT5 round-trip per place_order() call.
     adapter_clock = RealClock()
-    adapter = build_adapter(args.adapter, creds, adapter_clock, order_cfg=cfg["order"])
+    adapter = build_adapter(args.adapter, creds, adapter_clock, order_cfg=cfg["order"], journal_db_path=journal_db_path)
     if args.adapter == "noop":
         logger.info("Using NoOpBrokerAdapter -- dry run, no orders will be sent to any broker.")
     else:
@@ -266,7 +287,7 @@ def main() -> int:
             # -- even a dry-run noop start is worth a Telegram confirmation
             # that it actually launched and reached a connected MT5 session,
             # rather than leaving the user checking a silent console window.
-            notify(f"[AutoTrade] 🟢 AutoTrade started (adapter={args.adapter}, symbols={symbols}).")
+            notify(f"[AutoTrade] 🟢 AutoTrade started (adapter={args.adapter}, mode={args.mode}, symbols={symbols}).")
 
             # RealClock is fine here too -- the Finnhub provider's cache TTL
             # only needs monotonically-advancing wall-clock time, not server
@@ -302,6 +323,7 @@ def main() -> int:
                 adapter=adapter, watchman_config=watchman_config, news_provider=news_provider,
                 news_protection_config=news_protection_cfg, connectivity_watchdog=connectivity_watchdog,
                 symbol_map=symbol_map, state_path=DEFAULT_POSITION_METADATA_PATH,
+                journal_db_path=journal_db_path,
             )
 
             initial_history = {
@@ -317,10 +339,11 @@ def main() -> int:
                 initial_history=initial_history, symbol_map=symbol_map, clock=loop_clock,
                 news_provider=news_provider, risk_voice_cfg=risk_voice_cfg,
                 watchman_loop=watchman_loop, position_metadata_path=DEFAULT_POSITION_METADATA_PATH,
+                journal_db_path=journal_db_path,
             )
             logger.info(
-                "Shadow loop starting: symbols=%s timeframe=%s adapter=%s -- waiting for next bar close",
-                symbols, timeframe, args.adapter,
+                "Shadow loop starting: symbols=%s timeframe=%s adapter=%s mode=%s -- waiting for next bar close",
+                symbols, timeframe, args.adapter, args.mode,
             )
             shadow_loop.run(
                 symbols, timeframe, poll_interval_sec=args.poll_interval_sec, max_iterations=args.max_iterations,
