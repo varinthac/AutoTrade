@@ -61,8 +61,8 @@ replay (Appendix A §5.4).
 Known simplifications, documented rather than hidden:
 - The 20-day rolling averages Risk Voice needs (spread, ATR) are
   approximated from the last `ROLLING_AVG_DAYS * BARS_PER_DAY_H1` bars of
-  seeded H1 history -- see `_rolling_average`'s docstring for the exact
-  bars-per-day assumption and its caveat.
+  seeded H1 history -- see `features/indicators.rolling_average`'s docstring
+  for the exact bars-per-day assumption and its caveat.
 - `risk.sizing.compute_lot_size`'s volatility dampening (`current_atr` /
   `avg_atr_20d`) is not wired in yet -- both are left `None`, which disables
   that extra risk-halving in high-volatility regimes. A correct 20-*trading*
@@ -103,7 +103,7 @@ from autotrade.council.risk_voice import RiskVoiceConfig, check_risk_voice
 from autotrade.execution.adapter import BrokerAdapter, TradeRequest
 from autotrade.feed.poller import poll_new_bars
 from autotrade.feed.snapshot import Bar, MarketSnapshot
-from autotrade.features.indicators import atr
+from autotrade.features.indicators import atr, rolling_average
 from autotrade.features.swing import latest_confirmed_swing_high, latest_confirmed_swing_low
 from autotrade.notify.telegram import notify
 from autotrade.risk.circuit_breaker import CircuitBreaker
@@ -138,25 +138,11 @@ _BORDERLINE_BLOCK_SOURCES: dict[str, journal.BlockSource] = {
     "near-threshold": "borderline_near_threshold",
 }
 
-# H1 bars trade roughly 24 hours/day on weekdays (spec.md Appendix A §0 fixes
-# the system-wide timeframe to H1) -- so a "20 calendar day" rolling average
-# is approximated as the last ROLLING_AVG_DAYS * BARS_PER_DAY_H1 bars of
-# seeded history. This is an approximation, not an exact 20-*trading*-day
-# window (real bar counts per day vary slightly around session opens/closes,
-# and this doesn't account for weekend closures within the window) -- same
-# "good enough for now, documented rather than hidden" simplification as this
-# module's other known-gaps above.
-ROLLING_AVG_DAYS = 20
-BARS_PER_DAY_H1 = 24
-
-
-def _rolling_average(series: pd.Series, as_of_index: int) -> float:
-    """Mean of `series` over the last `ROLLING_AVG_DAYS * BARS_PER_DAY_H1`
-    bars up to and including `as_of_index` (fewer, if not enough history
-    exists yet) -- see module docstring's "Known simplifications" note."""
-    window = ROLLING_AVG_DAYS * BARS_PER_DAY_H1
-    start = max(0, as_of_index - window + 1)
-    return float(series.iloc[start : as_of_index + 1].mean())
+# `rolling_average`/`ROLLING_AVG_DAYS`/`BARS_PER_DAY_H1` now live in
+# `features/indicators.py` (shared with `backtest/engine.py`'s replay of this
+# same Risk Voice re-check, so both stay consistent by construction). See
+# that module's docstring for the exact bars-per-day approximation and its
+# known caveat.
 
 
 def _log_borderline_case(case: BorderlineCase, path: Path) -> None:
@@ -620,7 +606,7 @@ class ShadowLoop:
         atr_series = atr(highs, lows, closes)
         return {
             "current_spread_points": float(history["spread"].iloc[as_of_index]),
-            "avg_spread_points_20d": _rolling_average(history["spread"], as_of_index),
+            "avg_spread_points_20d": rolling_average(history["spread"], as_of_index),
             "current_atr": float(atr_series.iloc[-1]),
-            "avg_atr_20d": _rolling_average(atr_series, as_of_index),
+            "avg_atr_20d": rolling_average(atr_series, as_of_index),
         }

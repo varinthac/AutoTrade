@@ -5,13 +5,28 @@ via the `_council_signal_fn` adapter below, by default -- injected so a
 different strategy is a drop-in replacement later) over historical
 OHLC(+spread) data -- it does not reimplement any decision logic.
 
-Known gap (Phase 6b): Risk Voice (`council/risk_voice.py`) is NOT wired into
-this engine. Its news-calendar and session/spread re-check machinery is
-either a live-only concern, or a much bigger follow-up decision about how
-backtesting should model historical news/session data -- out of scope here.
-A backtest run through the default `_council_signal_fn` therefore only
-exercises the Bull/Bear Voice scoring + Decision Matrix, not the full veto
-gate a live/sandbox run would apply.
+Risk Voice (`council/risk_voice.py`) IS wired into the default
+`_council_signal_fn`, via an OPTIONAL `risk_voice_cfg: RiskVoiceConfig |
+None` on `BacktestConfig` (default `None` -- explicitly means "not
+modeled", same honesty-over-convenience placeholder convention as
+`backtest/cost_model.py`'s `commission_per_lot=0.0`; `scripts/run_backtest.py`
+always passes a real one for any run whose result might feed a promotion
+decision, and `backtest/report.py`'s envelope records `risk_voice_modeled`
+so a reader always knows which mode a given run used).
+
+**One condition remains genuinely unmodeled even when `risk_voice_cfg` is
+given**: Risk Voice's news-calendar veto. This project has no historical
+economic-calendar dataset (see `backtest/news_stub.
+NoHistoricalNewsDataProvider`'s docstring for the full reasoning) -- the
+news condition always evaluates to "no event" here, never a real veto. The
+other five conditions (spread, stop-distance, session, Friday-close,
+ATR-panic) ARE modeled faithfully, using the bar's own spread/ATR and the
+same 20-day rolling-average approximation (`features/indicators.
+rolling_average`) `orchestrator/shadow_loop.py`'s live re-check uses, so
+both stay consistent by construction. Unlike the live loop's twice-per-trade
+re-check (signal-time + immediately-before-send), this engine only checks
+once per signal -- there is no separate "order-send time" moment in a
+backtest replay, so a second check would be identical to the first.
 
 Guardrails (spec.md §4), enforced structurally, not just documented:
 - Decisions only read closed bars: the signal function is called with
@@ -65,12 +80,35 @@ import pandas as pd
 
 from autotrade.backtest.clock import SimulatedClock
 from autotrade.backtest.cost_model import CostModelConfig, commission_cost, spread_slippage_price
+from autotrade.backtest.news_stub import NoHistoricalNewsDataProvider
+from autotrade.common.clock import Clock
 from autotrade.common.symbol_spec import SymbolSpec
 from autotrade.council.decision_matrix import evaluate_council
 from autotrade.council.order_construction import OrderPlan
+from autotrade.council.risk_voice import RiskVoiceConfig, check_risk_voice
+from autotrade.features.indicators import atr, rolling_average
 from autotrade.risk.sizing import compute_lot_size
 
+_NO_HISTORICAL_NEWS_PROVIDER = NoHistoricalNewsDataProvider()
+
 SignalFn = Callable[..., "OrderPlan | None"]
+
+
+def _risk_voice_inputs(df: pd.DataFrame, as_of_index: int) -> dict[str, float]:
+    """Same computation as `orchestrator/shadow_loop.py`'s
+    `_risk_voice_inputs` -- current spread/ATR plus their 20-day rolling
+    averages, from bars up to and including `as_of_index` only (never
+    looking ahead)."""
+    closes = df["close"].iloc[: as_of_index + 1]
+    highs = df["high"].iloc[: as_of_index + 1]
+    lows = df["low"].iloc[: as_of_index + 1]
+    atr_series = atr(highs, lows, closes)
+    return {
+        "current_spread_points": float(df["spread"].iloc[as_of_index]),
+        "avg_spread_points_20d": rolling_average(df["spread"], as_of_index),
+        "current_atr": float(atr_series.iloc[-1]),
+        "avg_atr_20d": rolling_average(atr_series, as_of_index),
+    }
 
 
 def _council_signal_fn(
@@ -87,6 +125,8 @@ def _council_signal_fn(
     bull_threshold: int = 70,
     bear_threshold: int = 70,
     conflict_threshold: int = 55,
+    risk_voice_cfg: RiskVoiceConfig | None = None,
+    clock: Clock | None = None,
 ) -> OrderPlan | None:
     """Default `SignalFn` -- adapts `council.decision_matrix.evaluate_council`'s
     `(CouncilDecision, BorderlineCase | None)` return shape to the plain
@@ -94,14 +134,36 @@ def _council_signal_fn(
     cases are not surfaced here (nowhere to log them to in a backtest run --
     that's `orchestrator/shadow_loop.py`'s `borderline_log.jsonl`, a
     live-loop-only concern) -- only a clean BUY/SELL decision ever becomes a
-    trade. See module docstring's "Known gap" note re: Risk Voice."""
+    trade.
+
+    When `risk_voice_cfg` is given (never `None` for a real promotion-gate
+    run -- see module docstring), a Council BUY/SELL decision is additionally
+    passed through `check_risk_voice` before becoming a trade, using
+    `_risk_voice_inputs` for the market-state numbers and
+    `backtest.news_stub.NoHistoricalNewsDataProvider` for the news condition
+    (see module docstring for why that's the one condition NOT genuinely
+    modeled). `clock` must be given whenever `risk_voice_cfg` is (asserted
+    below) -- `run_backtest`'s loop always passes its own ticking
+    `SimulatedClock`."""
     decision, _borderline_case = evaluate_council(
         df, as_of_index, symbol, symbol_spec,
         bull_threshold=bull_threshold, bear_threshold=bear_threshold, conflict_threshold=conflict_threshold,
         sl_buffer_atr=sl_buffer_atr, sl_min_atr=sl_min_atr, sl_max_atr=sl_max_atr,
         tp_r_multiple=tp_r_multiple, pivot_bars=pivot_bars,
     )
-    return decision.order_plan if decision.direction is not None else None
+    if decision.direction is None or decision.order_plan is None:
+        return None
+
+    if risk_voice_cfg is not None:
+        assert clock is not None, "clock is required whenever risk_voice_cfg is given"
+        risk_voice_decision = check_risk_voice(
+            symbol=symbol, order_plan=decision.order_plan, news_provider=_NO_HISTORICAL_NEWS_PROVIDER,
+            clock=clock, config=risk_voice_cfg, **_risk_voice_inputs(df, as_of_index),
+        )
+        if risk_voice_decision.vetoed:
+            return None
+
+    return decision.order_plan
 
 
 @dataclass(frozen=True)
@@ -141,13 +203,14 @@ class ClosedTrade:
 class BacktestConfig:
     """Strategy/risk/cost parameters for one backtest run. `signal_fn`
     defaults to `_council_signal_fn` (the real Council: Bull/Bear scoring +
-    Decision Matrix, per Appendix A §1.1-§1.3) but is injected so it can be
-    replaced without touching this engine -- it must accept `(df,
+    Decision Matrix, per Appendix A §1.1-§1.3, plus Risk Voice when
+    `risk_voice_cfg` is given -- see module docstring) but is injected so it
+    can be replaced without touching this engine -- it must accept `(df,
     as_of_index, symbol=, symbol_spec=, sl_buffer_atr=, sl_min_atr=,
-    sl_max_atr=, tp_r_multiple=, pivot_bars=) -> OrderPlan | None` (see
-    `run_backtest`'s call site). `council.trivial_signal.build_trade_idea`
-    (Phase 3) does not accept `symbol`/`symbol_spec` and so is no longer a
-    drop-in `signal_fn` without a small adapter of its own.
+    sl_max_atr=, tp_r_multiple=, pivot_bars=, risk_voice_cfg=, clock=) ->
+    OrderPlan | None` (see `run_backtest`'s call site). `council.trivial_signal.
+    build_trade_idea` (Phase 3) does not accept `symbol`/`symbol_spec` and so
+    is no longer a drop-in `signal_fn` without a small adapter of its own.
 
     `current_atr`/`avg_atr_20d` volatility dampening (risk/sizing.py §3.2) is
     left disabled (both `None` at every `compute_lot_size` call), matching
@@ -169,6 +232,13 @@ class BacktestConfig:
     bear_threshold: int = 70
     conflict_threshold: int = 55
     signal_fn: SignalFn = _council_signal_fn
+    risk_voice_cfg: RiskVoiceConfig | None = None
+    """`None` (the default) means Risk Voice is NOT modeled in this run --
+    an explicit placeholder, not silently-equivalent-to-passing (see module
+    docstring). `scripts/run_backtest.py` always passes a real
+    `RiskVoiceConfig` loaded from `config/base.yaml`; leaving this `None` is
+    only appropriate for tests/tooling that don't need Risk Voice's veto
+    behavior."""
 
 
 @dataclass
@@ -334,6 +404,7 @@ def run_backtest(
                 sl_max_atr=config.sl_max_atr, tp_r_multiple=config.tp_r_multiple,
                 pivot_bars=config.pivot_bars, bull_threshold=config.bull_threshold,
                 bear_threshold=config.bear_threshold, conflict_threshold=config.conflict_threshold,
+                risk_voice_cfg=config.risk_voice_cfg, clock=clock,
             )
             if plan is not None:
                 lot = compute_lot_size(

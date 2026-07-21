@@ -47,6 +47,7 @@ def _write_envelope(path: Path, **overrides) -> Path:
         "cost_model": {"commission_per_lot": 3.5, "slippage_points": None},
         "cost_model_complete": True,
         "is_out_of_sample": True,
+        "risk_voice_modeled": True,
         "report": report,
     }
     envelope.update(overrides)

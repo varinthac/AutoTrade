@@ -135,6 +135,16 @@ def evaluate_backtest_to_paper_gate(
                 "every other criterion is skipped."
             ),
         ))
+    if not report_envelope.risk_voice_modeled:
+        hard_fail_criteria.append(CriterionResult(
+            name="risk_voice_modeled", passed=False, actual=False, threshold="True",
+            note=(
+                "Backtest without Risk Voice modeled only exercised Bull/Bear scoring + the "
+                "Decision Matrix, not the full veto gate live trading applies -- its trade "
+                "count/profit factor are not representative. Re-run scripts/run_backtest.py "
+                "(risk_voice_cfg is now wired in by default) before this gate can be evaluated."
+            ),
+        ))
     if hard_fail_criteria:
         return GateResult(
             passed=False, criteria=hard_fail_criteria,

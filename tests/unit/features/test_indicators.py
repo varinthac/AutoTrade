@@ -12,7 +12,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from autotrade.features.indicators import atr, ema, macd_histogram, rsi
+from autotrade.features.indicators import BARS_PER_DAY_H1, ROLLING_AVG_DAYS, atr, ema, macd_histogram, rolling_average, rsi
 
 
 def test_ema_matches_hand_traced_recursive_formula():
@@ -132,3 +132,61 @@ def test_macd_histogram_matches_independent_from_scratch_loop():
         2.081794310140308, 2.045175481706961, 1.9333605012291497,
     ]
     assert result.tolist() == pytest.approx(expected)
+
+
+# --- rolling_average --------------------------------------------------------
+#
+# Shared by orchestrator/shadow_loop.py's live Risk Voice re-check and
+# backtest/engine.py's replay of it. The no-look-ahead test below is the
+# critical one: a look-ahead bug here (e.g. an off-by-one that reads past
+# as_of_index) would silently bias every Risk Voice spread/ATR check in a
+# backtest, since neither of those two call sites' own tests use varying
+# data that would expose it.
+
+
+def test_rolling_average_uses_full_window_when_enough_history_exists():
+    # window = ROLLING_AVG_DAYS * BARS_PER_DAY_H1 = 20 * 24 = 480 bars.
+    # 500 values 1..500 (as floats); at as_of_index=499 (the last one), the
+    # window covers indices [20, 499] inclusive = values 21..500.
+    window = ROLLING_AVG_DAYS * BARS_PER_DAY_H1
+    series = pd.Series(range(1, 501), dtype=float)
+
+    result = rolling_average(series, as_of_index=499)
+
+    expected = sum(range(500 - window + 1, 501)) / window
+    assert result == pytest.approx(expected)
+
+
+def test_rolling_average_uses_only_available_bars_when_history_shorter_than_window():
+    # as_of_index=4 with only 5 bars total (0..4) -- far short of the
+    # 480-bar window -- must average exactly those 5, not pad/extrapolate.
+    series = pd.Series([10.0, 20.0, 30.0, 40.0, 50.0])
+
+    result = rolling_average(series, as_of_index=4)
+
+    assert result == pytest.approx((10.0 + 20.0 + 30.0 + 40.0 + 50.0) / 5)
+
+
+def test_rolling_average_at_index_zero_returns_just_that_one_value():
+    series = pd.Series([42.0, 999.0, 999.0])
+
+    result = rolling_average(series, as_of_index=0)
+
+    assert result == pytest.approx(42.0)
+
+
+def test_rolling_average_never_looks_ahead_of_as_of_index():
+    # Two series identical up to and including as_of_index=4, but wildly
+    # different afterward -- a genuine look-ahead bug (reading index 5+)
+    # would make these two calls disagree; a correct implementation must
+    # return the exact same value for both, since only indices 0..4 should
+    # ever be read.
+    past_and_current = [1.0, 2.0, 3.0, 4.0, 5.0]
+    series_a = pd.Series(past_and_current + [1_000_000.0, 2_000_000.0])
+    series_b = pd.Series(past_and_current + [-1_000_000.0, -2_000_000.0, -3_000_000.0])
+
+    result_a = rolling_average(series_a, as_of_index=4)
+    result_b = rolling_average(series_b, as_of_index=4)
+
+    assert result_a == pytest.approx(result_b)
+    assert result_a == pytest.approx(sum(past_and_current) / len(past_and_current))

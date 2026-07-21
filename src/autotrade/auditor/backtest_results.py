@@ -35,6 +35,13 @@ class BacktestReportEnvelope:
     is_out_of_sample: bool
     """Human-set at `scripts/run_backtest.py` invocation time -- never
     auto-detected."""
+    risk_voice_modeled: bool
+    """True iff this run's `BacktestConfig.risk_voice_cfg` was set (not
+    `None`) -- see `backtest/engine.py`'s module docstring. A run without
+    Risk Voice modeled only exercised Bull/Bear scoring + the Decision
+    Matrix, not the full veto gate live trading applies, so its trade
+    count/profit factor may not be representative -- same "don't silently
+    count an incomplete simulation" philosophy as `cost_model_complete`."""
     report: BacktestReport
 
 
@@ -45,7 +52,7 @@ _REPORT_FIELDS = (
 )
 _TOP_LEVEL_FIELDS = (
     "symbol", "bar_range", "starting_equity", "cost_model", "cost_model_complete",
-    "is_out_of_sample", "report",
+    "is_out_of_sample", "risk_voice_modeled", "report",
 )
 
 
@@ -83,6 +90,7 @@ def load_backtest_report_envelope(path: Path) -> BacktestReportEnvelope:
             ),
             cost_model_complete=data["cost_model_complete"],
             is_out_of_sample=data["is_out_of_sample"],
+            risk_voice_modeled=data["risk_voice_modeled"],
             report=BacktestReport(**{k: data["report"][k] for k in _REPORT_FIELDS}),
         )
     except (TypeError, ValueError) as exc:

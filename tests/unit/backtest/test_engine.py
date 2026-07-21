@@ -17,9 +17,11 @@ import pandas as pd
 import pytest
 
 from autotrade.backtest.cost_model import CostModelConfig, round_trip_cost
-from autotrade.backtest.engine import BacktestConfig, run_backtest
+from autotrade.backtest.engine import BacktestConfig, _risk_voice_inputs, run_backtest
+from autotrade.backtest.news_stub import NoHistoricalNewsDataProvider
 from autotrade.common.symbol_spec import SymbolSpec
 from autotrade.council.order_construction import OrderPlan
+from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.council.scoring import BullBearScore
 
 SYMBOL = SymbolSpec(
@@ -514,3 +516,201 @@ def test_default_signal_fn_treats_a_borderline_hypothetical_order_as_no_trade(mo
     trades = run_backtest(df, "XAUUSD", SYMBOL, config)
 
     assert trades == []
+
+
+# --- Risk Voice wiring (closes the "Known gap Phase 6b" in the module
+# docstring) -- risk_voice_cfg=None (the BacktestConfig default) preserves
+# the old behavior, already proven by every test above this section; these
+# prove the OPT-IN behavior when a real RiskVoiceConfig is given. ------------
+
+
+_PERMISSIVE_RISK_VOICE_CFG = RiskVoiceConfig(
+    max_spread_multiple=1e9, max_spread_points_xauusd=1e9,
+    max_stop_atr_multiple=1e9, session_start_hour=0, session_end_hour=24,
+    friday_close_hour=24, max_atr_panic_multiple=1e9,
+)
+"""Every threshold set maximally permissive so no condition can veto --
+isolates whichever single condition a test overrides on top of this."""
+
+
+def test_risk_voice_inputs_never_looks_ahead_of_as_of_index():
+    # Two dataframes identical up to and including as_of_index=4, but
+    # wildly different afterward -- a look-ahead bug (e.g. reading
+    # df["spread"].iloc[as_of_index + 1], or an ATR series computed over
+    # the full df instead of df.iloc[:as_of_index+1]) would make these two
+    # calls disagree. current_spread_points/current_atr/avg_*_20d must all
+    # be identical between the two, since only indices 0..4 should ever be
+    # read for a decision made "as of" bar 4.
+    shared_highs = [101.0, 102.0, 103.0, 104.0, 105.0]
+    shared_lows = [99.0, 98.0, 97.0, 96.0, 95.0]
+    shared_closes = [100.0, 100.5, 101.0, 101.5, 102.0]
+    shared_spreads = [3, 4, 5, 6, 7]
+
+    def _df(future_highs, future_lows, future_closes, future_spreads):
+        highs = shared_highs + future_highs
+        lows = shared_lows + future_lows
+        closes = shared_closes + future_closes
+        spreads = shared_spreads + future_spreads
+        times = pd.date_range("2026-07-06 00:00:00", periods=len(highs), freq="h")
+        return pd.DataFrame({
+            "time": times, "open": closes, "high": highs, "low": lows, "close": closes, "spread": spreads,
+        })
+
+    df_a = _df([200.0, 200.0], [1.0, 1.0], [150.0, 150.0], [500, 500])
+    df_b = _df([9999.0, 9999.0, 9999.0], [-500.0, -500.0, -500.0], [-1.0, -1.0, -1.0], [1, 1, 1])
+
+    inputs_a = _risk_voice_inputs(df_a, as_of_index=4)
+    inputs_b = _risk_voice_inputs(df_b, as_of_index=4)
+
+    assert inputs_a == pytest.approx(inputs_b)
+    assert inputs_a["current_spread_points"] == pytest.approx(7.0)  # bar 4's own spread, not bar 5+'s
+
+
+def test_risk_voice_cfg_session_hour_reflects_the_actual_signal_bar_not_a_stale_or_initial_hour(monkeypatch):
+    # _council_signal_bars() (below) confirmed empirically to fire its BUY
+    # signal at bar 13 (2026-07-06 13:00:00) -- a narrow session window
+    # containing ONLY that hour must let the trade through, proving the
+    # clock check_risk_voice sees reflects bar 13's own time, not bar 0's
+    # (00:00) or some other stale value.
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    matching_hour_cfg = RiskVoiceConfig(
+        max_spread_multiple=1e9, max_spread_points_xauusd=1e9,
+        max_stop_atr_multiple=1e9, session_start_hour=13, session_end_hour=14,
+        friday_close_hour=24, max_atr_panic_multiple=1e9,
+    )
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        risk_voice_cfg=matching_hour_cfg,
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+
+
+def test_risk_voice_cfg_session_hour_tracks_a_later_bar_not_a_stale_initial_hour(monkeypatch):
+    # Same fixture/hypothesis as the test above, but with a session window
+    # (20:00-21:00) that excludes bar 13's hour entirely. Council's mocked
+    # scores stay constant across every bar, so a vetoed bar 13 doesn't
+    # block the trade forever -- the engine re-evaluates the signal on
+    # every subsequent bar until one satisfies Risk Voice too (bar 20,
+    # hour=20). If the clock passed to check_risk_voice were stale (stuck
+    # at bar 0's hour=0, or bar 13's hour from the test above, or any fixed
+    # value), this would either fire at the WRONG bar or never fire at
+    # all -- asserting the trade lands specifically at bar 20's fill
+    # (21:00, one hour later than bar 13's 14:00 from the previous test)
+    # proves the clock genuinely advances bar-by-bar in step with
+    # as_of_index, not just "some" permissive value.
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    later_hour_cfg = RiskVoiceConfig(
+        max_spread_multiple=1e9, max_spread_points_xauusd=1e9,
+        max_stop_atr_multiple=1e9, session_start_hour=20, session_end_hour=21,
+        friday_close_hour=24, max_atr_panic_multiple=1e9,
+    )
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        risk_voice_cfg=later_hour_cfg,
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].entry_time == pd.Timestamp("2026-07-06 21:00:00")
+
+
+def test_risk_voice_cfg_none_never_vetoes_even_outside_any_session(monkeypatch):
+    # Default behavior (risk_voice_cfg=None) is untouched by this feature --
+    # a trade that a real RiskVoiceConfig would veto on session grounds still
+    # places, proving the opt-in nature of the new parameter.
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+
+
+def test_risk_voice_cfg_permissive_still_lets_the_trade_through(monkeypatch):
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        risk_voice_cfg=_PERMISSIVE_RISK_VOICE_CFG,
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].direction == "BUY"
+
+
+def test_risk_voice_cfg_session_veto_blocks_the_trade_entirely(monkeypatch):
+    # session_start_hour == session_end_hour == 0 means `0 <= hour < 0` is
+    # always False -- every bar is "outside the session", so this isolates
+    # the session condition as the one doing the vetoing.
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    always_outside_session_cfg = RiskVoiceConfig(
+        max_spread_multiple=1e9, max_spread_points_xauusd=1e9,
+        max_stop_atr_multiple=1e9, session_start_hour=0, session_end_hour=0,
+        friday_close_hour=24, max_atr_panic_multiple=1e9,
+    )
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        risk_voice_cfg=always_outside_session_cfg,
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert trades == []
+
+
+def test_risk_voice_cfg_stop_distance_veto_blocks_the_trade(monkeypatch):
+    # A near-zero max_stop_atr_multiple guarantees the stop-distance
+    # condition vetoes regardless of the other permissive thresholds.
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    tight_stop_cfg = RiskVoiceConfig(
+        max_spread_multiple=1e9, max_spread_points_xauusd=1e9,
+        max_stop_atr_multiple=1e-9, session_start_hour=0, session_end_hour=24,
+        friday_close_hour=24, max_atr_panic_multiple=1e9,
+    )
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        risk_voice_cfg=tight_stop_cfg,
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert trades == []
+
+
+def test_no_historical_news_data_provider_always_returns_empty_list_never_none():
+    # Distinguishing [] ("fetched, no event") from None ("fetch failed" ->
+    # fail-safe veto per risk_voice.py's convention) is load-bearing here --
+    # returning None would veto every single backtest trade on the news
+    # condition, defeating the entire point of wiring Risk Voice in.
+    provider = NoHistoricalNewsDataProvider()
+
+    events = provider.get_high_impact_events(
+        "USD", pd.Timestamp("2026-01-01"), pd.Timestamp("2026-01-02"),
+    )
+
+    assert events == []

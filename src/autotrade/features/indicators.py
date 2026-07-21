@@ -66,3 +66,25 @@ def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> 
         axis=1,
     ).max(axis=1)
     return true_range.ewm(alpha=1 / period, adjust=False).mean()
+
+
+# H1 bars trade roughly 24 hours/day on weekdays (spec.md Appendix A §0 fixes
+# the system-wide timeframe to H1) -- so a "20 calendar day" rolling average
+# is approximated as the last ROLLING_AVG_DAYS * BARS_PER_DAY_H1 bars. This is
+# an approximation, not an exact 20-*trading*-day window (real bar counts per
+# day vary slightly around session opens/closes, and this doesn't account for
+# weekend closures within the window) -- a known, documented simplification,
+# shared by both `orchestrator/shadow_loop.py`'s live Risk Voice re-check and
+# `backtest/engine.py`'s replay of it, so the two stay consistent by
+# construction rather than by two independently-maintained copies.
+ROLLING_AVG_DAYS = 20
+BARS_PER_DAY_H1 = 24
+
+
+def rolling_average(series: pd.Series, as_of_index: int) -> float:
+    """Mean of `series` over the last `ROLLING_AVG_DAYS * BARS_PER_DAY_H1`
+    bars up to and including `as_of_index` (fewer, if not enough history
+    exists yet) -- see the constants' docstring above."""
+    window = ROLLING_AVG_DAYS * BARS_PER_DAY_H1
+    start = max(0, as_of_index - window + 1)
+    return float(series.iloc[start : as_of_index + 1].mean())
