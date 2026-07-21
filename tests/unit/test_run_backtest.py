@@ -19,6 +19,7 @@ from autotrade.common.symbol_spec import SymbolSpec
 from autotrade.council.order_construction import OrderPlan
 from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.council.scoring import BullBearScore
+from autotrade.watchman.evaluate import WatchmanConfig
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "run_backtest.py"
 _spec = importlib.util.spec_from_file_location("run_backtest_script", SCRIPT_PATH)
@@ -116,7 +117,7 @@ def test_build_envelope_cost_model_complete_true_when_commission_set_and_min_spr
     report = run_backtest_script.generate_report([], 10_000.0)
     envelope = run_backtest_script.build_envelope(
         "XAUUSD", df, report, CostModelConfig(commission_per_lot=3.5, slippage_points=None),
-        10_000.0, False, risk_voice_modeled=True,
+        10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
     )
     assert envelope["cost_model_complete"] is True
 
@@ -126,7 +127,7 @@ def test_build_envelope_cost_model_complete_false_when_commission_zero():
     report = run_backtest_script.generate_report([], 10_000.0)
     envelope = run_backtest_script.build_envelope(
         "XAUUSD", df, report, CostModelConfig(commission_per_lot=0.0, slippage_points=None),
-        10_000.0, False, risk_voice_modeled=True,
+        10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
     )
     assert envelope["cost_model_complete"] is False
 
@@ -138,7 +139,7 @@ def test_build_envelope_cost_model_complete_false_when_slippage_explicitly_overr
     report = run_backtest_script.generate_report([], 10_000.0)
     envelope = run_backtest_script.build_envelope(
         "XAUUSD", df, report, CostModelConfig(commission_per_lot=3.5, slippage_points=2.0),
-        10_000.0, False, risk_voice_modeled=True,
+        10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
     )
     assert envelope["cost_model_complete"] is False
 
@@ -161,6 +162,7 @@ def test_run_and_persist_writes_a_loadable_envelope(tmp_path, monkeypatch):
     assert envelope.report.trade_count == 1
     assert envelope.cost_model_complete is True
     assert envelope.risk_voice_modeled is False  # risk_voice_cfg omitted -> not modeled
+    assert envelope.watchman_exits_modeled is False  # watchman_cfg omitted -> not modeled
 
     raw = json.loads(out_path.read_text(encoding="utf-8"))
     assert raw["bar_range"]["start"] == str(df["time"].iloc[0])
@@ -188,6 +190,22 @@ def test_run_and_persist_risk_voice_cfg_marks_envelope_as_modeled(tmp_path, monk
     assert envelope.risk_voice_modeled is True
 
 
+def test_run_and_persist_watchman_cfg_marks_envelope_as_modeled(tmp_path, monkeypatch):
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    output_dir = tmp_path / "backtest_reports"
+
+    out_path = run_backtest_script.run_and_persist(
+        "XAUUSD", df, SYMBOL, 10_000.0, 1.0,
+        CostModelConfig(commission_per_lot=2.0, slippage_points=None),
+        False, output_dir, watchman_cfg=WatchmanConfig(),
+    )
+
+    envelope = load_backtest_report_envelope(out_path)
+    assert envelope.watchman_exits_modeled is True
+
+
 # --- main() end-to-end wiring -----------------------------------------------
 #
 # The tests above exercise build_envelope/run_and_persist/_council_signal_fn
@@ -212,6 +230,10 @@ _FAKE_MAIN_CFG = {
         "news_blackout_before_min": 10.0, "news_blackout_after_min": 5.0,
         "max_stop_atr_multiple": 3.5, "session_start_hour": 1, "session_end_hour": 23,
         "friday_close_hour": 21, "max_atr_panic_multiple": 4.5,
+    },
+    "watchman": {
+        "breakeven_at_r": 1.5, "trail_start_r": 2.0, "trail_distance_atr": 1.2,
+        "time_stop_hours": 36.0, "dead_trade_r_band": 0.25,
     },
 }
 
@@ -258,6 +280,33 @@ def test_main_constructs_risk_voice_cfg_from_config_with_every_field_mapped_corr
     assert rv.max_atr_panic_multiple == 4.5
 
 
+def test_main_constructs_watchman_cfg_from_config_with_every_field_mapped_correctly(monkeypatch, tmp_path):
+    _patch_main_wiring(monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}]))
+    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0"])
+
+    captured = {}
+
+    def _fake_run_and_persist(*args, **kwargs):
+        captured["watchman_cfg"] = kwargs.get("watchman_cfg")
+        return tmp_path / "envelope.json"
+
+    monkeypatch.setattr(run_backtest_script, "run_and_persist", _fake_run_and_persist)
+
+    exit_code = run_backtest_script.main()
+
+    assert exit_code == 0
+    wc = captured["watchman_cfg"]
+    assert wc is not None
+    # Every field checked individually against a DISTINCT fake config value --
+    # a KeyError, a swapped/misassigned field, or a silently-ignored one would
+    # fail at least one of these, not just "did it run without error".
+    assert wc.breakeven_at_r == 1.5
+    assert wc.trail_start_r == 2.0
+    assert wc.trail_distance_atr == 1.2
+    assert wc.time_stop_hours == 36.0
+    assert wc.dead_trade_r_band == 0.25
+
+
 def test_main_writes_an_envelope_with_risk_voice_modeled_true(monkeypatch, tmp_path):
     monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
     monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
@@ -273,3 +322,4 @@ def test_main_writes_an_envelope_with_risk_voice_modeled_true(monkeypatch, tmp_p
     [out_path] = list(output_dir.glob("XAUUSD_*.json"))
     envelope = load_backtest_report_envelope(out_path)
     assert envelope.risk_voice_modeled is True
+    assert envelope.watchman_exits_modeled is True

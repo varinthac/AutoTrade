@@ -23,6 +23,10 @@ from autotrade.common.symbol_spec import SymbolSpec
 from autotrade.council.order_construction import OrderPlan
 from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.council.scoring import BullBearScore
+from autotrade.features.indicators import atr
+from autotrade.features.swing import latest_confirmed_swing_low
+from autotrade.watchman.evaluate import WatchmanConfig, evaluate_watchman
+from autotrade.watchman.position_metadata import PositionMetadata
 
 SYMBOL = SymbolSpec(
     canonical="XAUUSD", broker_name="XAUUSD", digits=2, point=0.01,
@@ -714,3 +718,608 @@ def test_no_historical_news_data_provider_always_returns_empty_list_never_none()
     )
 
     assert events == []
+
+
+# --- Watchman exits wiring (closes the "watchman.* is a no-op in backtest"
+# gap EXP-002, experiments/experiments_log.md, confirmed) -------------------
+#
+# Every fixture below shares a 7-bar (indices 0-6) confirmed-swing-low setup
+# (a dip to low=90 at index 3, flanked by low=99 on both sides -- confirmed
+# once bar 3+pivot_bars(3)=6 has closed) so `_build_watchman_metadata` can
+# re-derive `entry_swing_index=3` exactly the way `orchestrator/
+# shadow_loop.py`'s live loop does. Every fixture signals at index 6 (fills
+# at index 7) using a hand-built OrderPlan, same fake-signal_fn convention as
+# every other test in this file.
+
+SIGNAL_INDEX = 6
+ENTRY_SWING_INDEX = 3
+ENTRY_SWING_LOW = 90.0
+
+_WATCHMAN_PLAN = OrderPlan(direction="BUY", entry=100.0, stop_loss=90.0, take_profit=1000.0, stop_distance=10.0)
+
+
+def _swing_setup_rows() -> list[dict]:
+    return [
+        {"open": 100, "high": 101, "low": 99, "close": 100, "spread": 0},
+        {"open": 100, "high": 101, "low": 99, "close": 100, "spread": 0},
+        {"open": 100, "high": 101, "low": 99, "close": 100, "spread": 0},
+        {"open": 100, "high": 101, "low": ENTRY_SWING_LOW, "close": 100, "spread": 0},  # 3: the swing low
+        {"open": 100, "high": 101, "low": 99, "close": 100, "spread": 0},
+        {"open": 100, "high": 101, "low": 99, "close": 100, "spread": 0},
+        {"open": 100, "high": 101, "low": 99, "close": 100, "spread": 0},
+    ]
+
+
+def _watchman_backtest_config(cfg: WatchmanConfig | None, plan: OrderPlan = _WATCHMAN_PLAN) -> BacktestConfig:
+    calls: list[int] = []
+    return BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        signal_fn=_fixed_signal_at(SIGNAL_INDEX, plan, calls),
+        watchman_cfg=cfg,
+    )
+
+
+def _breakeven_then_stop_rows() -> list[dict]:
+    return _swing_setup_rows() + [
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 7: fill bar
+        {"open": 109, "high": 112, "low": 108, "close": 111, "spread": 0},     # 8: breakeven trigger (profit_r=1.0)
+        {"open": 105, "high": 106, "low": 99, "close": 100.5, "spread": 0},    # 9: low touches breakeven=100
+    ]
+
+
+def test_watchman_buy_trails_to_breakeven_then_stops_exactly_at_breakeven():
+    df = _bars(_breakeven_then_stop_rows())
+    cfg = WatchmanConfig(
+        breakeven_at_r=1.0, trail_start_r=5.0, trail_distance_atr=1.0,
+        time_stop_hours=1000.0, dead_trade_r_band=0.3,
+    )
+    config = _watchman_backtest_config(cfg)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "stop_loss"
+    assert trade.exit_price == pytest.approx(100.0)  # entry price -- the breakeven level, not the original 90.0
+    assert trade.exit_time == df["time"].iloc[9]
+
+
+def test_watchman_cfg_none_never_trails_or_closes_even_when_price_would_trigger_breakeven():
+    # Backward-compatibility regression guard: the EXACT same price action
+    # that (with watchman_cfg set, above) stops the trade out early at
+    # breakeven must, with watchman_cfg=None, leave the ORIGINAL fixed
+    # stop_loss(90)/take_profit(1000) untouched -- neither is ever reached
+    # by these bars (lowest low is 99, highest high is 112), so the position
+    # must ride all the way to end_of_data exactly as it would have before
+    # Watchman was wired in.
+    df = _bars(_breakeven_then_stop_rows())
+    config = _watchman_backtest_config(cfg=None)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "end_of_data"
+    assert trade.exit_price == pytest.approx(df["close"].iloc[-1])
+    assert trade.exit_price == pytest.approx(100.5)
+
+
+def _trailing_stop_fixture() -> tuple[pd.DataFrame, WatchmanConfig, float, float]:
+    """BUY that breaks even at bar 8 (profit_r=1.0) then trails further at
+    bar 9 (profit_r=2.0 >= trail_start_r=1.5). Bar 10's exact stop-hit level
+    is derived from the SAME `atr()` primitive the engine's trail math uses
+    (period=14, bars up to and including bar 9) rather than hand-typed, so
+    this fixture stays correct if the ATR warm-up window ever changes."""
+    rows = _swing_setup_rows() + [
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 7: fill bar
+        {"open": 105, "high": 112, "low": 104, "close": 110, "spread": 0},     # 8: breakeven (profit_r=1.0)
+        {"open": 112, "high": 121, "low": 111, "close": 120, "spread": 0},     # 9: trail further (profit_r=2.0)
+    ]
+    df_partial = _bars(rows)
+    atr9 = float(atr(df_partial["high"], df_partial["low"], df_partial["close"], period=14).iloc[-1])
+    expected_trailed_sl = 120.0 - atr9
+    assert expected_trailed_sl > 100.0, "test assumption: the trail must land beyond the breakeven level"
+
+    rows.append({
+        "open": expected_trailed_sl + 5, "high": expected_trailed_sl + 6,
+        "low": expected_trailed_sl - 5, "close": expected_trailed_sl + 2, "spread": 0,
+    })
+    df = _bars(rows)
+    cfg = WatchmanConfig(
+        breakeven_at_r=1.0, trail_start_r=1.5, trail_distance_atr=1.0,
+        time_stop_hours=1000.0, dead_trade_r_band=0.3,
+    )
+    return df, cfg, expected_trailed_sl, atr9
+
+
+def test_watchman_trailed_stop_moves_beyond_breakeven_and_stops_at_the_trailed_level():
+    df, cfg, expected_trailed_sl, _atr9 = _trailing_stop_fixture()
+    config = _watchman_backtest_config(cfg)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "stop_loss"
+    assert trade.exit_price == pytest.approx(expected_trailed_sl)
+    assert trade.exit_price > 100.0  # trailed strictly beyond the breakeven level
+    # r_multiple/risk_amount must be computed from the ORIGINAL
+    # plan.stop_distance (10.0, per _WATCHMAN_PLAN) -- never from the
+    # trailed stop's distance from entry (which would be
+    # expected_trailed_sl - 100.0, a completely different, ATR-dependent
+    # number). _close_trade's risk_amount = plan.stop_distance * point_value
+    # * lot_size, and lot_size cancels out of r_multiple = net_pnl /
+    # risk_amount (net_pnl is itself proportional to lot_size, cost=0 here),
+    # leaving r_multiple = (exit_price - entry_price) / plan.stop_distance --
+    # asserting against that hardcoded 10.0 directly (not re-deriving it from
+    # the trailed level) is what pins this to the ORIGINAL distance.
+    assert trade.r_multiple == pytest.approx((trade.exit_price - trade.entry_price) / 10.0)
+    # Sanity check the two formulas actually diverge on this fixture (i.e.
+    # this isn't a coincidental pass): using the trailed stop's own distance
+    # from entry as the (wrong) denominator would always yield exactly 1.0R,
+    # since exit_price == that same trailed level by construction above.
+    assert trade.r_multiple != pytest.approx(1.0)
+
+
+def test_watchman_engine_decision_matches_a_direct_evaluate_watchman_call():
+    # Reuse-parity: the engine must not reimplement evaluate_watchman's
+    # decision logic -- a direct call with the same in-memory
+    # PositionMetadata/current_sl/current_price/current_atr/as_of_index must
+    # produce the exact same new stop-loss the engine's own replay realizes
+    # (observable via the resulting trade's exit_price at the bar it's
+    # eventually stopped out on).
+    df, cfg, expected_trailed_sl, atr9 = _trailing_stop_fixture()
+    metadata = PositionMetadata(
+        ticket=0, symbol="XAUUSD", direction="BUY", entry_price=100.0,
+        initial_stop_distance=10.0, entry_swing_index=ENTRY_SWING_INDEX,
+        opened_at=df["time"].iloc[7].to_pydatetime(),
+    )
+
+    direct_decision = evaluate_watchman(
+        position_metadata=metadata, current_sl=100.0, current_price=120.0, current_atr=atr9,
+        df=df, as_of_index=9, now=df["time"].iloc[9].to_pydatetime(), config=cfg,
+    )
+
+    assert direct_decision.action == "MODIFY_SL"
+    assert direct_decision.new_stop_loss == pytest.approx(expected_trailed_sl)
+
+    config = _watchman_backtest_config(cfg)
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert trades[0].exit_price == pytest.approx(direct_decision.new_stop_loss)
+
+
+def test_watchman_no_lookahead_a_bar_that_trails_the_stop_cannot_be_stopped_out_by_it_the_same_bar():
+    rows = _swing_setup_rows() + [
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 7: fill bar
+        {"open": 105, "high": 112, "low": 95, "close": 110, "spread": 0},      # 8: breakeven trigger -- this bar's
+        # OWN low (95) would ALSO touch the newly-computed sl(100) if the
+        # engine incorrectly re-checked the SAME bar against its own trail.
+        {"open": 105, "high": 106, "low": 95, "close": 100.5, "spread": 0},    # 9: correctly stopped out here instead
+    ]
+    df = _bars(rows)
+    cfg = WatchmanConfig(
+        breakeven_at_r=1.0, trail_start_r=5.0, trail_distance_atr=1.0,
+        time_stop_hours=1000.0, dead_trade_r_band=0.3,
+    )
+    config = _watchman_backtest_config(cfg)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "stop_loss"
+    assert trade.exit_price == pytest.approx(100.0)
+    assert trade.exit_time == df["time"].iloc[9]  # NOT bar 8, the bar that computed the new stop
+
+
+def test_watchman_trailed_stop_gapped_through_at_next_bars_open_fills_at_that_open():
+    rows = _swing_setup_rows() + [
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 7: fill bar
+        {"open": 105, "high": 112, "low": 104, "close": 110, "spread": 0},     # 8: breakeven trigger -> sl becomes 100
+        {"open": 70, "high": 72, "low": 65, "close": 68, "spread": 0},         # 9: gaps below the trailed sl(100) on open
+    ]
+    df = _bars(rows)
+    cfg = WatchmanConfig(
+        breakeven_at_r=1.0, trail_start_r=5.0, trail_distance_atr=1.0,
+        time_stop_hours=1000.0, dead_trade_r_band=0.3,
+    )
+    config = _watchman_backtest_config(cfg)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "stop_loss"
+    assert trade.exit_price == pytest.approx(70.0)  # the bar's actual gapped open, not the nominal trailed 100.0
+
+
+def test_watchman_structure_invalidation_closes_at_the_bars_close_price():
+    plan = OrderPlan(direction="BUY", entry=100.0, stop_loss=50.0, take_profit=1000.0, stop_distance=50.0)
+    rows = _swing_setup_rows() + [
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 7: fill bar
+        {"open": 97, "high": 98, "low": 84, "close": 85, "spread": 0},         # 8: close(85) < swing low(90)
+    ]
+    df = _bars(rows)
+    cfg = WatchmanConfig(
+        breakeven_at_r=5.0, trail_start_r=10.0, trail_distance_atr=1.0,
+        time_stop_hours=1000.0, dead_trade_r_band=0.3,
+    )
+    config = _watchman_backtest_config(cfg, plan=plan)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "structure_invalidation"
+    assert trade.exit_price == pytest.approx(85.0)  # the bar's close, not the far-away hard stop(50.0)
+    assert trade.exit_time == df["time"].iloc[8]
+
+
+def test_watchman_time_stop_closes_a_dead_trade_at_the_bars_close_price():
+    rows = _swing_setup_rows() + [
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 7: fill bar (opened_at)
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.5, "spread": 0},  # 8: +1h, still under time_stop_hours
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.2, "spread": 0},  # 9: +2h, dead trade -> time stop
+    ]
+    df = _bars(rows)
+    cfg = WatchmanConfig(
+        breakeven_at_r=5.0, trail_start_r=10.0, trail_distance_atr=1.0,
+        time_stop_hours=2.0, dead_trade_r_band=0.3,
+    )
+    config = _watchman_backtest_config(cfg)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "time_stop"
+    assert trade.exit_price == pytest.approx(100.2)
+    assert trade.exit_time == df["time"].iloc[9]
+
+
+# --- Gap 1 (test-engineer review of the Watchman-wiring diff): the small
+# ad-hoc `test_watchman_cfg_none_never_trails_or_closes_even_when_price_
+# would_trigger_breakeven` above only proves Watchman doesn't fire on ONE
+# small fixture -- it doesn't prove `watchman_cfg=None` reproduces the
+# fixed-SL/TP-only engine's results trade-for-trade over a realistic,
+# multi-cycle sequence. This section adds that: a 19-bar, 5-trade fixture
+# (BUY and SELL, wins and losses, ordinary TP, ordinary SL, a weekend-style
+# gapped SL, and an end-of-data close) whose exact expected `ClosedTrade`
+# values are independently hand-derived below (compounding equity through
+# `risk.sizing.compute_lot_size`'s own documented formula -- itself already
+# unit-tested in `tests/unit/risk/test_sizing.py`, never reimplemented here
+# -- and plain P&L arithmetic), the same "independent oracle" convention
+# `test_spread_slippage_cost_is_tracked_separately_...` above already
+# established for this file. -----------------------------------------------
+
+
+def _sequential_signals(plans: list[OrderPlan], calls: list[int]):
+    """Returns the next plan in `plans`, in order, each time it is called
+    while flat -- once exhausted, always returns `None`. Unlike
+    `_fixed_signal_at` (one hardcoded plan at one hardcoded bar index), this
+    lets one fixture chain several DIFFERENT plans back to back, each firing
+    on whatever bar the engine happens to be flat on right after the
+    previous trade closes (the same "signal_fn only ever consulted while
+    flat" invariant `test_engine_ignores_new_signals_while_a_position_is_
+    open_...` above already proved) -- reused here to build a longer,
+    independently hand-verifiable multi-trade chain."""
+    queue = list(plans)
+
+    def _signal_fn(df, as_of_index, **kwargs):
+        calls.append(as_of_index)
+        return queue.pop(0) if queue else None
+
+    return _signal_fn
+
+
+def test_watchman_cfg_none_matches_hand_computed_fixed_sl_tp_trades_across_a_multi_trade_win_loss_sequence():
+    # Five back-to-back trades, watchman_cfg=None throughout -- if the
+    # Watchman wiring had any effect (even a subtle one) when opted out,
+    # SOME trade in this chain would deviate from the plain fixed-SL/TP/
+    # gap/end-of-data arithmetic below. Every entry fills at open=100.0 with
+    # zero spread/slippage/commission, so entry_price is always exactly
+    # 100.0 and gross_pnl == net_pnl == (exit_price - 100.0) * direction_sign
+    # * lot_size; only exit_price/exit_reason/lot_size (via compounding
+    # equity) differ trade to trade.
+    plan1 = OrderPlan(direction="BUY", entry=100.0, stop_loss=90.0, take_profit=125.0, stop_distance=10.0)
+    plan2 = OrderPlan(direction="SELL", entry=100.0, stop_loss=110.0, take_profit=50.0, stop_distance=10.0)
+    plan3 = OrderPlan(direction="BUY", entry=100.0, stop_loss=90.0, take_profit=145.0, stop_distance=10.0)
+    plan4 = OrderPlan(direction="BUY", entry=100.0, stop_loss=90.0, take_profit=200.0, stop_distance=10.0)
+    plan5 = OrderPlan(direction="BUY", entry=100.0, stop_loss=90.0, take_profit=1000.0, stop_distance=10.0)
+    calls: list[int] = []
+
+    rows = [
+        {"open": 99, "high": 100, "low": 98, "close": 100, "spread": 0},        # 0: signal1 (plan1, BUY)
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.5, "spread": 0},    # 1: fill1 @100.0
+        {"open": 100, "high": 102, "low": 98, "close": 101, "spread": 0},        # 2: holding, no breach
+        {"open": 101, "high": 103, "low": 99, "close": 102, "spread": 0},        # 3: holding, no breach
+        {"open": 103, "high": 130, "low": 100, "close": 128, "spread": 0},       # 4: TP1(125) touched; signal2 (plan2, SELL)
+        {"open": 100.0, "high": 101, "low": 99, "close": 99.5, "spread": 0},     # 5: fill2 @100.0
+        {"open": 100, "high": 103, "low": 97, "close": 99, "spread": 0},         # 6: holding, no breach
+        {"open": 99, "high": 104, "low": 96, "close": 98, "spread": 0},          # 7: holding, no breach
+        {"open": 102, "high": 112, "low": 95, "close": 109, "spread": 0},        # 8: SL2(110) touched; signal3 (plan3, BUY)
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.5, "spread": 0},    # 9: fill3 @100.0
+        {"open": 100, "high": 102, "low": 98, "close": 101, "spread": 0},        # 10: holding, no breach
+        {"open": 101, "high": 103, "low": 99, "close": 102, "spread": 0},        # 11: holding, no breach
+        {"open": 103, "high": 150, "low": 100, "close": 148, "spread": 0},       # 12: TP3(145) touched; signal4 (plan4, BUY)
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.5, "spread": 0},    # 13: fill4 @100.0
+        {"open": 100, "high": 102, "low": 98, "close": 101, "spread": 0},        # 14: holding, no breach
+        {"open": 75, "high": 76, "low": 70, "close": 72, "spread": 0},           # 15: gaps below SL4(90) on open; signal5 (plan5, BUY)
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.5, "spread": 0},    # 16: fill5 @100.0
+        {"open": 100, "high": 102, "low": 98, "close": 101, "spread": 0},        # 17: holding, no breach
+        {"open": 101, "high": 104, "low": 99, "close": 103, "spread": 0},        # 18: last bar, no breach -> end_of_data @103
+    ]
+    assert len(rows) == 19
+    df = _bars(rows)
+
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        signal_fn=_sequential_signals([plan1, plan2, plan3, plan4, plan5], calls),
+        watchman_cfg=None,
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 5
+
+    # Hand-derived expected values (compounding equity via
+    # risk.sizing.compute_lot_size's documented formula: lot = floor_to_step(
+    # equity * risk_pct/100 / stop_distance, 0.01); all stop_distance=10.0,
+    # point_value=1.0, commission/spread/slippage=0 so net_pnl == gross_pnl):
+    #   trade1: equity=10000.00 -> lot=10.00; BUY TP @125 (delta +25) ->
+    #           gross=250.00  -> equity=10250.00
+    #   trade2: equity=10250.00 -> lot=10.25; SELL SL @110 (delta +10 adverse)
+    #           -> gross=-102.50 -> equity=10147.50
+    #   trade3: equity=10147.50 -> raw_lot=10.1475 -> floors to lot=10.14;
+    #           BUY TP @145 (delta +45) -> gross=456.30 -> equity=10603.80
+    #   trade4: equity=10603.80 -> lot=10.60; BUY gapped SL @75 (delta -25)
+    #           -> gross=-265.00 -> equity=10338.80
+    #   trade5: equity=10338.80 -> raw_lot=10.3388 -> floors to lot=10.33;
+    #           BUY end_of_data @103 (delta +3) -> gross=30.99
+    expected = [
+        dict(direction="BUY", entry_price=100.0, exit_price=125.0, exit_reason="take_profit",
+             lot_size=10.0, net_pnl=250.0, r_multiple=2.5,
+             entry_time=df["time"].iloc[1], exit_time=df["time"].iloc[4]),
+        dict(direction="SELL", entry_price=100.0, exit_price=110.0, exit_reason="stop_loss",
+             lot_size=10.25, net_pnl=-102.5, r_multiple=-1.0,
+             entry_time=df["time"].iloc[5], exit_time=df["time"].iloc[8]),
+        dict(direction="BUY", entry_price=100.0, exit_price=145.0, exit_reason="take_profit",
+             lot_size=10.14, net_pnl=456.3, r_multiple=4.5,
+             entry_time=df["time"].iloc[9], exit_time=df["time"].iloc[12]),
+        dict(direction="BUY", entry_price=100.0, exit_price=75.0, exit_reason="stop_loss",
+             lot_size=10.6, net_pnl=-265.0, r_multiple=-2.5,
+             entry_time=df["time"].iloc[13], exit_time=df["time"].iloc[15]),
+        dict(direction="BUY", entry_price=100.0, exit_price=103.0, exit_reason="end_of_data",
+             lot_size=10.33, net_pnl=30.99, r_multiple=0.3,
+             entry_time=df["time"].iloc[16], exit_time=df["time"].iloc[18]),
+    ]
+
+    for trade, exp in zip(trades, expected):
+        assert trade.direction == exp["direction"]
+        assert trade.exit_reason == exp["exit_reason"]
+        assert trade.entry_price == pytest.approx(exp["entry_price"])
+        assert trade.exit_price == pytest.approx(exp["exit_price"])
+        assert trade.lot_size == pytest.approx(exp["lot_size"])
+        assert trade.net_pnl == pytest.approx(exp["net_pnl"])
+        assert trade.gross_pnl == pytest.approx(exp["net_pnl"])  # cost=0 throughout
+        assert trade.cost == pytest.approx(0.0)
+        assert trade.spread_slippage_cost == pytest.approx(0.0)
+        assert trade.r_multiple == pytest.approx(exp["r_multiple"])
+        assert trade.entry_time == exp["entry_time"]
+        assert trade.exit_time == exp["exit_time"]
+
+
+# --- Gap 2 (test-engineer review): every Watchman test above this point is
+# BUY-only -- these are the SELL-direction equivalents for the breakeven/
+# trail, no-lookahead, and structure-invalidation tests, verified against
+# stop_logic.py's actual SELL math (`min()` trail/breakeven candidates,
+# profit_r = (entry - current_price) / initial_stop_distance) and
+# exit_conditions.py's SELL structure check (close > latest_confirmed_
+# swing_high, not the BUY-side swing_low), not just BUY numbers with signs
+# flipped. -------------------------------------------------------------
+
+ENTRY_SWING_HIGH = 115.0
+
+_WATCHMAN_PLAN_SELL = OrderPlan(
+    direction="SELL", entry=100.0, stop_loss=110.0, take_profit=-800.0, stop_distance=10.0
+)
+
+
+def _swing_setup_rows_sell() -> list[dict]:
+    """SELL-side mirror of `_swing_setup_rows`: a confirmed swing HIGH (not
+    low) at index 3, flanked by high=101 on both sides, confirmed once bar
+    3+pivot_bars(3)=6 has closed -- same shape `_build_watchman_metadata`
+    re-derives via `latest_confirmed_swing_high` for a SELL position."""
+    return [
+        {"open": 100, "high": 101, "low": 99, "close": 100, "spread": 0},
+        {"open": 100, "high": 101, "low": 99, "close": 100, "spread": 0},
+        {"open": 100, "high": 101, "low": 99, "close": 100, "spread": 0},
+        {"open": 100, "high": ENTRY_SWING_HIGH, "low": 99, "close": 100, "spread": 0},  # 3: the swing high
+        {"open": 100, "high": 101, "low": 99, "close": 100, "spread": 0},
+        {"open": 100, "high": 101, "low": 99, "close": 100, "spread": 0},
+        {"open": 100, "high": 101, "low": 99, "close": 100, "spread": 0},
+    ]
+
+
+def _watchman_backtest_config_sell(cfg: WatchmanConfig | None, plan: OrderPlan = _WATCHMAN_PLAN_SELL) -> BacktestConfig:
+    calls: list[int] = []
+    return BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        signal_fn=_fixed_signal_at(SIGNAL_INDEX, plan, calls),
+        watchman_cfg=cfg,
+    )
+
+
+def test_watchman_sell_trails_to_breakeven_then_stops_exactly_at_breakeven():
+    # stop_logic.compute_updated_stop_loss's SELL branch: profit_r = (entry
+    # - current_price) / initial_stop_distance = (100-89)/10 = 1.1 >= 1.0 ->
+    # breakeven candidate = entry_price(100.0); candidates=[current_sl(110),
+    # 100.0] -> min() = 100.0 (moves DOWN/tighter, the favorable direction
+    # for a SELL) -- the mirror image of the BUY test's max()-moves-up.
+    df = _bars(_swing_setup_rows_sell() + [
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 7: fill bar
+        {"open": 95, "high": 96, "low": 88, "close": 89, "spread": 0},         # 8: breakeven trigger (profit_r=1.1)
+        {"open": 95, "high": 101, "low": 94, "close": 95, "spread": 0},        # 9: high touches breakeven=100
+    ])
+    cfg = WatchmanConfig(
+        breakeven_at_r=1.0, trail_start_r=5.0, trail_distance_atr=1.0,
+        time_stop_hours=1000.0, dead_trade_r_band=0.3,
+    )
+    config = _watchman_backtest_config_sell(cfg)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.direction == "SELL"
+    assert trade.exit_reason == "stop_loss"
+    assert trade.exit_price == pytest.approx(100.0)  # entry price -- the breakeven level, not the original 110.0
+    assert trade.exit_time == df["time"].iloc[9]
+
+
+def test_watchman_sell_no_lookahead_a_bar_that_trails_the_stop_cannot_be_stopped_out_by_it_the_same_bar():
+    rows = _swing_setup_rows_sell() + [
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 7: fill bar
+        {"open": 95, "high": 105, "low": 88, "close": 89, "spread": 0},        # 8: breakeven trigger -- this bar's
+        # OWN high (105) would ALSO touch the newly-computed sl(100) if the
+        # engine incorrectly re-checked the SAME bar against its own trail
+        # (the OLD sl was 110, genuinely unreached by this bar's high of 105).
+        {"open": 95, "high": 106, "low": 95, "close": 100.2, "spread": 0},     # 9: correctly stopped out here instead
+    ]
+    df = _bars(rows)
+    cfg = WatchmanConfig(
+        breakeven_at_r=1.0, trail_start_r=5.0, trail_distance_atr=1.0,
+        time_stop_hours=1000.0, dead_trade_r_band=0.3,
+    )
+    config = _watchman_backtest_config_sell(cfg)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.direction == "SELL"
+    assert trade.exit_reason == "stop_loss"
+    assert trade.exit_price == pytest.approx(100.0)
+    assert trade.exit_time == df["time"].iloc[9]  # NOT bar 8, the bar that computed the new stop
+
+
+def test_watchman_sell_structure_invalidation_closes_at_the_bars_close_price():
+    # exit_conditions.check_structure_invalidation's SELL branch: CLOSE at
+    # as_of_index > latest_confirmed_swing_high (115.0 here), NOT the
+    # BUY-side swing_low check.
+    plan = OrderPlan(direction="SELL", entry=100.0, stop_loss=150.0, take_profit=-1000.0, stop_distance=50.0)
+    rows = _swing_setup_rows_sell() + [
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 7: fill bar
+        {"open": 112, "high": 121, "low": 111, "close": 120, "spread": 0},     # 8: close(120) > swing high(115)
+    ]
+    df = _bars(rows)
+    cfg = WatchmanConfig(
+        breakeven_at_r=5.0, trail_start_r=10.0, trail_distance_atr=1.0,
+        time_stop_hours=1000.0, dead_trade_r_band=0.3,
+    )
+    config = _watchman_backtest_config_sell(cfg, plan=plan)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.direction == "SELL"
+    assert trade.exit_reason == "structure_invalidation"
+    assert trade.exit_price == pytest.approx(120.0)  # the bar's close, not the far-away hard stop(150.0)
+    assert trade.exit_time == df["time"].iloc[8]
+
+
+# --- Gap 3 (test-engineer review): no existing test proves a trailed
+# position can still exit via its ORDINARY, unmoved take_profit on a later
+# bar -- take_profit never moves, only current_sl does, so a prior
+# MODIFY_SL must not corrupt this path. -------------------------------------
+
+
+def test_watchman_trailed_position_still_exits_via_its_original_unmoved_take_profit_later():
+    plan = OrderPlan(direction="BUY", entry=100.0, stop_loss=90.0, take_profit=130.0, stop_distance=10.0)
+    rows = _swing_setup_rows() + [
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 7: fill bar
+        {"open": 109, "high": 112, "low": 108, "close": 111, "spread": 0},     # 8: breakeven trigger (profit_r=1.1) -> sl becomes 100
+        {"open": 115, "high": 118, "low": 110, "close": 117, "spread": 0},     # 9: holding above the trailed sl(100), no breach either way
+        {"open": 125, "high": 131, "low": 124, "close": 129, "spread": 0},     # 10: TP(130) touched -- unmoved by trailing
+    ]
+    df = _bars(rows)
+    cfg = WatchmanConfig(
+        breakeven_at_r=1.0, trail_start_r=5.0, trail_distance_atr=1.0,
+        time_stop_hours=1000.0, dead_trade_r_band=0.3,
+    )
+    config = _watchman_backtest_config(cfg, plan=plan)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "take_profit"
+    assert trade.exit_price == pytest.approx(130.0)  # the ORIGINAL take_profit, never moved by the bar-8 breakeven
+    assert trade.exit_time == df["time"].iloc[10]
+    assert trade.entry_price == pytest.approx(100.0)
+    # A clean 3.0R take-profit win: (130.0 - 100.0) / stop_distance(10.0) --
+    # proves the prior trailing (which only ever touched current_sl, never
+    # plan.take_profit or plan.stop_distance) didn't corrupt this fixed,
+    # positive-R TP-win arithmetic.
+    assert trade.r_multiple == pytest.approx(3.0)
+    assert trade.lot_size == pytest.approx(10.0)
+    assert trade.net_pnl == pytest.approx(300.0)
+
+
+# --- Gap 4 (test-engineer review): the defensive `_build_watchman_metadata`
+# `None` fallback (no confirmed swing at fill time) -- per its docstring
+# "should not normally happen", but the code path exists and must not crash
+# or silently misbehave. -----------------------------------------------------
+
+
+def test_watchman_metadata_none_fallback_when_no_confirmed_swing_exists_at_entry_still_exits_via_fixed_sl_tp():
+    # A signal firing at as_of_index=0 (the very start of the data) can
+    # NEVER have a confirmed swing yet, regardless of the actual low/high
+    # values: features/swing.py's `_confirmed_swing_indices` returns []
+    # whenever `as_of_index - pivot_bars < pivot_bars`, i.e. as_of_index < 6
+    # for the engine's default pivot_bars=3 -- structurally, not just for
+    # this particular fixture's data. So `_build_watchman_metadata`'s
+    # `latest_confirmed_swing_low` lookup returns None here, and the
+    # resulting `_OpenPosition.metadata` is None even though
+    # `watchman_cfg` is NOT None -- exercising the "defensively... should
+    # not normally happen" fallback branch documented in engine.py.
+    assert latest_confirmed_swing_low(
+        _bars([
+            {"open": 99, "high": 100, "low": 98, "close": 100, "spread": 0},
+            {"open": 100.0, "high": 101, "low": 99, "close": 100.5, "spread": 0},
+            {"open": 116, "high": 125, "low": 115, "close": 118, "spread": 0},
+        ]),
+        as_of_index=0,
+        pivot_bars=3,
+    ) is None  # confirms the premise: no confirmed swing exists at signal time
+
+    plan = OrderPlan(direction="BUY", entry=100.0, stop_loss=90.0, take_profit=120.0, stop_distance=10.0)
+    calls: list[int] = []
+    df = _bars([
+        {"open": 99, "high": 100, "low": 98, "close": 100, "spread": 0},        # 0: signal bar (as_of_index=0)
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.5, "spread": 0},    # 1: fill bar
+        {"open": 116, "high": 125, "low": 115, "close": 118, "spread": 0},       # 2: TP(120) touched
+    ])
+    cfg = WatchmanConfig(
+        breakeven_at_r=1.0, trail_start_r=5.0, trail_distance_atr=1.0,
+        time_stop_hours=1000.0, dead_trade_r_band=0.3,
+    )
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        signal_fn=_fixed_signal_at(0, plan, calls),
+        watchman_cfg=cfg,
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "take_profit"
+    assert trade.exit_price == pytest.approx(120.0)  # nominal TP, fixed-SL/TP fallback behavior intact
+    assert trade.net_pnl == pytest.approx(200.0)

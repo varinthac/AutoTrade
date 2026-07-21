@@ -17,6 +17,11 @@ Risk Voice (`council/risk_voice.py`) is always modeled, using
 `config/base.yaml`'s `risk_voice:` thresholds -- see `backtest/engine.py`'s
 module docstring for exactly which of its 6 conditions are (and are not,
 i.e. news) faithfully replayed here.
+
+Watchman's exit management (breakeven/trail/structure-invalidation/time-stop)
+is likewise always modeled, using `config/base.yaml`'s `watchman:` block --
+see `backtest/engine.py`'s module docstring for the exact per-bar ordering
+convention and the one sub-condition (news protection) still unmodeled.
 """
 from __future__ import annotations
 
@@ -39,6 +44,7 @@ from autotrade.common.symbol_spec import SymbolSpec
 from autotrade.common.symbols import get_symbol_spec
 from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.feed.historical import HISTORICAL_DIR
+from autotrade.watchman.evaluate import WatchmanConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -54,6 +60,7 @@ def build_envelope(
     starting_equity: float,
     is_out_of_sample: bool,
     risk_voice_modeled: bool,
+    watchman_exits_modeled: bool,
 ) -> dict:
     """The JSON-serializable envelope written to disk -- see
     `auditor/backtest_results.py`'s `BacktestReportEnvelope` for the
@@ -62,9 +69,10 @@ def build_envelope(
     commission is actually modeled (non-placeholder) AND slippage uses the
     minimum-1-spread convention (`slippage_points is None`, see
     `CostModelConfig`'s docstring) rather than a possibly-too-small override.
-    `risk_voice_modeled` mirrors that same "don't silently count an
-    incomplete simulation" philosophy for Risk Voice -- see
-    `backtest/engine.py`'s module docstring.
+    `risk_voice_modeled`/`watchman_exits_modeled` mirror that same "don't
+    silently count an incomplete simulation" philosophy for Risk Voice and
+    Watchman's exit management respectively -- see `backtest/engine.py`'s
+    module docstring.
     """
     cost_model_complete = cost_model.commission_per_lot > 0 and cost_model.slippage_points is None
     return {
@@ -75,6 +83,7 @@ def build_envelope(
         "cost_model_complete": cost_model_complete,
         "is_out_of_sample": is_out_of_sample,
         "risk_voice_modeled": risk_voice_modeled,
+        "watchman_exits_modeled": watchman_exits_modeled,
         "report": asdict(report),
     }
 
@@ -89,23 +98,26 @@ def run_and_persist(
     is_out_of_sample: bool,
     output_dir: Path,
     risk_voice_cfg: RiskVoiceConfig | None = None,
+    watchman_cfg: WatchmanConfig | None = None,
 ) -> Path:
-    """`risk_voice_cfg=None` (the default) means Risk Voice is NOT modeled
-    in this run -- an explicit, honest placeholder (see
-    `backtest/engine.py`'s module docstring), not a silent equivalent to
-    passing one. `scripts/run_backtest.py`'s CLI (`main()`, below) always
-    constructs a real one from `config/base.yaml`'s `risk_voice:` block;
-    leaving this `None` is only appropriate for tests/tooling that don't
-    need Risk Voice's veto behavior."""
+    """`risk_voice_cfg=None`/`watchman_cfg=None` (the defaults) mean Risk
+    Voice / Watchman's exit management are NOT modeled in this run -- an
+    explicit, honest placeholder (see `backtest/engine.py`'s module
+    docstring), not a silent equivalent to passing one. `scripts/
+    run_backtest.py`'s CLI (`main()`, below) always constructs real ones
+    from `config/base.yaml`'s `risk_voice:`/`watchman:` blocks; leaving
+    either `None` is only appropriate for tests/tooling that don't need
+    that veto/exit behavior."""
     config = BacktestConfig(
         starting_equity=starting_equity, risk_per_trade_pct=risk_per_trade_pct, cost_model=cost_model,
-        risk_voice_cfg=risk_voice_cfg,
+        risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg,
     )
     trades = run_backtest(df, symbol, symbol_spec, config)
     report = generate_report(trades, starting_equity)
     envelope = build_envelope(
         symbol, df, report, cost_model, starting_equity, is_out_of_sample,
         risk_voice_modeled=risk_voice_cfg is not None,
+        watchman_exits_modeled=watchman_cfg is not None,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -191,6 +203,15 @@ def main() -> int:
         friday_close_hour=cfg["risk_voice"]["friday_close_hour"],
         max_atr_panic_multiple=cfg["risk_voice"]["max_atr_panic_multiple"],
     )
+    # Always model Watchman's exit management from config/base.yaml's real
+    # thresholds -- same "no opt-out" convention as risk_voice_cfg above.
+    watchman_cfg = WatchmanConfig(
+        breakeven_at_r=cfg["watchman"]["breakeven_at_r"],
+        trail_start_r=cfg["watchman"]["trail_start_r"],
+        trail_distance_atr=cfg["watchman"]["trail_distance_atr"],
+        time_stop_hours=cfg["watchman"]["time_stop_hours"],
+        dead_trade_r_band=cfg["watchman"]["dead_trade_r_band"],
+    )
 
     creds = load_mt5_credentials()
     with mt5_session(creds):
@@ -202,7 +223,8 @@ def main() -> int:
 
     run_and_persist(
         args.symbol, df, symbol_spec, args.starting_equity, risk_per_trade_pct,
-        cost_model, args.out_of_sample, args.output_dir, risk_voice_cfg=risk_voice_cfg,
+        cost_model, args.out_of_sample, args.output_dir,
+        risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg,
     )
     return 0
 

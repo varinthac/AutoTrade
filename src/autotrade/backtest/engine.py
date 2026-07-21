@@ -28,6 +28,45 @@ re-check (signal-time + immediately-before-send), this engine only checks
 once per signal -- there is no separate "order-send time" moment in a
 backtest replay, so a second check would be identical to the first.
 
+Watchman exits (`watchman/evaluate.evaluate_watchman`) ARE wired into this
+engine too, via an OPTIONAL `watchman_cfg: WatchmanConfig | None` on
+`BacktestConfig` (default `None` -- explicitly means "not modeled", same
+placeholder convention as `risk_voice_cfg` above; EXP-002 in
+`experiments/experiments_log.md` is the param-tuner finding that first
+confirmed this engine never simulated breakeven/trail/structure/time-stop
+exits, only fixed SL/TP/end-of-data). `evaluate_watchman` and its
+sub-functions (`stop_logic.compute_updated_stop_loss`,
+`exit_conditions.check_structure_invalidation`/`check_time_stop`) are reused
+verbatim, never reimplemented -- exactly the pure-decision-function reuse
+`risk_voice_cfg` above established. `OrderPlan` doesn't carry the swing
+index Watchman's structure-invalidation check needs, so at fill time this
+engine re-derives it the same way `orchestrator/shadow_loop.py`'s live loop
+does (`latest_confirmed_swing_low`/`latest_confirmed_swing_high`, same
+`pivot_bars` the signal was built with), then builds an in-memory
+`PositionMetadata` (synthetic `ticket=0` -- there is no real broker ticket
+in a backtest) that lives only for that trade's lifetime.
+
+**One Watchman sub-condition remains genuinely unmodeled**: news protection
+(`watchman/news_protection.py`) -- same missing-historical-news-calendar gap
+as Risk Voice's news veto above, and for the same reason not attempted here.
+
+**Per-bar ordering/timing convention (a real backtest-methodology decision,
+documented here rather than left implicit)**: for every bar an already-open
+position is still open, the existing fixed SL/TP exit (`check_exit`) is
+checked FIRST, against the position's *currently tracked* stop level
+(`_OpenPosition.current_sl`, which starts at `plan.stop_loss` and only ever
+moves via a Watchman `MODIFY_SL`) -- this preserves the SL-priority-on-
+double-touch and weekend-gap-aware fill conventions below completely
+unchanged. Only if that check does NOT exit the trade is `evaluate_watchman`
+consulted, using `current_price`/`now` = this bar's close/timestamp and
+`current_atr` computed the same way `watchman/loop.py`'s live `_current_atr`
+does. A `CLOSE` decision (`exit_reason="structure_invalidation"` or
+`"time_stop"`) closes the trade at THIS bar's close price. A `MODIFY_SL`
+decision only updates `current_sl` -- the new, tighter stop is never
+checked against for an exit until the NEXT bar's `check_exit` call (no
+look-ahead: the bar that produces a tighter stop can never itself be the bar
+that gets stopped out by it).
+
 Guardrails (spec.md §4), enforced structurally, not just documented:
 - Decisions only read closed bars: the signal function is called with
   `as_of_index=i`, one full loop iteration *before* bar `i + 1` (the fill
@@ -87,7 +126,10 @@ from autotrade.council.decision_matrix import evaluate_council
 from autotrade.council.order_construction import OrderPlan
 from autotrade.council.risk_voice import RiskVoiceConfig, check_risk_voice
 from autotrade.features.indicators import atr, rolling_average
+from autotrade.features.swing import latest_confirmed_swing_high, latest_confirmed_swing_low
 from autotrade.risk.sizing import compute_lot_size
+from autotrade.watchman.evaluate import WatchmanConfig, evaluate_watchman
+from autotrade.watchman.position_metadata import PositionMetadata
 
 _NO_HISTORICAL_NEWS_PROVIDER = NoHistoricalNewsDataProvider()
 
@@ -182,7 +224,9 @@ class ClosedTrade:
     entry_price: float
     exit_time: pd.Timestamp
     exit_price: float
-    exit_reason: Literal["stop_loss", "take_profit", "end_of_data"]
+    exit_reason: Literal[
+        "stop_loss", "take_profit", "end_of_data", "structure_invalidation", "time_stop"
+    ]
     lot_size: float
     gross_pnl: float
     """P&L from `entry_price` (already spread/slippage-adjusted) to
@@ -239,12 +283,25 @@ class BacktestConfig:
     `RiskVoiceConfig` loaded from `config/base.yaml`; leaving this `None` is
     only appropriate for tests/tooling that don't need Risk Voice's veto
     behavior."""
+    watchman_cfg: WatchmanConfig | None = None
+    """`None` (the default) means Watchman's exit management (breakeven,
+    ATR-trailing stop, structure-invalidation, time-stop) is NOT modeled in
+    this run -- an explicit placeholder, not silently-equivalent-to-passing
+    (see module docstring). Without it, this engine only ever exits a trade
+    via its fixed SL/TP/end-of-data (EXP-002, `experiments/experiments_log.md`).
+    `scripts/run_backtest.py` always passes a real `WatchmanConfig` loaded
+    from `config/base.yaml`; leaving this `None` is only appropriate for
+    tests/tooling that don't need Watchman's exit behavior."""
 
 
 @dataclass
 class _PendingOrder:
     plan: OrderPlan
     lot_size: float
+    signal_index: int
+    """The bar index `config.signal_fn` was called with when this order was
+    decided -- needed at fill time to re-derive `PositionMetadata.
+    entry_swing_index` (see module docstring's Watchman section)."""
 
 
 @dataclass
@@ -257,6 +314,17 @@ class _OpenPosition:
     """The spread+slippage price-unit delta baked into `entry_price` at fill
     time (see `_fill_entry_price`) -- kept around so `_close_trade` can
     convert it to currency for `ClosedTrade.spread_slippage_cost`."""
+    current_sl: float
+    """The position's CURRENTLY tracked stop level -- starts at
+    `plan.stop_loss` and only ever moves via a Watchman `MODIFY_SL` decision
+    (see module docstring's per-bar ordering section). `_close_trade`'s
+    `risk_amount`/`r_multiple` still use `plan.stop_distance` (the ORIGINAL
+    fixed risk), never this trailed value."""
+    metadata: PositionMetadata | None
+    """In-memory Watchman position metadata built at fill time when
+    `BacktestConfig.watchman_cfg is not None` (see `_build_watchman_metadata`);
+    `None` when Watchman exits are not modeled for this run, or (defensively)
+    if no confirmed swing could be re-derived for this trade."""
 
 
 def _fill_entry_price(
@@ -274,6 +342,70 @@ def _fill_entry_price(
     cost = spread_slippage_price(bar_spread_points, symbol, cost_model)
     entry_price = bar_open + cost if direction == "BUY" else bar_open - cost
     return entry_price, cost
+
+
+def _watchman_current_atr(df: pd.DataFrame, as_of_index: int, period: int = 14) -> float:
+    """Same computation as `watchman/loop.py`'s `_current_atr` -- ATR(14)
+    from bars up to and including `as_of_index` only (never looking ahead),
+    used as Watchman's SL-trail distance input."""
+    closes = df["close"].iloc[: as_of_index + 1]
+    highs = df["high"].iloc[: as_of_index + 1]
+    lows = df["low"].iloc[: as_of_index + 1]
+    return float(atr(highs, lows, closes, period=period).iloc[-1])
+
+
+def _build_watchman_metadata(
+    symbol: str,
+    plan: OrderPlan,
+    entry_price: float,
+    entry_time: pd.Timestamp,
+    df: pd.DataFrame,
+    signal_index: int,
+    pivot_bars: int,
+) -> PositionMetadata | None:
+    """Re-derives the swing `entry_swing_index` that justified `plan`'s
+    stop-loss -- `OrderPlan` doesn't carry it, so this mirrors
+    `orchestrator/shadow_loop.py`'s live re-derivation (same
+    `latest_confirmed_swing_low`/`latest_confirmed_swing_high` call, same
+    `pivot_bars`, same `as_of_index` the signal itself was evaluated at)
+    rather than widening the `SignalFn` contract. Returns `None`
+    (defensively -- `evaluate_council`/`build_order_plan` already require a
+    confirmed swing to build `plan` in the first place, so this should not
+    normally happen) if no confirmed swing is found."""
+    if plan.direction == "BUY":
+        swing = latest_confirmed_swing_low(df, signal_index, pivot_bars=pivot_bars)
+    else:
+        swing = latest_confirmed_swing_high(df, signal_index, pivot_bars=pivot_bars)
+    if swing is None:
+        return None
+    swing_index, _swing_price = swing
+    return PositionMetadata(
+        ticket=0,
+        symbol=symbol,
+        direction=plan.direction,
+        entry_price=entry_price,
+        initial_stop_distance=plan.stop_distance,
+        entry_swing_index=swing_index,
+        opened_at=entry_time.to_pydatetime(),
+    )
+
+
+def _classify_watchman_exit_reason(
+    reason: str,
+) -> Literal["structure_invalidation", "time_stop"]:
+    """`evaluate_watchman`'s `WatchmanDecision.reason` is a free-text human
+    message, not a machine-readable code -- but its only two `CLOSE` cases
+    each start with a fixed, known prefix (see `watchman/evaluate.py`), same
+    mapping `watchman/loop.py`'s `_classify_watchman_close_reason` uses for
+    the live trade journal. Unlike that live version (which must never crash
+    the loop over an MT5-facing surprise), an unrecognized reason here is a
+    genuine code bug in this deterministic pure-function pairing, so this
+    raises rather than silently mis-labeling a trade's exit_reason."""
+    if reason.startswith("structure invalidation"):
+        return "structure_invalidation"
+    if reason.startswith("time stop"):
+        return "time_stop"
+    raise ValueError(f"unrecognized Watchman CLOSE reason: {reason!r}")
 
 
 def check_exit(
@@ -310,7 +442,9 @@ def _close_trade(
     position: _OpenPosition,
     exit_time: pd.Timestamp,
     exit_price: float,
-    exit_reason: Literal["stop_loss", "take_profit", "end_of_data"],
+    exit_reason: Literal[
+        "stop_loss", "take_profit", "end_of_data", "structure_invalidation", "time_stop"
+    ],
     point_value: float,
     cost_model: CostModelConfig,
 ) -> ClosedTrade:
@@ -375,17 +509,25 @@ def run_backtest(
             entry_price, spread_slippage_price_delta = _fill_entry_price(
                 pending.plan.direction, bar["open"], bar["spread"], symbol_spec, config.cost_model
             )
+            entry_time = pd.Timestamp(bar["time"])
+            metadata = None
+            if config.watchman_cfg is not None:
+                metadata = _build_watchman_metadata(
+                    symbol, pending.plan, entry_price, entry_time, df, pending.signal_index, config.pivot_bars,
+                )
             position = _OpenPosition(
                 plan=pending.plan,
                 lot_size=pending.lot_size,
-                entry_time=pd.Timestamp(bar["time"]),
+                entry_time=entry_time,
                 entry_price=entry_price,
                 spread_slippage_price_delta=spread_slippage_price_delta,
+                current_sl=pending.plan.stop_loss,
+                metadata=metadata,
             )
             pending = None
 
         if position is not None:
-            exit_result = check_exit(position.plan.direction, position.plan.stop_loss, position.plan.take_profit, bar)
+            exit_result = check_exit(position.plan.direction, position.current_sl, position.plan.take_profit, bar)
             if exit_result is not None:
                 exit_price, exit_reason = exit_result
                 trades.append(
@@ -396,6 +538,29 @@ def run_backtest(
                 )
                 equity += trades[-1].net_pnl
                 position = None
+            elif config.watchman_cfg is not None and position.metadata is not None:
+                decision = evaluate_watchman(
+                    position_metadata=position.metadata,
+                    current_sl=position.current_sl,
+                    current_price=float(bar["close"]),
+                    current_atr=_watchman_current_atr(df, i),
+                    df=df,
+                    as_of_index=i,
+                    now=pd.Timestamp(bar["time"]).to_pydatetime(),
+                    config=config.watchman_cfg,
+                )
+                if decision.action == "CLOSE":
+                    trades.append(
+                        _close_trade(
+                            symbol, position, pd.Timestamp(bar["time"]), float(bar["close"]),
+                            _classify_watchman_exit_reason(decision.reason),
+                            point_value, config.cost_model,
+                        )
+                    )
+                    equity += trades[-1].net_pnl
+                    position = None
+                elif decision.action == "MODIFY_SL":
+                    position.current_sl = decision.new_stop_loss
 
         if position is None and pending is None:
             plan = config.signal_fn(
@@ -414,7 +579,7 @@ def run_backtest(
                     volume_step=symbol_spec.volume_step,
                 )
                 if lot is not None and i + 1 < len(df):
-                    pending = _PendingOrder(plan=plan, lot_size=lot)
+                    pending = _PendingOrder(plan=plan, lot_size=lot, signal_index=i)
                 # else: below broker minimum, or no next bar to fill on --
                 # never becomes a trade, consistent with "not filled" rather
                 # than a silently-wrong same-bar fill.

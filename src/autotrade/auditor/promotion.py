@@ -145,6 +145,17 @@ def evaluate_backtest_to_paper_gate(
                 "(risk_voice_cfg is now wired in by default) before this gate can be evaluated."
             ),
         ))
+    if not report_envelope.watchman_exits_modeled:
+        hard_fail_criteria.append(CriterionResult(
+            name="watchman_exits_modeled", passed=False, actual=False, threshold="True",
+            note=(
+                "Backtest without Watchman's exit management modeled only ever exercised fixed "
+                "SL/TP/end-of-data exits, never breakeven/ATR-trailing/structure-invalidation/"
+                "time-stop (EXP-002, experiments/experiments_log.md) -- its trade count/profit "
+                "factor are not representative. Re-run scripts/run_backtest.py (watchman_cfg is "
+                "now wired in by default) before this gate can be evaluated."
+            ),
+        ))
     if hard_fail_criteria:
         return GateResult(
             passed=False, criteria=hard_fail_criteria,

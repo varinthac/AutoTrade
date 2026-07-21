@@ -42,6 +42,16 @@ class BacktestReportEnvelope:
     Matrix, not the full veto gate live trading applies, so its trade
     count/profit factor may not be representative -- same "don't silently
     count an incomplete simulation" philosophy as `cost_model_complete`."""
+    watchman_exits_modeled: bool
+    """True iff this run's `BacktestConfig.watchman_cfg` was set (not
+    `None`) -- see `backtest/engine.py`'s module docstring. A run without
+    Watchman's exit management modeled only ever exercised fixed SL/TP/
+    end-of-data exits, never breakeven/ATR-trailing/structure-invalidation/
+    time-stop, so its trade count/profit factor are not representative of
+    live behavior (EXP-002, `experiments/experiments_log.md`, is the
+    param-tuner finding that first confirmed this gap) -- same "don't
+    silently count an incomplete simulation" philosophy as
+    `cost_model_complete`/`risk_voice_modeled`."""
     report: BacktestReport
 
 
@@ -52,7 +62,7 @@ _REPORT_FIELDS = (
 )
 _TOP_LEVEL_FIELDS = (
     "symbol", "bar_range", "starting_equity", "cost_model", "cost_model_complete",
-    "is_out_of_sample", "risk_voice_modeled", "report",
+    "is_out_of_sample", "risk_voice_modeled", "watchman_exits_modeled", "report",
 )
 
 
@@ -91,6 +101,7 @@ def load_backtest_report_envelope(path: Path) -> BacktestReportEnvelope:
             cost_model_complete=data["cost_model_complete"],
             is_out_of_sample=data["is_out_of_sample"],
             risk_voice_modeled=data["risk_voice_modeled"],
+            watchman_exits_modeled=data["watchman_exits_modeled"],
             report=BacktestReport(**{k: data["report"][k] for k in _REPORT_FIELDS}),
         )
     except (TypeError, ValueError) as exc:

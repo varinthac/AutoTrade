@@ -28,6 +28,7 @@ def _valid_envelope() -> dict:
         "cost_model_complete": True,
         "is_out_of_sample": False,
         "risk_voice_modeled": True,
+        "watchman_exits_modeled": True,
         "report": _VALID_REPORT,
     }
 
@@ -47,6 +48,7 @@ def test_load_valid_envelope_round_trips_every_field(tmp_path):
     assert envelope.cost_model_complete is True
     assert envelope.is_out_of_sample is False
     assert envelope.risk_voice_modeled is True
+    assert envelope.watchman_exits_modeled is True
     assert envelope.report.trade_count == 200
     assert envelope.report.profit_factor_excluding_top_5 == 1.2
 
@@ -68,6 +70,16 @@ def test_missing_risk_voice_modeled_field_raises(tmp_path):
     path.write_text(json.dumps(data), encoding="utf-8")
 
     with pytest.raises(BacktestReportEnvelopeError, match="risk_voice_modeled"):
+        load_backtest_report_envelope(path)
+
+
+def test_missing_watchman_exits_modeled_field_raises(tmp_path):
+    data = _valid_envelope()
+    del data["watchman_exits_modeled"]
+    path = tmp_path / "envelope.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(BacktestReportEnvelopeError, match="watchman_exits_modeled"):
         load_backtest_report_envelope(path)
 
 

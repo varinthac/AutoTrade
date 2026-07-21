@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1030 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1048 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1030 (including all parametrized variants)
+- **Total Test Count**: 1048 (including all parametrized variants)
 - **Test Files**: ~55 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -14,20 +14,20 @@ This document provides a comprehensive list of all 1030 test cases in the AutoTr
 
 | Subsystem | Test File | Test Count |
 |-----------|-----------|-----------|
-| Auditor | test_backtest_results.py | 6 |
+| Auditor | test_backtest_results.py | 8 |
 | | test_borderline.py | 17 |
 | | test_daily_report.py | 3 |
 | | test_demotion.py | 11 |
 | | test_metrics.py | 6 |
-| | test_promotion.py | 29 |
-| **Auditor Subtotal** | | **72** |
+| | test_promotion.py | 30 |
+| **Auditor Subtotal** | | **75** |
 | Backtest | test_clock.py | 3 |
 | | test_cost_model.py | 7 |
-| | test_engine.py | 23 |
+| | test_engine.py | 37 |
 | | test_forward_walk.py | 10 |
 | | test_lookahead_validation.py | 3 |
 | | test_report.py | 15 |
-| **Backtest Subtotal** | | **61** |
+| **Backtest Subtotal** | | **75** |
 | Council | test_decision_matrix.py | 50 |
 | | test_finnhub_news_calendar.py | 12 |
 | | test_mql5_calendar_provider.py | 21 |
@@ -84,14 +84,14 @@ This document provides a comprehensive list of all 1030 test cases in the AutoTr
 | | test_pid_file.py | 19 |
 | | test_poller.py | 10 |
 | | test_run_auditor.py | 37 |
-| | test_run_backtest.py | 12 |
+| | test_run_backtest.py | 15 |
 | | test_run_shadow_loop.py | 24 |
 | | test_run_telegram_control.py | 10 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **236** |
+| **Scripts & CLI Subtotal** | | **235** |
 | | | |
-| **GRAND TOTAL** | | **1030** |
+| **GRAND TOTAL** | | **1048** |
 
 ---
 
@@ -102,6 +102,7 @@ This document provides a comprehensive list of all 1030 test cases in the AutoTr
 - test_load_valid_envelope_round_trips_every_field
 - test_missing_top_level_field_raises
 - test_missing_risk_voice_modeled_field_raises
+- test_missing_watchman_exits_modeled_field_raises
 - test_missing_report_field_raises
 - test_invalid_json_raises
 - test_missing_file_raises
@@ -162,7 +163,8 @@ This document provides a comprehensive list of all 1030 test cases in the AutoTr
 - test_gate1_fails_outright_when_not_out_of_sample_regardless_of_otherwise_passing_numbers
 - test_gate1_fails_outright_reporting_both_hard_fail_criteria_when_both_missing
 - test_gate1_fails_outright_when_risk_voice_not_modeled_regardless_of_otherwise_passing_numbers
-- test_gate1_fails_outright_reporting_all_three_hard_fail_criteria_when_all_missing
+- test_gate1_fails_outright_when_watchman_exits_not_modeled_regardless_of_otherwise_passing_numbers
+- test_gate1_fails_outright_reporting_all_four_hard_fail_criteria_when_all_missing
 - test_gate1_profit_factor_boundary_1_30_passes_1_29_fails
 - test_gate1_profit_factor_exact_boundary_1_3_passes_1_2999_fails
 - test_gate1_max_drawdown_boundary_15_00_passes_15_01_fails
@@ -232,6 +234,20 @@ This document provides a comprehensive list of all 1030 test cases in the AutoTr
 - test_risk_voice_cfg_session_veto_blocks_the_trade_entirely
 - test_risk_voice_cfg_stop_distance_veto_blocks_the_trade
 - test_no_historical_news_data_provider_always_returns_empty_list_never_none
+- test_watchman_buy_trails_to_breakeven_then_stops_exactly_at_breakeven
+- test_watchman_cfg_none_never_trails_or_closes_even_when_price_would_trigger_breakeven
+- test_watchman_trailed_stop_moves_beyond_breakeven_and_stops_at_the_trailed_level
+- test_watchman_engine_decision_matches_a_direct_evaluate_watchman_call
+- test_watchman_no_lookahead_a_bar_that_trails_the_stop_cannot_be_stopped_out_by_it_the_same_bar
+- test_watchman_trailed_stop_gapped_through_at_next_bars_open_fills_at_that_open
+- test_watchman_structure_invalidation_closes_at_the_bars_close_price
+- test_watchman_time_stop_closes_a_dead_trade_at_the_bars_close_price
+- test_watchman_cfg_none_matches_hand_computed_fixed_sl_tp_trades_across_a_multi_trade_win_loss_sequence
+- test_watchman_sell_trails_to_breakeven_then_stops_exactly_at_breakeven
+- test_watchman_sell_no_lookahead_a_bar_that_trails_the_stop_cannot_be_stopped_out_by_it_the_same_bar
+- test_watchman_sell_structure_invalidation_closes_at_the_bars_close_price
+- test_watchman_trailed_position_still_exits_via_its_original_unmoved_take_profit_later
+- test_watchman_metadata_none_fallback_when_no_confirmed_swing_exists_at_entry_still_exits_via_fixed_sl_tp
 
 ### tests/unit/backtest/test_forward_walk.py
 
@@ -1271,7 +1287,9 @@ This document provides a comprehensive list of all 1030 test cases in the AutoTr
 - test_build_envelope_cost_model_complete_false_when_slippage_explicitly_overridden
 - test_run_and_persist_writes_a_loadable_envelope
 - test_run_and_persist_risk_voice_cfg_marks_envelope_as_modeled
+- test_run_and_persist_watchman_cfg_marks_envelope_as_modeled
 - test_main_constructs_risk_voice_cfg_from_config_with_every_field_mapped_correctly
+- test_main_constructs_watchman_cfg_from_config_with_every_field_mapped_correctly
 - test_main_writes_an_envelope_with_risk_voice_modeled_true
 
 ### tests/unit/test_run_shadow_loop.py
