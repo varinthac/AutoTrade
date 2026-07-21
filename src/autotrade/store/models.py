@@ -43,6 +43,17 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from autotrade.common.config import REPO_ROOT
 
 DEFAULT_DB_PATH = REPO_ROOT / "data" / "db" / "trade_journal.sqlite"
+DEFAULT_PAPER_DB_PATH = REPO_ROOT / "data" / "db" / "trade_journal_paper.sqlite"
+DEFAULT_LIVE_DB_PATH = REPO_ROOT / "data" / "db" / "trade_journal_live.sqlite"
+"""Phase 8b (Appendix A §5.2-§5.3): paper vs. live vs. live_ramp trading is
+distinguished by WHICH DB FILE is written to, not a per-trade tag column --
+callers (`orchestrator/shadow_loop.py`'s wiring, `scripts/run_auditor.py`)
+pass the matching `db_path` explicitly for whichever mode is currently
+running. `live_ramp` vs. full-live share `DEFAULT_LIVE_DB_PATH`; that finer
+distinction is `config/base.yaml`'s `auditor.current_stage` marker instead
+(no schema/DB-file split for it). `DEFAULT_DB_PATH` itself is kept as the
+original single-file default for backward compatibility with existing
+callers/tests that don't yet pass one of the two new paths explicitly."""
 
 
 class Base(DeclarativeBase):

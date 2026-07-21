@@ -107,3 +107,41 @@ watchman:
   news_profit_threshold_r: 0.5
   news_close_mode: half
   connectivity_timeout_minutes: 5
+
+# The Auditor -- Performance Reviewer (auditor/), per
+# trading_system_summary_v2.md Appendix A §5 / §6. `current_stage` is a
+# human-set marker only (backtest / paper / live_ramp / live_full) -- it
+# distinguishes live_ramp from full-size live without any trade-record
+# schema change (Phase 8b resolved decision: paper vs. live is a separate DB
+# file, per store/models.py's DEFAULT_PAPER_DB_PATH/DEFAULT_LIVE_DB_PATH;
+# live_ramp vs. full-live is this marker instead). `promotion:`/`demotion:`/
+# `borderline:` sub-blocks are injected into auditor/promotion.py's
+# PromotionThresholds, auditor/demotion.py's thresholds, and
+# auditor/borderline.py's expectancy-signal thresholds respectively --
+# none of those modules read this file themselves (scripts/run_auditor.py
+# does, same RiskVoiceConfig-style injection convention as council/risk_voice.py).
+auditor:
+  current_stage: backtest
+  promotion:
+    backtest_min_profit_factor: 1.3
+    backtest_max_drawdown_pct: 15.0
+    backtest_min_trade_count: 200
+    backtest_min_profit_factor_excluding_top_5: 1.0
+    paper_min_trade_count: 100
+    paper_min_weeks_fast_track: 16
+    paper_min_weeks_floor: 8
+    paper_min_profit_factor: 1.2
+    paper_max_drawdown_pct: 12.0
+    paper_max_deviation_pct: 30.0
+    live_ramp_min_months: 3
+    live_ramp_min_profit_factor: 1.2
+    live_ramp_min_avg_net_r: 0.0
+  demotion:
+    consecutive_loss_months: 2
+    rolling_pf_window_days: 60
+    rolling_pf_min: 1.0
+    win_rate_divergence_pct_points: 15.0
+    win_rate_divergence_min_trades: 50
+  borderline:
+    min_cases_for_signal: 30
+    min_avg_r_for_signal: 0.2

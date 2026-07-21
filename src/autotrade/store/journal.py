@@ -203,11 +203,14 @@ def count_blocked_signals_for_day(
     return counts
 
 
-def get_anomaly_events_for_day(
-    server_date: date, db_path: Path | None = None,
+def get_anomaly_events_in_range(
+    start: datetime, end: datetime, db_path: Path | None = None,
 ) -> list[AnomalyEventRecord]:
-    """Every `AnomalyEventRecord` on `server_date`, ordered by `timestamp`."""
-    start, end = _day_bounds(server_date)
+    """Every `AnomalyEventRecord` whose `timestamp` falls in `[start, end)`,
+    ordered by `timestamp` -- added for Phase 8b's promotion-gate CLI
+    (`scripts/run_auditor.py`'s Live ramp -> Full size gate needs to scan a
+    whole live-ramp period, not just one day, for a `drawdown_halt` circuit
+    breaker trigger)."""
     engine = get_engine(db_path)
     with Session(engine) as session:
         stmt = (
@@ -216,3 +219,11 @@ def get_anomaly_events_for_day(
             .order_by(AnomalyEventRecord.timestamp)
         )
         return list(session.execute(stmt).scalars().all())
+
+
+def get_anomaly_events_for_day(
+    server_date: date, db_path: Path | None = None,
+) -> list[AnomalyEventRecord]:
+    """Every `AnomalyEventRecord` on `server_date`, ordered by `timestamp`."""
+    start, end = _day_bounds(server_date)
+    return get_anomaly_events_in_range(start, end, db_path=db_path)

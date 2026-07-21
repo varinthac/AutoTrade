@@ -27,6 +27,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_STATE_PATH = REPO_ROOT / "data" / "db" / "circuit_breaker_state.json"
 
+HEAVY_CB_MARKER = "drawdown halt"
+"""Substring written at the start of `record_equity`'s `AnomalyEventRecord.
+details` when the heaviest ("ระดับหนัก") circuit-breaker tier -- the
+drawdown halt -- fires. `AnomalyEventRecord.event_type` is generically
+`"circuit_breaker_trigger"` for every tier (daily-loss/consecutive-loss/
+drawdown/downgrade), so this free-text marker is the only way a reader
+(Appendix A §5.2's Live ramp -> Full size gate, `scripts/run_auditor.py`)
+can tell which tier actually fired. Exported as a constant specifically so
+that CLI/consumer and this module can't silently drift apart -- if this
+message ever changes, update it here and every importer picks it up."""
+
 
 @dataclass(frozen=True)
 class CircuitBreakerState:
@@ -216,7 +227,7 @@ class CircuitBreaker:
                     journal.record_anomaly_event(
                         timestamp=as_of, event_type="circuit_breaker_trigger",
                         details=(
-                            f"drawdown halt: equity drawdown from peak {drawdown_pct:.2f}% >= "
+                            f"{HEAVY_CB_MARKER}: equity drawdown from peak {drawdown_pct:.2f}% >= "
                             f"{self._max_drawdown_halt_pct}%; halted, requires manual restart"
                         ),
                         db_path=self._journal_db_path,

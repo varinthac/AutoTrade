@@ -174,3 +174,45 @@ def test_get_anomaly_events_for_day_ordered_by_timestamp(db_path):
     events = journal.get_anomaly_events_for_day(date(2026, 7, 19), db_path=db_path)
 
     assert [e.details for e in events] == ["first", "second"]
+
+
+def test_get_anomaly_events_for_day_includes_midnight_start_excludes_midnight_end(db_path):
+    # Proves get_anomaly_events_for_day's [day 00:00, day+1 00:00) half-open
+    # boundary is unchanged now that it delegates to
+    # get_anomaly_events_in_range: an event exactly at the day's own
+    # midnight must be included, one exactly at the NEXT day's midnight
+    # (the exclusive end) must not be.
+    journal.record_anomaly_event(
+        timestamp=datetime(2026, 7, 19, 0, 0, 0), event_type="reconnect",
+        details="exactly at day start -- included", db_path=db_path,
+    )
+    journal.record_anomaly_event(
+        timestamp=datetime(2026, 7, 20, 0, 0, 0), event_type="reconnect",
+        details="exactly at next day start -- excluded", db_path=db_path,
+    )
+
+    events = journal.get_anomaly_events_for_day(date(2026, 7, 19), db_path=db_path)
+
+    assert [e.details for e in events] == ["exactly at day start -- included"]
+
+
+def test_get_anomaly_events_in_range_spans_multiple_days(db_path):
+    journal.record_anomaly_event(
+        timestamp=datetime(2026, 7, 19, 9, 0), event_type="reconnect", details="day1", db_path=db_path,
+    )
+    journal.record_anomaly_event(
+        timestamp=datetime(2026, 7, 20, 9, 0), event_type="circuit_breaker_trigger",
+        details="drawdown halt: equity drawdown from peak 9.00% >= 8.0%; halted, requires manual restart",
+        db_path=db_path,
+    )
+    journal.record_anomaly_event(
+        timestamp=datetime(2026, 7, 25, 9, 0), event_type="reconnect", details="outside range", db_path=db_path,
+    )
+
+    events = journal.get_anomaly_events_in_range(
+        datetime(2026, 7, 19, 0, 0), datetime(2026, 7, 21, 0, 0), db_path=db_path,
+    )
+
+    assert [e.details for e in events] == [
+        "day1", "drawdown halt: equity drawdown from peak 9.00% >= 8.0%; halted, requires manual restart",
+    ]

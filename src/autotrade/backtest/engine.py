@@ -206,13 +206,17 @@ def _fill_entry_price(
     return entry_price, cost
 
 
-def _check_exit(
+def check_exit(
     direction: Literal["BUY", "SELL"],
     stop_loss: float,
     take_profit: float,
     bar: "pd.Series",
 ) -> tuple[float, Literal["stop_loss", "take_profit"]] | None:
-    """See module docstring for the documented SL/TP/gap priority convention."""
+    """See module docstring for the documented SL/TP/gap priority convention.
+    Public (used by `backtest/forward_walk.py`'s Auditor borderline-order
+    replay, Appendix A §5.4, so that replay reuses the exact same SL/TP/gap
+    priority this engine applies to real trades rather than a second,
+    subtly-different simulation)."""
     if direction == "BUY":
         if bar["open"] <= stop_loss:
             return bar["open"], "stop_loss"
@@ -311,7 +315,7 @@ def run_backtest(
             pending = None
 
         if position is not None:
-            exit_result = _check_exit(position.plan.direction, position.plan.stop_loss, position.plan.take_profit, bar)
+            exit_result = check_exit(position.plan.direction, position.plan.stop_loss, position.plan.take_profit, bar)
             if exit_result is not None:
                 exit_price, exit_reason = exit_result
                 trades.append(
