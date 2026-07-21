@@ -230,7 +230,95 @@ ADOPT candidate T over baseline (2.0) iff ALL:
 Else REJECT (keep 2.0) or INSUFFICIENT DATA. Auditor gate thresholds NOT touched (rule 8).
 Spec bounds: `tp_r_multiple` tagged [adjustable] (Appendix A §1.4), no hard numeric bound.
 
-### 5. Results — pending (running Train grid)
+### 5. Results
+
+Harness: `experiments/param_sweep_harness.py` (stock engine + stock signal fn, cost model on:
+commission $7/lot, slippage = bar's own spread; Risk Voice OFF, matching the CLI baselines).
+
+#### 5.1 Train (2021-07-22 → 2024-07-21, 3 yr)
+
+| tp   | trades | win%  | PF    | net $  | avgR  | DD %  | PF_ex5 |
+|------|--------|-------|-------|--------|-------|-------|--------|
+| 1.5  | 770    | 41.6  | 1.031 | +656   | 0.024 | 14.4  | 1.012  |
+| 1.75 | 665    | 37.7  | 1.032 | +639   | 0.023 | 16.5  | 1.008  |
+| 2.0* | 587    | 35.6  | 1.084 | +1544  | 0.052 | 11.1  | 1.052  |
+| 2.25 | 531    | 32.4  | 1.060 | +939   | 0.038 | 13.0  | 1.022  |
+| 2.5  | 528    | 31.3  | **1.124** | +2133 | 0.077 | 12.5 | 1.082 |
+| 3.0  | 441    | 27.2  | 1.115 | +1763  | 0.074 | 14.3  | 1.060  |
+
+(*baseline)
+
+#### 5.2 Validation (2024-07-21 → 2025-07-21, 1 yr)
+
+| tp   | trades | win%  | PF    | net $  | avgR  | DD %  | PF_ex5 |
+|------|--------|-------|-------|--------|-------|-------|--------|
+| 1.5  | 271    | 40.6  | 0.985 | −105   | −0.004| 6.74  | 0.930  |
+| 1.75 | 256    | 36.7  | 0.964 | −246   | −0.009| 7.66  | 0.902  |
+| 2.0* | 223    | 36.3  | 1.064 | +404   | 0.070 | 4.66  | 0.983  |
+| 2.25 | 194    | 34.5  | **1.116** | +646 | 0.102 | 4.62 | 1.012 |
+| 2.5  | 178    | 32.0  | 1.092 | +479   | 0.099 | 5.88  | 0.973  |
+| 3.0  | 163    | 28.2  | 1.109 | +541   | 0.102 | 5.94  | 0.961  |
+
+#### 5.3 Robustness read
+
+- **Robust guardrail (both splits):** tp < 2.0 is worse — Val goes NET-NEGATIVE at 1.5/1.75
+  (PF 0.985/0.964), Train PF falls to ~1.03 with DD up to 16.5%. Confirms current 2.0 is NOT
+  too high; lowering TP is off the table.
+- **Cross-split plateau above baseline:** tp ∈ [2.5, 3.0] beats baseline (2.0) on BOTH PF and
+  avgR on BOTH splits, and forms a plateau on each (Train 1.124/1.115; Val 1.092/1.109).
+- **The 2.25 wrinkle:** 2.25 is the Val PF peak but a Train dip (PF 1.060 < baseline) — it
+  fails Train-consistency (criterion c) and is treated as noise, not the candidate. tp=2.5 is
+  the value sitting on BOTH plateaus.
+- **DD / trade-count trade-off:** raising TP lowers trade count (fewer completed round-trips)
+  and lifts Train DD (2.0→11.1%, 2.5→12.5%, 3.0→14.3% — 3.0 approaches the 15% gate ceiling,
+  2.5 keeps margin). Fewer trades moves AWAY from the 200-trade promotion gate on short
+  windows — a real cost, flagged.
+- Candidate = **tp 2.5** (better DD margin & trade count than 3.0, on both plateaus).
+
+#### 5.4 Per-year consistency (DECISIVE) — Test year untouched
+
+Per-year PF (Y4 = Validation, from §5.2):
+
+| Year         | tp 2.0 (base) | tp 2.5      | tp 3.0      |
+|--------------|---------------|-------------|-------------|
+| Y1 2021-22   | **1.050** (+297) | 0.866 (−746) | 0.873 (−675) |
+| Y2 2022-23   | 1.001 (+5)    | 1.151 (+910)| 1.182 (+901)|
+| Y3 2023-24   | 1.224 (+1294) | 1.294 (+1673)| 1.218 (+1040)|
+| Y4 2024-25   | 1.064 (+404)  | 1.092 (+479)| 1.109 (+541)|
+
+**The aggregate Train/Val edge of tp 2.5/3.0 is a REGIME ARTIFACT.** In Y1 (2021-22 — a
+choppier, lower-momentum gold regime) the wider target rarely fills (win rate collapses 35%→
+26%/23%), PF drops to 0.866/0.873 and the year goes NET-NEGATIVE with DD blowing out to
+10.4%/14.3%. tp 2.5/3.0 make money only because the 2022-2024 trending run (Y2+Y3) outweighs
+the Y1 loss. **Baseline tp=2.0 is the ONLY value in [1.5, 3.0] that is PF ≥ 1.0 in every
+single year** (1.050 / 1.001 / 1.224 / 1.064) — the most regime-robust setting tested.
+
+### 6. Robustness summary
+
+- neighborhood/plateau: ✓ on each split individually (Val plateau 2.25-3.0; Train plateau
+  2.5-3.0) — BUT the plateau is a split-aggregate illusion; it dissolves per-year.
+- per-year consistency: ✗ (tp 2.5/3.0 net-negative in Y1; convert a winning baseline year to
+  a loss — owe their edge to one regime).
+- top-5 dependency: mixed (Val PF_ex5 < 1.0 for 2.5/3.0 AND for baseline on the 1-yr window).
+- walk-forward: n.a. (the per-year split above is the equivalent regime check and is decisive).
+- Multiple-testing (rule 7): 6 configs this family; the best aggregate gap fails the per-year
+  robustness gate, so magnitude is moot.
+
+### 7. VERDICT — REJECT (no change)
+
+Keep `order.tp_r_multiple: 2.0`. Two robust findings, both pointing to "leave it":
+1. **Do NOT lower TP below 2.0** — Val goes net-negative (PF 0.985/0.964 at 1.5/1.75), Train
+   PF falls to ~1.03 with DD to 16.5%. The current value is not too high.
+2. **Do NOT raise TP to 2.5/3.0** — the apparent OOS improvement is a 2022-2024 trending-regime
+   bet that would have lost money in 2021-22. tp=2.0 is the most regime-robust value tested.
+
+Per rule 5 (plateau must survive robustness), rule 9 (negative results are results), rule 2
+(Test untouched — no candidate adopted): **default tp=2.0 is already well-placed; no change.**
+
+**Test set (2025-07-21 → 2026-07-21) left UNTOUCHED.** `config/base.yaml` NOT modified.
+Auditor gate thresholds NOT touched (rule 8). Watchman exits remain UNMODELED in the engine
+(see §0) — wiring them in is the highest-value roadmap item before any further exit-param
+tuning, since fixed-TP tuning cannot capture the trailing behaviour live actually uses.
 
 
 
