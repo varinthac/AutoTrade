@@ -26,13 +26,22 @@ from autotrade.watchman.stop_logic import compute_updated_stop_loss
 @dataclass(frozen=True)
 class WatchmanConfig:
     """`config/base.yaml`'s `watchman:` block (Appendix A §4 / §6). All
-    values `[adjustable]` per the spec."""
+    values `[adjustable]` per the spec.
+
+    `breakeven_enabled`/`trail_enabled` (default `True`, matching prior
+    behavior) gate whether `compute_updated_stop_loss` ever generates the
+    breakeven/trail candidates at all -- see that function's docstring.
+    EXP-008 (`experiments/experiments_log.md`) found `False` for both is a
+    real, evidence-backed candidate (isolating structure-invalidation/
+    time-stop as the only remaining exit paths), not yet adopted here."""
 
     breakeven_at_r: float = 1.0
     trail_start_r: float = 1.5
     trail_distance_atr: float = 1.0
     time_stop_hours: float = 48.0
     dead_trade_r_band: float = 0.3
+    breakeven_enabled: bool = True
+    trail_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -122,6 +131,8 @@ def evaluate_watchman(
         breakeven_at_r=config.breakeven_at_r,
         trail_start_r=config.trail_start_r,
         trail_distance_atr=config.trail_distance_atr,
+        breakeven_enabled=config.breakeven_enabled,
+        trail_enabled=config.trail_enabled,
     )
 
     if new_sl != current_sl:

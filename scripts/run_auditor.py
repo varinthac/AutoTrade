@@ -9,7 +9,7 @@ demotion-rule evaluation (§5.3), and borderline-case expectancy tracking
     python scripts/run_auditor.py promotion --gate paper --envelope PATH --weeks-elapsed 10 [--db-path PATH] [--notify]
     python scripts/run_auditor.py promotion --gate live --months-elapsed 3 [--db-path PATH] [--notify]
     python scripts/run_auditor.py demotion --envelope PATH [--as-of-date YYYY-MM-DD] [--mode live] [--db-path PATH] [--notify]
-    python scripts/run_auditor.py borderline [--log-path PATH] [--commission-per-lot 0.0]
+    python scripts/run_auditor.py borderline [--log-path PATH] --commission-per-lot 0.0
 
 `--notify` (daily/promotion/demotion only) sends a Telegram message
 (notify/telegram.py) -- `daily --notify` de-dupes on the report's own
@@ -387,7 +387,12 @@ def main() -> int:
 
     borderline_parser = subparsers.add_parser("borderline", help="Appendix A §5.4 borderline-case expectancy")
     borderline_parser.add_argument("--log-path", type=Path, default=None)
-    borderline_parser.add_argument("--commission-per-lot", type=float, default=0.0)
+    borderline_parser.add_argument(
+        "--commission-per-lot", type=float, required=True,
+        help="Currency per 1.0 lot round-trip. REQUIRED -- 0.0 is a legitimate value for a "
+             "commission-free account (e.g. IC Markets Standard) but must be consciously chosen, "
+             "never a silent default; see backtest/cost_model.py's CostModelConfig docstring.",
+    )
     borderline_parser.set_defaults(func=cmd_borderline)
 
     args = parser.parse_args()

@@ -239,6 +239,7 @@ def main() -> int:
         sl_min_atr=cfg["order"]["sl_min_atr"],
         sl_max_atr=cfg["order"]["sl_max_atr"],
         tp_r_multiple=cfg["order"]["tp_r_multiple"],
+        pivot_bars=cfg["global"]["swing_pivot_bars"],
         bull_threshold=cfg["council"]["bull_threshold"],
         bear_threshold=cfg["council"]["bear_threshold"],
         conflict_threshold=cfg["council"]["conflict_threshold"],
@@ -300,6 +301,8 @@ def main() -> int:
                 trail_distance_atr=cfg["watchman"]["trail_distance_atr"],
                 time_stop_hours=cfg["watchman"]["time_stop_hours"],
                 dead_trade_r_band=cfg["watchman"]["dead_trade_r_band"],
+                breakeven_enabled=cfg["watchman"]["breakeven_enabled"],
+                trail_enabled=cfg["watchman"]["trail_enabled"],
             )
             news_protection_cfg = NewsProtectionConfig(
                 news_window_minutes=cfg["watchman"]["news_window_minutes"],

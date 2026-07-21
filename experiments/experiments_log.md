@@ -560,3 +560,1073 @@ specifically is not backtest-justified. Re-verify once Watchman exits are modele
 **Test set (2025-07-21 → 2026-07-21) NOT touched** — remained CONSUMED from EXP-003; this verdict
 rests entirely on Train+Validation (rule 2). `config/base.yaml` NOT modified (analysis-only).
 Auditor gate thresholds NOT touched (rule 8).
+
+---
+
+## EXP-005 2026-07-21 — M15 lower-timeframe as an entry/exit CONDITION (feasibility, NEW family)
+
+Status: REJECT (no robust M15 entry-discrimination edge found) + roadmap finding for exits.
+Analysis-only — no config/engine/council change. Test year NOT touched (new family, left pristine).
+
+### 0. What this is / why a new family
+
+User hypothesis (verbatim reasoning "เล่นเร็วออกเร็ว" = trade fast/get out fast): should
+lower-timeframe data (start with M15) become an ADDITIONAL condition on the H1 strategy —
+either as an entry confirmation/timing filter, or to enable a faster-than-H1 exit? This is a
+genuinely NEW experiment family (M15-timing), NOT the session-window family — so its own
+multiple-testing budget and its own (unspent) one-touch Test allowance. No `[adjustable]` M15
+param exists in `config/base.yaml`; this is hypothesis-generation, not tuning an existing knob.
+
+Entry mechanics an M15 condition would attach to (confirmed by reading
+`council/decision_matrix.py` + `backtest/engine.py`): Council scores on H1 bar `i` (as_of =
+close of bar `i`); `entry_price = close[i]`; the order fills at bar `i+1` OPEN. So the M15 bars
+"visible at decision time" are exactly the 4 M15 bars composing H1 bar `i` (times
+[sig_open, sig_open+1h)), which close at sig_open+1h = the fill-bar open. Features use only M15
+bars with `time < entry_time` (no lookahead).
+
+### 1. Data acquisition (Step 1)
+
+Downloaded XAUUSD M15 (analysis target) + M5 (opportunistic) via the SAME generic
+`feed.historical.download_historical(symbol, timeframe, days)` the CLI uses, called with an
+explicit timeframe string from a scratch script — `config/base.yaml`'s `global.timeframe` (H1)
+NOT mutated. The single 5-yr `copy_rates_range` call fails ([-2] Invalid params: per-request
+history-depth cap), so a chunked pull (40-day windows for M15) + dedup/save in the identical CSV
+schema was used (`scratchpad/dl_chunked.py`). M30 is unsupported without a code change (absent
+from `feed.historical._TIMEFRAME_DELTA` / `feed.poller.TIMEFRAME_MAP`) — not pursued (out of
+scope). Coverage caveat (material): the IC Markets demo terminal only caches intraday history to
+a limited depth — M15 reaches back to 2022-04-28 (not H1's 2021-07-22), M5 only to 2025-02-20.
+So the M15 analysis covers Train-PARTIAL (2022-04-28 to 2024-07-21, ~2.2 of 3 yr) + full
+Validation; the 2021-07-22 to 2022-04-28 slice of Train has no M15 data. M5 is too shallow for
+Train/Val use (grabbed only for future passes). Files: `data/historical/XAUUSD_M15.csv` (99,978
+bars), `XAUUSD_M5.csv` (both gitignored per `.gitignore` `data/historical/*`). M15 verified clean:
+exactly 4 bars/H1-hour, minutes {0,15,30,45}, and M15 OHLC aggregates BYTE-EXACT to H1 OHLC on
+spot checks -> apples-to-apples confirmed.
+
+### 2. Trade set (Step 2)
+
+Ran the STOCK H1 engine + stock signal fn + cost model (commission $7/lot, slippage = bar's own
+spread; Risk Voice OFF; tp 2.0; all-24h = the EXP-003-adopted live-equivalent) over
+2022-04-28 to 2025-07-21 (Train-partial + Val; Test EXCLUDED). 651 trades, all with M15 context.
+Fidelity: the Validation slice = 223 trades — IDENTICAL count to EXP-002/EXP-003's all-24h Y4
+(223 tr), PF 1.07 vs 1.064 (trivial delta from a different equity-compounding start date). Harness
+`experiments/m15_feature_harness.py` (per-trade JSONL); analyzers in scratchpad.
+
+### 3. Pre-registered hypotheses + decision rule
+
+Two mechanisms, pre-registered BEFORE scoring:
+- H-entry (mechanisms a/b/c): some M15 structure in the last <=3h before the H1 signal closes
+  discriminates winners from losers (or fast-winners from slow-grinders). Eight direction-signed
+  M15 features: slope_1h, slope_2h, ema9-vs-21 alignment, consec bars in trade dir, last-bar
+  range expansion/contraction, signal-dir rejection wick, RSI-aligned, position-in-range/extension.
+- H-exit (mechanism d): losing H1 trades reach meaningful positive MFE before reversing to the
+  stop, so a faster (M15-cadence) exit could bank it -> higher expectancy.
+Deciding metric: expectancy in R + PF per bucket. A feature counts as a real edge ONLY if it
+discriminates in the SAME direction on BOTH the Train-partial and the held-out Validation split
+(out-of-sample respect), AND the per-value response is coherent/monotonic (not a median-placement
+artifact), AND survives a per-year check, AND the surviving subset still clears the >=100-trade
+floor. Multiple-testing: 8 features x {binary, tercile} ~= 16 bucket-tests -> a NEW-family count of
+~16; demand cross-split consistency, not a single best aggregate.
+
+### 4. Results — H-entry (mechanisms a/b/c): NO robust edge
+
+Baseline (all-24h, this run): ALL 651 tr, wr 0.358, avgR 0.056, PF 1.073 | TRAIN 428 tr PF 1.074
+| VAL 223 tr PF 1.070. Per-feature LO-vs-HI dAvgR (HI minus LO), TRAIN then VAL:
+
+| feature          | TRAIN dAvgR | VAL dAvgR | verdict |
+|------------------|-------------|-----------|---------|
+| m15_slope_1h     | +0.118      | -0.108    | SIGN FLIP -> noise |
+| m15_slope_2h     | -0.010      | -0.086    | weak; terciles: TRAIN best=low-slope, VAL best=high-slope -> OPPOSITE -> regime artifact |
+| m15_ema_align    | -0.112      | +0.182    | SIGN FLIP (train: misaligned better; val: aligned better) -> noise |
+| m15_consec       | +0.122      | +0.135    | same sign — investigated, see below |
+| m15_range_exp    | -0.150      | +0.282    | HARD SIGN FLIP (train: contraction better; val: expansion better) -> classic regime artifact |
+| m15_wick         | -0.144      | -0.002    | inconsistent/weak -> noise |
+| m15_rsi_aligned  | -0.067      | +0.054    | SIGN FLIP -> noise |
+| m15_pos_ext      | +0.030      | +0.055    | tiny; terciles U-shaped non-monotonic -> noise |
+
+7 of 8 features flip sign across Train<->Val or are negligible — exactly the rate expected by
+chance (each has ~50% sign-agreement odds; ~4 expected to agree). The ONE same-sign survivor,
+m15_consec (consecutive M15 bars closing in the trade direction just before entry), DISSOLVES
+under the per-exact-value check: response is non-monotonic noise — consec=0 PF 1.073 (fine),
+consec=1 PF 0.842 (bad, n=133), =2 1.177, =3 0.930, =4 1.190, =5 1.792 (n=27), =7 0.685, =8 inf
+(n=3). If "more M15 momentum = better" there would be a monotone ramp; instead it zig-zags. The
+binary median split (cut between 1 and 2) only looked clean because it happened to isolate the
+single bad consec=1 bucket into LO. "Exactly one M15 up-bar is uniquely bad" is not a
+pre-registerable mechanism -> treated as a median-placement artifact, not an edge. Its VAL HI
+subset is also n=89 (< 100 floor). REJECT H-entry.
+
+### 5. Results — H-exit (mechanism d): give-back is real, but M15 is the wrong lever NOW
+
+`scratchpad/mfe_harness.py` — per-trade MFE (H1 and M15) over the holding period, stop distance
+re-derived from each trade's own r/net.
+
+- Losers' MFE before stopping (M15): median 0.41R; 45.2% reach >=0.5R, 22.5% (94/418) reach
+  >=1.0R, 10.3% reach >=1.5R favorable before reversing to the stop. 94 "give-back" trades
+  (14.5% of all) reached >=1R then ended net -1.02R (mean MFE 1.47R). Real money on the table ->
+  superficially supports a "fast out" mechanism.
+- BUT a naive "+1R fast exit" (bank 1R if ever reached, else keep actual) LOWERS mean R from
+  0.0563 to 0.0082. Capping winners destroys the +2R TP payoffs that carry the entire edge (all
+  winners' MFE >= ~1.4R, median 1.91R). Classic cut-the-winners trap.
+- The correct tool for give-back WITHOUT capping winners is a breakeven/trailing stop — i.e. the
+  Watchman (`breakeven_at_r`, `trail_start_r`, `trail_distance_atr`). Two blockers make M15
+  premature: (i) the harness runs here have `watchman_cfg=None` (Watchman NOT modeled), so this
+  backtest OVERSTATES give-back — live H1 breakeven-at-R already protects many of the 94; (ii)
+  winners are held LONGER than losers (bars_held median: TP 25h vs SL 12h; 25% of losers stop
+  within 3h), so "fast out" fundamentally fights the 2R design — losers already exit fast; a
+  faster exit mostly hurts winners. M15 faster-exit would be a refinement of a mechanism (H1
+  Watchman) that is not even baselined yet -> wrong sequencing.
+
+### 6. Robustness / multiple-testing honesty (self-flagged)
+
+- Cross-split consistency was the primary guard and it eliminated 7/8 features outright — the
+  discipline worked exactly as intended (mirrors how EXP-002's per-year bar caught tp-2.5).
+- Regime-artifact risk is EXPLICIT in the data: m15_range_exp and m15_slope_2h literally reverse
+  which bucket wins between the 2022-24 and 2024-25 regimes — any M15 filter tuned on one would
+  have mis-generalized. Same failure mode this project has caught twice before.
+- Multiple testing: ~16 bucket-tests in a new family. Finding one "consistent" feature
+  (m15_consec) is fully expected by luck; it failed the coherence follow-up. No feature earns a
+  config change.
+- Coverage caveat: M15 Train is partial (from 2022-04-28); the 2021-22 choppy regime — the very
+  one that broke tp-2.5 and the [14,18) filter in Y1 — is ABSENT from the M15 sample, so any M15
+  edge that did appear would be LESS regime-tested than the H1 experiments, not more. Argues for
+  extra caution, not less.
+
+### 7. VERDICT — REJECT M15 as an entry condition; DEFER M15 exits behind H1-Watchman modeling
+
+1. M15 pre-entry structure does NOT robustly discriminate H1 trade outcomes. 7/8 features flip
+   sign out-of-sample; the 8th is a median artifact. An M15 entry-confirmation/timing filter has
+   no evidenced edge and would mainly shrink trade count (worsening the 200-trade gate shortfall)
+   and add signal-to-fill latency. No further M15 entry work recommended on current evidence.
+2. The "fast out" instinct points at a real phenomenon (give-back: 22.5% of losers reach >=1R
+   first) but at the WRONG tool. The lever is breakeven/trailing (the Watchman), not timeframe
+   resolution. Correct roadmap order: (a) MODEL the existing H1 Watchman in the backtest engine
+   (the engine now SUPPORTS `watchman_cfg`, but every experiment harness still passes None, so its
+   value is unmeasured) and establish that baseline; (b) ONLY THEN ask whether M15-cadence stop
+   management beats H1-cadence — a question that is meaningless until (a) exists.
+3. Implementation cost/risk if pursued later (honest estimate): an M15-cadence Watchman is NOT a
+   small add-on. It needs (i) a dual-timeframe data feed live + in backtest (M15 bars aligned to
+   H1 positions), (ii) new pure decision-function work for M15 stop stepping, (iii) engine changes
+   to drive Watchman on an M15 clock while entries stay H1, and (iv) the SAME live/backtest parity
+   discipline this project already enforces for Risk Voice and Watchman. Sequenced strictly AFTER
+   H1 Watchman is modeled and shown to add value.
+
+Test set (2025-07-21 to 2026-07-21) NOT touched — new family, no candidate earned a Test
+confirmation, so its one-touch budget is unspent and Test stays pristine. `config/base.yaml`,
+`council/`, `backtest/engine.py` NOT modified (analysis-only). Auditor gate thresholds NOT touched
+(rule 8). Harnesses: `experiments/m15_feature_harness.py` (committable); scratchpad analyzers +
+`dl_chunked.py` are session-local.
+
+---
+
+## EXP-007 2026-07-21 — M30 lower-timeframe as an entry/exit CONDITION (feasibility, NEW family)
+
+Status: REJECT (no robust M30 entry-discrimination edge found). Analysis-only — no
+config/engine/council/feed change. Test year NOT touched (new family, left pristine).
+Direct M30 replication of EXP-005's M15 study, requested by the user ("param-tuner สำรวจ M30").
+
+### 0. What this is / prior / why a new family
+
+User follow-up to EXP-005: run the SAME feasibility study for M30 instead of M15. This is a
+genuinely NEW family (M30-timing) — its own multiple-testing budget and its own unspent
+one-touch Test allowance. Honest prior stated BEFORE running (scratchpad/exp007_prereg.md):
+M30 is COARSER than M15 (2 M30 bars per H1 bar vs 4 M15 bars), so it carries LESS intra-hour
+information. M15 (higher-res) already showed no robust edge; a-priori M30 is LESS likely to
+beat H1, not more. Expectation going in: clean rejection. Tested anyway (user asked; negative
+results are results), framed around that prior rather than as a fresh coin-flip.
+
+### 1. Data acquisition (Step 1) + coverage — MATERIALLY BETTER than M15
+
+M30 is absent from the production `feed.poller.TIMEFRAME_MAP` / `feed.historical._TIMEFRAME_DELTA`
+(EXP-005 flagged this). Since this experiment may NOT modify those feed modules, M30 was pulled
+by a session-local scratch script (`scratchpad/dl_m30.py`) that replicates `download_historical`'s
+logic (chunked `copy_rates_range`, dedup, still-forming-bar drop, identical CSV schema) but calls
+`mt5.copy_rates_range` with `mt5.TIMEFRAME_M30` DIRECTLY — same precedent as EXP-005's
+`dl_chunked.py`. `config/base.yaml`'s `global.timeframe` (H1) NOT mutated.
+
+Coverage (the honest headline): M30 cache reaches back to **2020-06-22** — EARLIER than H1's own
+2021-07-22 start, so **FULL H1 Train+Validation+Test coverage**, 71,860 bars. This REVERSES
+EXP-005's M15 caveat: M15 only reached 2022-04-28 and MISSED the 2021-22 choppy regime (the one
+that broke EXP-002's tp-2.5 and EXP-004's [0,22)); M30 INCLUDES it. So M30 is MORE regime-tested
+than M15, which cuts both ways: a survivor here would be more trustworthy, but a rejection is also
+more damning (it fails even with the hard 2021-22 regime present). Data validated: minutes {0,30}
+only; 29,509/29,543 H1 hours have exactly 2 M30 bars (34 single-bar session-edge hours); M30 OHLC
+aggregates BYTE-EXACT to H1 (max abs diff 0.0000 on open/high/low/close). File:
+`data/historical/XAUUSD_M30.csv` (gitignored per `.gitignore` `data/historical/*`).
+
+### 2. Trade set (Step 2)
+
+STOCK H1 engine + stock signal fn + cost model (commission $7/lot, slippage = bar's own spread;
+Risk Voice OFF; tp 2.0; all-24h = the EXP-003-adopted live-equivalent) over 2021-07-22 -> 2025-07-21
+(FULL Train + Val; Test EXCLUDED). 809 trades, ALL with M30 context (skipped=0 — full coverage,
+vs M15's 651 from its shorter window). Fidelity: Train slice = 587 trades — IDENTICAL to EXP-002's
+all-24h Train (587); Val slice = 222 tr, PF 1.072 (EXP-005 M15 Val 223/1.070; EXP-002/003 all-24h
+Y4 223/1.064) — apples-to-apples confirmed. Harness `experiments/m30_feature_harness.py` (committable,
+adapted 1:1 from `m15_feature_harness.py` with all bar-counts re-derived in M30 units so the
+wall-clock windows match: 1h=2 M30 bars, 2h=4, 3h context=6). Analyzers in scratchpad.
+
+### 3. Pre-registered hypotheses + decision rule (committed BEFORE scoring — scratchpad/exp007_prereg.md)
+
+Same 8 direction-signed features as EXP-005, recomputed at M30: slope_1h, slope_2h, ema9-vs-21
+align, consec bars in trade dir, last-bar range expansion, signal-dir rejection wick, RSI-aligned,
+position-in-range/extension. Deciding metric: expectancy in R + PF per bucket. A feature is a real
+edge ONLY IF (a) SIGN-CONSISTENCY: dAvgR(HI-LO) same sign on Train AND Validation (primary filter);
+(b) COHERENCE: per-exact-value/tercile response monotone & mechanistically sensible (the same
+follow-up EXP-005 ran for m15_consec), not a median-placement artifact; (c) subset >=100 trades;
+(d) PER-YEAR: not owed to a single year. Multiple-testing self-count: 8 features x {binary, tercile}
+~= 16 bucket-tests for this M30 family (same as M15) + per-value/per-year follow-ups on the survivors.
+
+### 4. Results — H-entry: NO robust edge (5 crude survivors, ALL dissolve under coherence)
+
+Baseline (all-24h): ALL 809 tr avgR 0.0523 PF 1.08 | TRAIN 587 PF 1.080 | VAL 222 PF 1.072.
+Binary median-split dAvgR (HI-LO), TRAIN then VAL:
+
+| feature         | TRAIN dAvgR | VAL dAvgR | binary verdict |
+|-----------------|-------------|-----------|----------------|
+| m30_slope_1h    | +0.094      | -0.182    | SIGN FLIP -> noise |
+| m30_slope_2h    | -0.027      | -0.001    | same-sign but VAL ~0 -> investigated |
+| m30_ema_align   | +0.005      | +0.272    | TRAIN ~0 -> investigated |
+| m30_consec      | +0.032      | +0.205    | same-sign -> investigated |
+| m30_range_exp   | +0.093      | +0.151    | same-sign -> investigated |
+| m30_wick        | -0.110      | -0.168    | same-sign -> investigated |
+| m30_rsi_aligned | -0.046      | +0.036    | SIGN FLIP -> noise |
+| m30_pos_ext     | +0.093      | -0.095    | SIGN FLIP -> noise |
+
+At the crude binary level M30 shows MORE apparent survivors than M15 (5 vs 1) — precisely why
+binary sign-agreement alone is NOT evidence (rule 7). Every one fails the pre-registered coherence
+/ per-year follow-up:
+
+- **slope_2h** — tercile response is OPPOSITE across splits: TRAIN monotone-DOWN (lo +0.086, mid
+  +0.078, hi -0.007 -> more momentum worse), VAL hi is BEST (lo +0.003, mid -0.068, hi +0.206).
+  Direction reverses between regimes — identical to M15's m15_slope_2h. Binary VAL effect was
+  ~0 (-0.001) anyway. REJECT.
+- **ema_align** — Train effect ~0 (align0 +0.048 vs align1 +0.053, delta +0.005). The Val "edge"
+  (+0.272) is a tiny-n artifact: it's carried by the misaligned bucket being very negative
+  (align0 n=36, avgR -0.181), concentrated in 2025 (align0 n=17, -0.306). Per-year sign is
+  NEGATIVE in 2022 (delta -0.012). Negligible on Train + small-n one-year Val artifact. REJECT.
+- **consec** — wild per-value zig-zag that sign-flips between splits: consec=1 TRAIN +0.105 (good)
+  vs VAL -0.351 (terrible); consec=2 TRAIN +0.089 vs VAL -0.284; consec=6 TRAIN -0.202 vs VAL
+  +0.493 (n=6). No monotone mechanism — the exact failure mode EXP-005 documented for m15_consec.
+  The binary median split looked "same-sign" only by accident of where the cut fell. REJECT.
+- **range_exp** — the closest to real: TRAIN terciles monotone-UP (lo -0.019, mid +0.076, hi
+  +0.100). But VAL is NON-monotone (lo +0.017, mid -0.042, hi +0.166 — mid dips), and the per-year
+  HI-LO decomposition shows it owes to TWO years: 2021 +0.330, 2024 +0.349; it goes NEGATIVE in
+  2023 (-0.014) and 2025 (-0.042, the tail of the Val window). Remove 2021+2024 and it's flat-to-
+  negative. Fails criterion (d) (single-regime dependence) and (b) (non-monotone in Val). At M15
+  this same feature was a HARD sign-flip; at M30 it's directionally more consistent in aggregate
+  but per-year exposes it as regime-carried, not a stable mechanism. REJECT.
+- **wick** — TRAIN inverted-U (lo +0.055, mid +0.153, hi -0.051 -> non-monotone), VAL essentially
+  FLAT (lo +0.045, mid +0.058, hi +0.039 -> no discrimination). No real Val effect. REJECT.
+
+Survivors of the FULL pre-registered bar (sign + coherence + per-year): **NONE.** Same clean
+rejection as M15 — reached through the coherence/per-year layer rather than the crude sign-check.
+
+### 5. H-exit (give-back / faster exit) — unchanged, resolution-independent
+
+Not re-run at M30 cadence. EXP-005's exit finding (give-back is real — 22.5% of losers reach >=1R
+first — but the correct lever is the Watchman's breakeven/trailing, NOT timeframe resolution, and
+a naive fast-exit caps the +2R winners that carry the whole edge) is resolution-INDEPENDENT: M30
+cadence is COARSER than M15, so if M15-cadence give-back capture was the wrong lever, M30 is a
+fortiori. The sequencing conclusion (model the H1 Watchman baseline FIRST, then reconsider any
+lower-timeframe exit) is unchanged and not something an M30 pass could overturn.
+
+### 6. Robustness / multiple-testing honesty (self-flagged)
+
+- Cross-split sign-consistency + per-value/per-year coherence was the primary guard; it eliminated
+  all 8 features. The crude binary layer alone would have "found" 5 — a concrete demonstration that
+  sign-agreement on one median split is noise; the discipline is what separates it (rule 5/7).
+- Regime-artifact risk is EXPLICIT again: slope_2h and consec literally reverse per-value ranking
+  between the 2021-24 and 2024-25 regimes; range_exp reverses per YEAR. Same failure mode this
+  project has now caught five times (EXP-001 C4, EXP-002 tp-2.5, EXP-004 [0,22), EXP-005 M15, here).
+- Multiple testing: ~16 bucket-tests this new family; expecting ~4/8 to agree in sign by chance —
+  observed 5 crude same-sign, fully consistent with luck, none survived coherence. No config change.
+- Coverage: UNLIKE M15, M30 covers the full 2021-22 choppy regime — so this rejection is the
+  STRONGER of the two (M30 failed to discriminate even WITH the hard regime in-sample), not weaker.
+
+### 7. VERDICT — REJECT M30 as an entry condition; DEFER M30 exits behind H1-Watchman modeling
+
+1. M30 pre-entry structure does NOT robustly discriminate H1 trade outcomes. 3/8 features sign-flip
+   outright on the binary split; the other 5 pass the crude sign-check but every one dissolves under
+   the per-exact-value/tercile + per-year coherence follow-up (opposite tercile ranking, ~0 Train
+   effect, per-value zig-zag, or single-regime dependence). No M30 entry-confirmation/timing filter
+   has an evidenced edge; as with M15 it would mainly shrink trade count (worsening the 200-trade
+   gate shortfall) and add signal-to-fill latency. This REINFORCES EXP-005, and does so on STRONGER
+   footing (full-Train coverage incl. 2021-22). The coarser-than-M15 prior held: M30 did not do
+   better; it did (crudely) look noisier, and cleaned up to the same "nothing" under discipline.
+2. Sequencing UNCHANGED: (a) MODEL the existing H1 Watchman in the backtest engine and baseline it
+   (the concurrent EXP-006 Watchman-parameter sweep is the right next step); (b) ONLY THEN ask
+   whether ANY lower-timeframe (M15 or M30) stop management beats H1-cadence. A lower-timeframe exit
+   remains meaningless until (a) exists. Nothing in the M30 result advances or reorders that roadmap.
+
+Test set (2025-07-21 -> 2026-07-21) NOT touched — new family, no candidate cleared the pre-registered
+Train/Val bar, so the one-touch budget is UNSPENT and Test stays pristine (mirrors M15 — did not fish
+for a story). `config/base.yaml`, `council/`, `backtest/engine.py`, `feed/` NOT modified (analysis-
+only). Auditor gate thresholds NOT touched (rule 8). Harness: `experiments/m30_feature_harness.py`
+(committable); `scratchpad/dl_m30.py` + analyzers + `exp007_prereg.md` are session-local.
+
+---
+
+## EXP-006 2026-07-21 — Watchman exit-management parameters (NEW family, first-ever measurable)
+
+Status: REJECT all 5 (defaults on the plateau). Analysis-only — no config/engine change. Test year
+NOT touched (no candidate cleared the Train+Val bar robustly; new family's one-touch budget UNSPENT).
+Appended after EXP-007 per append-only discipline (numbered 006, written later than 007).
+
+### 0. Why this is a NEW family and why it matters now
+
+As of engine commit 67df406 (today), `backtest/engine.py` ACTUALLY simulates Watchman's exit
+management (breakeven -> SL to entry; ATR-trailing stop; structure-invalidation; time-stop/dead-trade)
+when a `WatchmanConfig` is passed, and `scripts/run_backtest.py` now ALWAYS builds one from
+`config/base.yaml`'s `watchman:` block. Every prior experiment (EXP-001..005) ran `watchman_cfg=None`
+(confirmed in EXP-002 §0). So for the FIRST time these five parameters genuinely move backtest output.
+New family => own multiple-testing budget + own UNSPENT one-touch Test allowance. Params, causal role
+verified in `watchman/stop_logic.py` + `exit_conditions.py`: breakeven_at_r (profit>=R -> SL to entry),
+trail_start_r (profit>=R -> begin ATR trail), trail_distance_atr (ATR distance of trailing stop),
+time_stop_hours (dead-trade timeout), dead_trade_r_band (+/-R band defining "dead"). Structure
+invalidation is always-on and NOT tunable via these 5 — held fixed.
+
+Pre-registration committed BEFORE observing any sweep result (scratchpad/exp006_prereg.md, written
+right after baseline reproduction, before any sweep file was read). Grid, deciding metric and full
+acceptance criteria (a)-(e) reproduced in §3-§4 below verbatim from that file.
+
+### 1. Baseline reproduction (Step 1) — CONFIRMED
+
+`scripts/run_backtest.py XAUUSD --out-of-sample --start-date 2025-07-21 --end-date 2026-07-21
+--commission-per-lot 7.0` reproduced the session baseline to the cent: **243 trades, PF 1.21,
+net +$1,121.45, maxDD 3.81%, PF-excl-top5 1.11** (Gate 1 fails only on PF>=1.3; all else passes).
+This is the CURRENT-defaults Test run — a "where we stand" measurement, NOT a parameter search, so it
+does NOT spend the family's one-touch Test budget. Harness `experiments/watchman_param_harness.py`
+(builds the SAME RiskVoiceConfig + WatchmanConfig from base.yaml as the CLI, cached IC Markets
+SymbolSpec, cost model commission $7/lot + slippage = bar's own spread) reproduces the CLI byte-for-
+byte; used for all in-process sweeping.
+
+### 2. THE HEADLINE FINDING — modeling Watchman at current defaults DEGRADES the backtest edge
+
+Baseline WITH Watchman modeled (current defaults) vs the EXP-002/003 Watchman-OFF (all-24h, tp2.0)
+per-year figures already on record:
+
+| Year          | Watchman ON (defaults) PF / net | Watchman OFF (EXP-002/3) PF / net |
+|---------------|----------------------------------|-----------------------------------|
+| Y1 2021-22 Tr | 0.9615 / -273   (DD 9.25)        | 1.050 / +297                      |
+| Y2 2022-23 Tr | **0.8758 / -911** (DD 17.32)    | 1.001 / +5                        |
+| Y3 2023-24 Tr | 1.0996 / +647   (DD 7.54)        | 1.224 / +1294                     |
+| Y4 2024-25 Val| 0.9884 / -74    (DD 6.43)        | 1.064 / +404                      |
+| Y5 2025-26 Test| 1.21 / +1121   (DD 3.81)        | 1.277 / +1458                     |
+| Train 3yr agg | 0.9922 / -156   (DD 17.21)      | 1.084 / +1544 (EXP-002 §5.1)      |
+
+Watchman's exit management, as specced, is net-HARMFUL in the backtest in EVERY window: it turns 3 of
+5 years net-negative (Y1, Y2, Y4), makes Y2 a -$911 / DD 17.3% disaster, and lowers PF vs Watchman-off
+even in the two profitable years (Y3, Y5). Mechanism: breakeven-to-entry + ATR-trail + dead-trade
+time-stop keep exiting positions before the 2R TP can carry the winners that fund the edge (same
+"cut-the-winners" phenomenon EXP-005 §5 flagged for a naive +1R exit), while also churning more trades
+(Train count 587 -> 852). CAVEAT: the backtest cannot value Watchman's LIVE protections (news,
+connectivity, structure breaks it does catch), so this is NOT a recommendation to disable Watchman
+live. It IS strong evidence that the tunable exit params (breakeven/trail/time-stop/dead-trade) do not
+add backtest value and mostly subtract it — a strategy-level finding for the roadmap, above parameter
+tuning. This EXP tunes within that losing band; none of the 5 params recovers the Watchman-off edge.
+
+### 3. Grid (one-factor-at-a-time, others at current default; pre-registered)
+
+breakeven_at_r {0.75, 1.0*, 1.25, 1.5} | trail_start_r {1.25, 1.5*, 1.75, 2.0} | trail_distance_atr
+{0.75, 1.0*, 1.25, 1.5} | time_stop_hours {24, 36, 48*, 72} (+refinement {18, 30}) | dead_trade_r_band
+{0.2, 0.3*, 0.4}. (* = current default.) One refinement pass, spent on time_stop's short end (§6).
+Family multiple-testing count = 16 non-default configs evaluated (< 20 threshold, rule 7).
+
+### 4. Acceptance criterion (pre-registered, verbatim). Deciding metric: Val PF, gated by trades>=100
+and avg_r. ADOPT candidate V over default iff ALL: (a) Val trades>=100 AND PF(V)>=PF(default) AND
+avg_r(V)>=avg_r(default); (b) plateau — V's +/-1 grid-step neighbors on Val within ~15% PF (reject
+isolated peaks, rule 5); (c) Train consistency — PF(V)>=PF(default) on Train; (d) per-year — V must not
+turn any default-positive year net-negative AND PF(V)>=default in a MAJORITY of Y1..Y4 (the bar that
+killed EXP-002 tp2.5 and EXP-004 [0,22)); (e) Test (touched once, only for the single best candidate
+clearing a-d) confirms (a). Else REJECT. Gates NOT touched (rule 8). config NOT modified (analysis-only).
+
+### 5. Sweep results — Train PF / Val PF (baseline: Train 0.9922, Val 0.9884, Val avgR 0.0048)
+
+| param \ value        | (low)            | default          | (high)                     | shape on Val |
+|----------------------|------------------|------------------|----------------------------|--------------|
+| breakeven_at_r       | .75: .982/1.002  | 1.0: .992/.988   | 1.25:1.031/.994  1.5:1.026/1.000 | FLAT band .988-1.002; Train up as it relaxes |
+| trail_start_r        | 1.25:.971/1.031  | 1.5: .992/.988   | 1.75:1.007/.973  2.0:1.005/.989  | ANTI-CORRELATED Train vs Val |
+| trail_distance_atr   | .75:.983/.972    | 1.0: .992/.988   | 1.25:.995/1.001  1.5:.994/1.011  | Val monotone up as trail loosens; Train ~flat |
+| time_stop_hours      | 18:1.032/.939 24:1.008/1.009 30:1.016/1.028 | 48:.992/.988 | 36:.982/.972  72:.965/.979 | JAGGED: bump at 24-30, both neighbors (18,36) sub-baseline |
+| dead_trade_r_band    | .2:1.009/.962    | .3: .992/.988    | .4:1.002/.990              | Val: .2 hurts, .4 ~= baseline |
+
+Configs passing BOTH (a) Val+ and (c) Train+ on aggregate: breakeven 1.5 (Val .9996 marginal),
+trail_start 2.0 (Val .9889 ultra-marginal), trail_distance 1.25 & 1.5, time_stop 24 & 30. These went to
+the per-year gate (d) and/or plateau refinement (b).
+
+### 6. Robustness — per-year (d) + plateau refinement (b) killed every survivor
+
+Per-year PF for the aggregate-passers (baseline per-year: Y1 .9615, Y2 .8758, Y3 1.0996, Y4 .9884):
+
+| candidate            | Y1     | Y2 (net)         | Y3     | Y4/Val | verdict |
+|----------------------|--------|------------------|--------|--------|---------|
+| baseline (48h etc.)  | .9615  | .8758 (-911)     | 1.0996 | .9884  | —       |
+| trail_distance 1.5   | .9871  | **.8721 (-931)** | 1.0984 | 1.0114 | FAIL (d): Val edge is Y4-only artifact; Y2 WORSE than baseline & still -$931; PF>=base in only 2/4 yr (tie, not majority) |
+| time_stop 24         | 1.0109 | .9344 (-531)     | 1.0675 | 1.0088 | passes (d) 3/4 — but see plateau |
+| time_stop 30         | .9907  | .9205 (-617)     | 1.1113 | 1.0278 | passes (d) 4/4 — but see plateau |
+| time_stop 18 (refine)| 1.0225 | .9619 (-321)     | 1.1000 | **.9388**| Val sub-baseline |
+
+- **trail_distance 1.5** (the cleanest aggregate signal): its +2.3% Val PF is a SINGLE-YEAR (Y4)
+  artifact. Per-year it does NOT beat baseline in a majority (Y2 and Y3 slightly worse; only Y1, Y4
+  better = 2/4 tie), and Y2 stays a -$931 loser. FAIL (d). Same regime-artifact trap as tp2.5.
+- **time_stop 24 & 30** looked strongest: both beat baseline on Train AND Val AND per-year (30 beats
+  baseline in ALL 4 years; 24 in 3/4), and RAISE trade count toward the 200-gate (Val 296-315 vs 282).
+  A less careful pass would ADOPT time_stop=30 and spend Test on it. But the plateau refinement (rule 5)
+  is decisive: the Val response is a narrow BUMP at 24-30 flanked by SUB-BASELINE values on BOTH sides
+  — 18h -> .9388 (below baseline, avgR negative) and 36h -> .9721 (below baseline). A robust
+  "shorter time-stop is better" would be monotone; instead 18<24<30>36<48>72 is jagged, the per-year
+  optimum wanders (Y1 prefers 24, Y3 prefers 30), and 36h being the WORST value tested has no coherent
+  mechanism. The 24-30 goodness is a sample-specific interaction of dead-trade exit timing with the
+  one-position-at-a-time entry sequence — a non-robust isolated peak, not a plateau. FAIL (b). Also:
+  even at its best (30h) Y2 is still PF .92 / -$617 and Train DD 15.1% (AT the gate ceiling) — the
+  change does not fix the core problem and pushes DD to the limit.
+- **breakeven, trail_start, dead_trade**: no robust edge. breakeven Val is a flat 0.988-1.002 noise
+  band (its only real signal is Train, which anti-correlates with the flat Val = regime artifact).
+  trail_start is perfectly anti-correlated across splits (1.25 good Val/bad Train; 1.75/2.0 reverse) —
+  textbook noise. dead_trade shows no Val improvement (0.2 hurts Val to .962, 0.4 ~= baseline).
+
+Multiple-testing honesty (rule 7): 16 configs evaluated; the whole family's Val PF lives in a ~0.94-1.03
+band (baseline .988), i.e. a noise SD ~0.02-0.03. The best survivor's edge (time_stop 30, +0.04 Val PF)
+is ~1.5-2 noise-SD as the max of 16 noisy draws — exactly the winner's-curse magnitude, and it fails
+the plateau refinement. No result justifies a change.
+
+### 7. VERDICT — REJECT all 5; keep current Watchman defaults. Test set NOT touched.
+
+Keep breakeven_at_r 1.0 / trail_start_r 1.5 / trail_distance_atr 1.0 / time_stop_hours 48 /
+dead_trade_r_band 0.3. No parameter delivers a robust, plateau-backed, per-year edge over the current
+defaults: the aggregate "winners" are either anti-correlated across Train/Val (breakeven, trail_start,
+dead_trade), a single-year artifact (trail_distance 1.5), or a jagged isolated bump (time_stop 24-30,
+both neighbors sub-baseline). Per rule 5 (plateau beats peak), rule 7 (multiple-testing), rule 9
+(negative results are results): **the current defaults are on the (noisy, flat) plateau — no change
+recommended.**
+
+I did NOT spend the new family's one-touch Test budget. The closest candidate (time_stop=30) failed the
+plateau refinement on Train+Val, so per rule 2 it did not earn a Test confirmation and I refused to
+touch Test to fish for a better story (mirrors EXP-005/007). **Test (2025-07-21 -> 2026-07-21) stays
+PRISTINE for this family**, apart from the current-defaults "where we stand" baseline in §1 (not a
+parameter candidate).
+
+The dominant, roadmap-level result is §2, not any single parameter: Watchman's exit management is
+net-negative in the backtest at these defaults AND across the entire tested neighborhood. Parameter
+tuning cannot fix it — it shuffles performance within a sub-Watchman-off band. Recommended next step
+(user's call, NOT a config change): treat this as a STRATEGY question — either (i) reconsider whether
+the breakeven/trail/dead-trade logic suits an H1 fixed-2R system (it appears to cut the winners that
+carry the edge), or (ii) keep Watchman purely for its live protections (news/connectivity/structure)
+while accepting it is backtest-neutral-to-negative — but do NOT tune these 5 knobs expecting an edge.
+Interaction noted but not swept jointly (per house one-factor practice): breakeven_at_r, trail_start_r
+and tp_r_multiple(=2.0) jointly gate WHEN protection engages relative to the 2R target; a joint
+breakeven x trail_start x tp grid is the only place a genuinely different Watchman regime might live,
+but it is high-dimensional/high-overfit-risk and should follow a structural rethink, not precede it.
+
+`config/base.yaml`, `council/`, `backtest/engine.py`, `feed/` NOT modified (analysis-only). Auditor
+promotion-gate thresholds NOT touched (rule 8). Harness: `experiments/watchman_param_harness.py`
+(committable, reusable for future Watchman sweeps); `scratchpad/exp006_{driver,resume,analyze}.py` +
+`exp006_prereg.md` + `_exp006_all.jsonl` raw results are session-local.
+
+---
+
+## EXP-008 2026-07-22 — Watchman sub-mechanism ISOLATION + joint be/trail retune (CONTINUATION of EXP-006's family)
+
+Status: PRE-REGISTERED (running). Continuation of the Watchman exit-management family opened
+by EXP-006 — NOT a new family (shares EXP-006's multiple-testing budget AND its one-touch Test
+allowance). Analysis-only: no `config/base.yaml`, `council/`, `backtest/engine.py`, `feed/` edits.
+
+### 0. Why this experiment / relation to EXP-006
+
+EXP-006 found (its §2 headline) that modeling Watchman at CURRENT DEFAULTS is net-HARMFUL in the
+backtest in every window (3/5 years net-negative; Y2 −$911/DD17.3%), and that one-factor-at-a-time
+tuning of the 5 params recovers nothing (all REJECT). Its §7 explicitly recommended, as the only
+remaining place a different Watchman regime might live, a JOINT breakeven_at_r × trail_start_r × tp
+grid — and flagged the diagnosed mechanism: breakeven_at_r (1.0) and trail_start_r (1.5) both sit
+BELOW tp_r_multiple (2.0), so protection engages on nearly every winner well before the 2R target,
+"cutting the winners that carry the edge." The user's instruction ("ลองดู เงื่อนไขไหนมีปัญหาตัดออกได้เลย"
+= "whichever condition has a problem, cut it out") authorizes testing FULL DISABLE of individual
+Watchman sub-mechanisms as explicit candidate conditions, not just retuned thresholds.
+
+### 0a. Mechanism-isolation method (verified by reading watchman/{evaluate,stop_logic,exit_conditions}.py)
+
+`evaluate_watchman` runs 3 sub-mechanisms in priority order: (1) structure-invalidation → CLOSE,
+(2) time-stop/dead-trade → CLOSE, (3) breakeven+ATR-trail → MODIFY_SL. Disable-ability via config
+(WatchmanConfig) ALONE, no engine edit:
+- **breakeven** — fires when `profit_r >= breakeven_at_r`; set `breakeven_at_r = 1e9` → never fires.
+- **trailing** — fires when `profit_r >= trail_start_r`; set `trail_start_r = 1e9` → never fires.
+- **time-stop** — fires when age `>= time_stop_hours`; set `time_stop_hours = 1e9` → never fires.
+- **structure-invalidation** — HAS NO CONFIG GATE. `check_structure_invalidation` is called
+  unconditionally in `evaluate_watchman`; it is ALWAYS ON whenever `watchman_cfg is not None`. The
+  ONLY way to turn it off is `watchman_cfg=None`, which also turns off everything else. **Key design
+  finding:** structure-invalidation cannot be selectively cut without an engine code change.
+
+Consequence for design: structure-invalidation is the common baseline of every non-None condition.
+I therefore ISOLATE each mechanism's MARGINAL effect by differencing, using a 5-cell design (below).
+This still fully answers "which mechanism is the harmful piece" — structure's own marginal harm is
+`StructOnly − OFF`; be/trail's is `(+BTrail) − StructOnly` (and `AllDefaults − (+Time)`); time's is
+`(+Time) − StructOnly` (and `AllDefaults − (+BTrail)`) — two independent estimates each, which also
+exposes any interaction.
+
+### 1. Hypotheses (pre-registered, committed BEFORE observing StructOnly/+BTrail/+Time results)
+
+- H1 (isolation): EXP-006's diagnosis says breakeven+trail is the "cuts winners" culprit. So
+  `Struct+BTrail` should be the WORST non-OFF condition, and `StructOnly` / `Struct+Time` should be
+  CLOSER to OFF. If instead structure-invalidation or time-stop are ALSO net-harmful on their own
+  marginal, that reorders the "cut this" recommendation.
+- H2 (Stage-2 retune): IF be/trail is worth keeping at all (i.e. its marginal harm is small/regime-
+  dependent, not uniform), then moving breakeven_at_r/trail_start_r UP toward the 2R target (so
+  protection engages only once a trade is already near target) should recover the lost edge. IF
+  Stage-1 shows be/trail is uniformly net-harmful even before retuning, Stage 2 is expected to fail
+  and the recommendation is to CUT be/trail, not retune it.
+
+### 2. Data splits (reuse EXP-001..006; chronological, no shuffling)
+
+| Split | Range | use |
+|-------|-------|-----|
+| Train | 2021-07-22 → 2024-07-21 | per-year Y1,Y2,Y3 + 3yr aggregate |
+| Validation | 2024-07-21 → 2025-07-21 | Y4 |
+| Test | 2025-07-21 → 2026-07-21 | **budget = EXP-006's UNSPENT one-touch** (EXP-006 §7 did NOT spend it). Touch ONCE only if ONE clearly-best candidate clears the full Train+Val bar. |
+
+### 3. Conditions
+
+**Stage 1 — mechanism isolation (5 cells; OFF & AllDefaults are known reference points, not new bets):**
+| id | breakeven_at_r | trail_start_r | time_stop_hours | mechanisms active |
+|----|----------------|---------------|-----------------|-------------------|
+| OFF | (watchman_cfg=None) | — | — | none (= EXP-002/003 all-24h) |
+| AllDefaults | 1.0 | 1.5 | 48 | S + BE/Trail + Time (= EXP-006 baseline) |
+| StructOnly | 1e9 | 1e9 | 1e9 | S only |
+| Struct+BTrail | 1.0 | 1.5 | 1e9 | S + BE/Trail |
+| Struct+Time | 1e9 | 1e9 | 48 | S + Time |
+(trail_distance_atr=1.0, dead_trade_r_band=0.3 fixed throughout.)
+
+**Stage 2 — joint breakeven_at_r × trail_start_r grid (run ONLY if Stage 1 shows be/trail worth
+keeping, i.e. not uniformly net-harmful):** be ∈ {1.0,1.5,1.75} × trail ∈ {1.5,1.75,2.0}, constraint
+trail ≥ be (design-implied ordering; verified code permits but doesn't require it) → 8 cells (7 new
+beyond the be1.0/trail1.5 default). trail_distance_atr=1.0, time_stop=48, dead=0.3 fixed.
+
+### 4. Multiple-testing accounting (rule 7) — HIGHER BAR because joint grids
+
+Watchman-family cumulative count: EXP-006's 16 + Stage-1's 3 genuinely-new (StructOnly, +BTrail,
++Time) + Stage-2's up-to-7 new = up to **26 configs (> 20 threshold)**. Per rule 7 I therefore demand
+a LARGER edge and rely on per-year robustness across ALL 4 Train+Val years with NO sign flips (not an
+aggregate) — joint grids carry more overfitting risk than one-factor sweeps, stated explicitly.
+
+### 5. Acceptance criteria (pre-registered)
+
+Deciding metric: per-year PF + net $ vs the RELEVANT baseline = **OFF (Watchman-off all-24h)**, since
+EXP-006 already established AllDefaults < OFF. A condition/candidate is "worth keeping / ADOPT" iff ALL:
+- (a) trades ≥ 100 every year (Y1–Y4);
+- (b) does NOT turn any OFF-positive year net-negative (OFF is +ve all 4 yrs: Y1 +297, Y2 +5, Y3
+  +1294, Y4 +404) — the EXP-002 tp2.5 / EXP-004 [0,22) failure mode;
+- (c) PF ≥ OFF in a MAJORITY of Y1–Y4 AND not materially worse (PF gap > 0.03) in ANY year;
+- (d) plateau (Stage 2): the winning be/trail cell's ±1-grid-step neighbors within ~15% PF (reject
+  isolated peaks);
+- (e) Test (touched once) confirms — ONLY for a single clearly-best survivor of (a)–(d).
+Mechanism-cut recommendation logic: a sub-mechanism is "CUT IT" iff removing it (the differenced
+marginal) improves or is net-neutral vs keeping it, robustly per-year. Else "keep."
+If NOTHING clears (a)–(d) vs OFF, verdict = "no fix found via subset/retune; strategy-level rework"
+(EXP-006 §7's flagged possibility). Auditor gate thresholds NOT touched (rule 8). config NOT modified.
+
+### 6. Results
+
+Harness: `experiments/watchman_param_harness.py`'s `run_slice` reused unchanged, driven by
+`scratchpad/exp008_driver.py` which builds arbitrary WatchmanConfig (or None) per condition
+(sentinel 1e9 disables be/trail/time as described in §0a). Cost model on (commission $7/lot,
+slippage = bar's own spread), Risk Voice from base.yaml (all-24h [0,24)). Per-year windows only
+(decisive metric is per-year; `val`==`y4`; the 3yr aggregate omitted — its O(n^2) Watchman-eval
+cost ≈ 3× y1+y2+y3 combined, no extra information over the per-year rows).
+
+**IMPORTANT baseline note (differs from EXP-006 §2's cross-reference):** EXP-006 §2 compared its
+Watchman-ON baseline against EXP-002/003's Watchman-OFF numbers — but those EXP-002/003 runs had
+Risk Voice OFF (`risk_voice_cfg=None`), whereas EXP-006's and this experiment's runs have Risk
+Voice ON (from base.yaml). That cross-comparison therefore carried a Risk-Voice confound. THIS
+experiment removes it: all 5 Stage-1 conditions share the SAME Risk-Voice-ON config; ONLY the
+Watchman mechanism varies, so every comparison here is clean apples-to-apples. Fidelity confirmed:
+`AllDefaults` reproduces EXP-006's baseline to the cent (Y1 0.9615/−273, Y2 0.8758/−911, Y3
+1.0996/+647, Y4 0.9884/−74). The fresh Risk-Voice-ON, Watchman-OFF anchor (`OFF`) is the correct
+baseline for this family and is used as such below (it differs from EXP-002/003's Risk-Voice-OFF
+figures — e.g. Y2 is already −$499 here at the entry level, before any Watchman).
+
+#### 6.1 Stage 1 — mechanism isolation (per-year PF / net $ / trades)
+
+| cond | Y1 21-22 | Y2 22-23 | Y3 23-24 | Y4/Val 24-25 | AGG net |
+|------|----------|----------|----------|--------------|---------|
+| **OFF** (no watchman) | 1.038 / +222 / 197 | 0.927 / −499 / 212 | 1.136 / +749 / 177 | 1.046 / +294 / 227 | **+766** |
+| **StructOnly** (S) | 1.058 / +343 / 200 | 0.981 / −125 / 206 | 1.139 / +763 / 177 | 1.028 / +176 / 230 | **+1158** |
+| **Struct+Time** (S+T) | 1.022 / +156 / 271 | 0.959 / −314 / 260 | 1.148 / +901 / 229 | 1.051 / +337 / 263 | **+1080** |
+| **Struct+BTrail** (S+BE/Trail) | 0.971 / −187 / 269 | 0.920 / −565 / 254 | 1.126 / +763 / 229 | 0.941 / −389 / 269 | **−378** |
+| **AllDefaults** (S+BE/Trail+T) | 0.962 / −273 / 300 | 0.876 / −911 / 285 | 1.100 / +647 / 264 | 0.988 / −74 / 282 | **−611** |
+
+Marginal effect of each mechanism (net $ difference, per year | aggregate), two independent
+estimates each where possible:
+
+| mechanism | Y1 | Y2 | Y3 | Y4 | AGG | read |
+|-----------|----|----|----|----|-----|------|
+| structure-invalidation (StructOnly − OFF) | +121 | +374 | +14 | −118 | **+392** | net-BENEFICIAL: softens the Y2 disaster, helps Y1/Y3, tiny Y4 cost |
+| BE/trail estA (S+BTrail − StructOnly) | −530 | −440 | −1 | −565 | **−1535** | UNIFORMLY, SEVERELY HARMFUL |
+| BE/trail estB (AllDefaults − S+Time) | −429 | −598 | −254 | −411 | **−1691** | UNIFORMLY, SEVERELY HARMFUL (both estimates agree) |
+| time-stop estA (S+Time − StructOnly) | −187 | −189 | +138 | +161 | **−78** | roughly NEUTRAL (mixed sign) |
+| time-stop estB (AllDefaults − S+BTrail) | −86 | −346 | −115 | +314 | **−233** | roughly NEUTRAL-to-slightly-negative (mixed) |
+
+**Stage 1 verdict — the harmful piece is breakeven+trailing, isolated and confirmed.**
+breakeven+trailing is net-harmful in BOTH independent marginal estimates (−$1,535 and −$1,691
+aggregate) and in essentially every single year (Y1 −429/−530, Y2 −440/−598, Y4 −411/−565; Y3
+neutral-to-−254) — the exact "cuts the winners before the 2R target" mechanism EXP-006 §2
+diagnosed, now proven by direct isolation. structure-invalidation, by contrast, is net-BENEFICIAL
+(+$392; it beats OFF in 3/4 years and softens the Y2 loss from −499 to −125). time-stop is roughly
+neutral (small, sign-inconsistent). The single best condition is **StructOnly** (+$1,158 agg, PF ≥
+OFF in 3/4 yrs, no OFF-positive year turned negative → PASSES the §5 (a)-(c) ADOPT bar vs OFF).
+
+#### 6.2 Stage 2 — joint breakeven_at_r × trail_start_r retune (trail ≥ be; dist 1.0, time 48, dead 0.3)
+
+| cell | Y1 | Y2 | Y3 | Y4 | AGG net | PF≥OFF yrs |
+|------|----|----|----|----|---------|-----------|
+| be1.0 tr1.5 (=AllDefaults) | 0.962/−273 | 0.876/−911 | 1.100/+647 | 0.988/−74 | −611 | 0/4 |
+| be1.0 tr1.75 | 0.984/−109 | 0.907/−673 | 1.115/+723 | 0.973/−171 | −231 | 0/4 |
+| be1.0 tr2.0 | 0.996/−26 | 0.895/−749 | 1.104/+641 | 0.989/−71 | −206 | 0/4 |
+| be1.5 tr1.5 | 0.980/−144 | 0.925/−577 | 1.175/+1152 | 1.000/−3 | +428 | 1/4 |
+| be1.5 tr1.75 | 0.992/−58 | 0.955/−339 | 1.162/+1034 | 0.990/−63 | +574 | 2/4 |
+| be1.5 tr2.0 | 1.001/+8 | 0.943/−418 | 1.146/+902 | 1.002/+12 | +504 | 2/4 |
+| **be1.75 tr1.75** | 1.010/+69 | 0.970/−228 | 1.164/+1051 | 1.039/+252 | **+1143** | 2/4 |
+| be1.75 tr2.0 | 1.022/+156 | 0.963/−280 | 1.144/+895 | 1.051/+337 | +1108 | 3/4 |
+
+**Stage 2 verdict — the retune confirms the diagnosis but does NOT salvage be/trail.** Raising
+breakeven_at_r monotonically shrinks the harm (be1.0 rows −611/−231/−206 → be1.5 rows
++428/+574/+504 → be1.75 rows +1143/+1108): breakeven at 1.0R is the dominant poison; pushing it to
+1.75R (just below the 2.0 TP) recovers ~$1,750 aggregate. This is exactly EXP-006's "protection
+engages too early" mechanism. BUT the best cell **be1.75_tr1.75 (+$1,143) only reaches PARITY with
+StructOnly (+$1,158, i.e. be/trail simply OFF) — it never beats it**, and the response is
+monotone-increasing toward the grid edge (later breakeven always better, extrapolating to be→∞ =
+disabling breakeven). That is NOT an interior plateau (rule 5): its neighbor be1.5_tr1.75 is +$570
+LOWER, and the "optimum" is asymptotically approaching the cut-it condition from below. Mechanism:
+be=1.75 barely ever triggers before the 2.0R TP, so it is nearly equivalent to no breakeven — the
+grid's own trend POINTS AT REMOVAL, not retuning. Also, StructOnly best-protects the disaster year
+(Y2 −125, better than every Stage-2 cell's best of −228). No retuned be/trail pair earns adoption
+over simply cutting be/trail.
+
+#### 6.3 Multiple-testing honesty (rule 7)
+
+Watchman-family cumulative count = EXP-006's 16 + Stage-1's 3 new + Stage-2's 7 new = **26 (> 20)**,
+so I hold the higher bar (rule 7). The decisive result does NOT rest on picking a best-of-26 peak
+(that would be winner's-curse): it rests on (i) a MECHANISM REMOVAL whose marginal harm is
+consistent across all 4 years AND two independent estimates (the opposite of curve-fitting — I am
+deleting a lever, not fitting one), and (ii) the retune grid's monotone-to-the-edge trend
+independently pointing at the same removal. The candidate (cut be/trail) is chosen by mechanism, not
+by its rank among noisy configs.
+
+#### 6.4 Test-confirmation — PRE-REGISTERED before touching Test (spending EXP-006's UNSPENT budget)
+
+Single clearly-best candidate that earns the family's one-touch Test confirmation: **cut
+breakeven/trail, KEEP structure-invalidation + time-stop** (= the Struct+Time condition). Rationale
+for keeping time-stop despite it being backtest-neutral: it is a genuine LIVE dead-trade protection
+(the backtest cannot value it), and cutting it (StructOnly) adds only ~$78 backtest agg — not worth
+losing a live safety mechanism. Confirming on Test: {AllDefaults (=current live), Struct+Time
+(CANDIDATE), StructOnly, OFF} on 2025-07-21→2026-07-21, ONE touch. Pre-registered acceptance: the
+CANDIDATE (cut be/trail) must (a) trades ≥ 100; (b) beat AllDefaults (current live) on PF AND net;
+(c) not be materially worse than OFF. EXP-006 §7 left this family's Test budget UNSPENT, so it is
+available; spending it here on this single mechanism-removal candidate. (Concurrent EXP-009 touches
+a DIFFERENT family's Test budget — tp/pivot — independent of this Watchman-family touch.)
+
+#### 6.5 Test results (2025-07-21 → 2026-07-21) — ONE touch, spends the Watchman family's budget
+
+| cond | trades | win% | PF | net $ | avgR | DD% | pf_ex5 |
+|------|--------|------|-----|-------|------|-----|--------|
+| OFF (no watchman) | 180 | 40.0 | 1.321 | +1512 | 0.199 | 4.03 | 1.203 |
+| **AllDefaults (current live)** | 243 | 39.5 | 1.215 | +1121 | 0.116 | 3.81 | 1.110 |
+| **Struct+Time (CANDIDATE)** | 214 | 42.5 | **1.304** | **+1508** | 0.167 | 4.14 | 1.192 |
+| StructOnly | 181 | 39.2 | 1.315 | +1472 | 0.191 | 4.03 | 1.196 |
+
+Fidelity: `AllDefaults` reproduces EXP-006 §1's Test baseline to the cent (243 tr, PF 1.21, +$1,121,
+DD 3.81). CANDIDATE vs pre-registered §6.4 acceptance: (a) trades 214 ≥ 100 ✓; (b) beats current
+live AllDefaults on BOTH PF (1.304 > 1.215) AND net (+1508 > +1121) — a +$387 / +0.089 PF lift ✓;
+(c) not materially worse than the Watchman-off ceiling OFF (1.304 vs 1.321, net +1508 vs +1512 —
+essentially tied) ✓. **CONFIRMED.** Notable side-effect (gate NOT touched, only observed): current
+live AllDefaults FAILS the Gate-1 PF≥1.3 floor (1.215); the CANDIDATE CLEARS it (1.304) at 214
+trades — cutting be/trail moves the strategy from failing to passing the promotion PF gate on the
+untouched Test year, without relaxing any threshold (rule 8).
+
+### 7. VERDICT — CUT breakeven+trailing (config change is the USER's call; not auto-applied)
+
+**Stage 1 (mechanism isolation):** the net-harmful piece is **breakeven+trailing**, isolated and
+proven — marginal −$1,535 / −$1,691 aggregate in two independent estimates, harmful in essentially
+every year. structure-invalidation is net-BENEFICIAL (+$392; softens Y2) and time-stop is neutral.
+
+**Stage 2 (joint be/trail retune):** raising breakeven_at_r toward the 2.0R TP monotonically shrinks
+the harm (confirming EXP-006's "engages too early" diagnosis), but the best cell (be1.75_tr1.75,
++$1,143) only reaches PARITY with cutting be/trail (StructOnly +$1,158) and runs monotone to the
+grid edge (→ be=∞ = disable) — NOT an interior plateau (rule 5). Retuning does not salvage it; the
+grid's own trend points at removal.
+
+**Test-confirmed recommendation:** in `config/base.yaml`'s `watchman:` block, **DISABLE
+breakeven+trailing while KEEPING structure-invalidation + time-stop**. Concrete method (config-only,
+works with the current engine — no code change; per §0a these two thresholds are the only config
+gates for these mechanisms): set
+
+    breakeven_at_r: 999    # sentinel: profit_r never reaches it → breakeven-to-entry never engages
+    trail_start_r:  999    # sentinel: ATR-trailing never engages
+
+leaving `trail_distance_atr` (now inert), `time_stop_hours: 48`, `dead_trade_r_band: 0.3` unchanged.
+structure-invalidation stays active automatically (it has NO config gate — always on when Watchman
+is wired; §0a). A CLEANER alternative (optional, requires a small engine change I did NOT make — out
+of this analysis-only mandate): add explicit `breakeven_enabled`/`trail_enabled` booleans gating the
+two blocks in `watchman/stop_logic.compute_updated_stop_loss`. Evidence (Test): PF 1.215 → 1.304,
+net +$1,121 → +$1,508, and the strategy clears the Gate-1 PF≥1.3 floor it currently fails.
+
+**Robustness:** neighborhood ✓ (Stage-2 be dimension monotone, no isolated peak; the recommendation
+is a mechanism removal, not a fitted value); per-year ✓ (be/trail harm consistent across ALL 4
+Train+Val years in two estimates, no sign flips; candidate positive/neutral every year); top-5 ✓
+(candidate Test pf_ex5 1.192 vs current-live 1.110); walk-forward n.a. (the 4 per-year + Test = 5
+regime windows are the equivalent check and agree). Multiple-testing (rule 7): 26 family configs, but
+the verdict rests on a cross-year-consistent mechanism deletion, not a best-of-26 peak.
+
+**Test budget:** this experiment SPENT the Watchman family's one-touch Test allowance (which EXP-006
+§7 left unspent) on the single pre-registered mechanism-removal candidate. The Watchman family's Test
+set is now CONSUMED. `config/base.yaml`, `council/`, `backtest/engine.py`, `feed/` NOT modified
+(analysis-only). Auditor promotion-gate thresholds NOT touched (rule 8). Harness:
+`experiments/watchman_param_harness.py` (reused unchanged); `scratchpad/exp008_driver.py` + the
+`exp008_*_v2.jsonl` raw results are session-local.
+
+---
+
+## EXP-009 2026-07-22 — `tp_r_multiple` RE-TEST under Watchman + `pivot_bars` (NEW family)
+
+Status: DONE. tp (both Watchman off & on): REJECT — keep 2.0. pivot_bars: RECOMMEND-CANDIDATE
+pivot=4 (Test-confirmed; needs base.yaml exposure + EXP-008 joint re-verify; user's call).
+Analysis-only: no `config/base.yaml`, `council/`,
+`backtest/engine.py`, `feed/` edits. Appended after EXP-008 per append-only protocol
+(EXP-008 is the sibling agent's concurrent Watchman be/trail retune — NOT coordinated live).
+
+### 0. Two independent questions this pass (user request)
+
+**Part 1 — `tp_r_multiple` RE-TEST (family shared with EXP-002).** EXP-002 rejected tp
+2.25/2.5 and kept 2.0, but ran on the OLD engine where Watchman exits were NOT modeled
+at all (`watchman_cfg=None`). Engine commit 67df406 now simulates Watchman when a
+WatchmanConfig is passed, and EXP-006 diagnosed that breakeven_at_r(1.0)/trail_start_r(1.5)
+both sit BELOW tp(2.0) → protection cuts winners before the 2R target. EXP-002's premise
+(no Watchman interaction) is no longer true → legitimate fresh look (same category as the
+Risk-Voice / Watchman-exit parity gaps this project has fixed before; mirrors how EXP-003
+revisited the session gate on new evidence). NOT deference to the old verdict, NOT a blind
+re-run either.
+
+**Part 2 — `pivot_bars` (BRAND-NEW family).** GAP FOUND: `pivot_bars` (swing lookback for
+SL placement, structure-invalidation reference, and Council market-structure scoring) is a
+HARDCODED default `3` in `BacktestConfig` (engine.py:274), `council/decision_matrix.py`,
+`council/trivial_signal.py`, `council/scoring.py`, `features/swing.py`, `orchestrator/
+shadow_loop.py`. It is NOT exposed in `config/base.yaml` — UNLIKE every other `[adjustable]`
+knob. The spec's own §6 sample YAML (line 351) DOES name it `swing_pivot_bars: 3 # fractal
+N-N`, so the omission from base.yaml looks like an oversight, not a deliberate constant.
+Flagged for the user (see verdict). Tested by constructing `BacktestConfig(pivot_bars=...)`
+directly (same pattern as the existing harnesses).
+
+### 1. Harness / fidelity (CONFIRMED before any sweep)
+
+`experiments/exp009_tp_pivot_harness.py` (committable). Cost model on (commission $7/lot,
+slippage = bar's own spread). Two conditions:
+- **off**: `watchman_cfg=None, risk_voice_cfg=None` — reproduces EXP-002's setup. FIDELITY ✓:
+  tp2.0 Train 587tr/PF 1.0836, Val 223tr/PF 1.064 == EXP-002 §5.1/§5.2 to the cent.
+- **on**: watchman_cfg + risk_voice_cfg from base.yaml — reproduces EXP-006's setup. FIDELITY ✓:
+  tp2.0 Y1 0.9615/−273, Y2 0.8758/−911, Y3 1.0996/+647, Y4 0.9884/−74 == EXP-006 §2 to the cent.
+
+### 2. Data splits (reuse EXP-001..008; chronological, no shuffle)
+
+Train 2021-07-22→2024-07-21 (per-year Y1,Y2,Y3), Validation 2024-07-21→2025-07-21 (Y4).
+Test 2025-07-21→2026-07-21 — budget note below.
+
+### 3. Grids (pre-registered)
+
+- Part 1: `tp_r_multiple` ∈ {1.5, 1.75, 2.0*, 2.25, 2.5} × condition {off, on}. Per-year
+  y1,y2,y3,val each. (*current default.)
+- Part 2: `pivot_bars` ∈ {2, 3*, 4, 5, 7}, Watchman ON only (live-relevant config). Per-year
+  y1,y2,y3,val each.
+
+### 4. Multiple-testing accounting (rule 7, stated up front)
+
+- tp family (shared with EXP-002): EXP-002's 6 values (Watchman-off, old engine) + EXP-009's
+  10 (value×condition). The 5 Watchman-off re-runs reproduce EXP-002 EXACTLY (confirmatory,
+  not new bets — tp2.0 already verified identical), so genuinely-NEW bets this pass = the 5
+  Watchman-ON values (4 beyond the 2.0 baseline). Cumulative distinct (value×condition) ≈ 16,
+  still < 20 threshold.
+- pivot_bars: FRESH family, 5 configs, own unspent one-touch Test budget.
+
+### 5. Acceptance criteria (pre-registered). Deciding metric: per-year PF + net $ (the
+robustness bar decisive in EXP-002/003/004/006), gated by trades ≥ 100/yr; plateau-check any
+winner (rule 5).
+
+- **Part 1a (Watchman OFF) — SANITY CHECK.** Expectation: reproduce EXP-002 — tp2.0 is the
+  only value PF≥1.0 in every year; higher tp is a 2022-24 regime bet that loses in Y1. If the
+  harness shows anything else, the harness is suspect. No config change expected from this arm.
+- **Part 1b (Watchman ON) — THE NEW QUESTION.** Baseline = tp2.0 Watchman-ON (net-neg in 3/4
+  yrs). RECOMMEND a tp change iff a value T: (a) trades≥100/yr; (b) beats tp2.0-on PF in a
+  MAJORITY of Y1-Y4; (c) NO sign flip (turns no tp2.0-on-positive year negative); (d) plateau —
+  ±1 grid-step neighbors within ~15% PF; (e) AND is not merely reshuffling within the
+  sub-Watchman-OFF band EXP-006 documented (if the best Watchman-ON tp still trails Watchman-OFF
+  materially, the honest finding is strategy-level, per EXP-006 §7 — a tp retune does not fix a
+  net-harmful exit layer). A single clearly-best survivor of (a)-(d) MAY earn a Test touch.
+- **Part 2 (pivot_bars).** RECOMMEND a change iff a value clears the SAME (a)-(d) per-year bar
+  vs pivot3-Watchman-ON, plateau-backed. Since pivot_bars is not even a config key, an ADOPT
+  here first requires the user to EXPOSE it in base.yaml (flagged), so no auto-change regardless.
+
+### 6. Test-budget note (rule 2)
+
+- tp family: EXP-002 did NOT spend Test (kept 2.0). Test-for-tp-family budget is technically
+  available, but EXP-006's headline (Watchman-ON < Watchman-OFF across the board) sets a high
+  prior that no Watchman-ON tp recovers a real edge — will only touch Test if ONE candidate
+  genuinely clears 5(b) robustly. Not spent casually.
+- pivot_bars: fresh family, unspent one-touch Test.
+
+### 7. Spec bounds
+
+`tp_r_multiple` [adjustable] §1.4, no hard numeric bound (EXP-002). `swing_pivot_bars`
+[fractal N-N] §6, no hard numeric bound; {2..7} all structurally valid (need as_of≥2·pivot).
+Auditor gate thresholds NOT touched (rule 8). config NOT modified (analysis-only).
+
+### 8. Results
+
+Harness `experiments/exp009_tp_pivot_harness.py`, per-year PF / net $ (trades). Y4 = Val.
+
+#### 8.1 Part 1a — tp Watchman OFF (SANITY CHECK — reproduces EXP-002)
+
+| tp   | Y1              | Y2               | Y3              | Y4/Val          | yrs PF≥1.0 |
+|------|-----------------|------------------|-----------------|-----------------|-----------|
+| 1.5  | 1.058 / +375    | 0.905 / −696     | 1.157 / +1162   | 0.985 / −105    | 2 (Y1,Y3) |
+| 1.75 | 1.073 / +450    | 0.894 / −747     | 1.170 / +1113   | 0.964 / −246    | 2 (Y1,Y3) |
+| 2.0* | 1.050 / +297    | 1.001 / +5       | 1.224 / +1294   | 1.064 / +404    | **4/4**   |
+| 2.25 | 0.833 / −934    | 1.051 / +306     | 1.317 / +1580   | 1.116 / +646    | 3 (not Y1)|
+| 2.5  | 0.866 / −746    | 1.151 / +910     | 1.294 / +1673   | 1.092 / +479    | 3 (not Y1)|
+
+REPRODUCES EXP-002 to the cent. tp2.0 is the ONLY value PF≥1.0 in EVERY year; 1.5/1.75 fail
+Y2+Y4, 2.25/2.5 fail Y1 (the 2021-22 choppy regime — the exact tp-2.5 artifact EXP-002 caught).
+Harness validated; Watchman-OFF conclusion UNCHANGED: keep 2.0.
+
+#### 8.2 Part 1b — tp Watchman ON (THE NEW QUESTION)
+
+| tp   | Y1              | Y2               | Y3              | Y4/Val          | yrs≥1.0 | agg net |
+|------|-----------------|------------------|-----------------|-----------------|---------|---------|
+| 1.5  | 1.029 / +210    | 0.869 / −1050    | 1.083 / +598    | 0.990 / −73     | 2       | −315    |
+| 1.75 | 0.967 / −233    | 0.884 / −888     | 1.092 / +589    | 1.039 / +250    | 2       | −282    |
+| 2.0* | 0.962 / −273    | 0.876 / −911     | 1.100 / +647    | 0.988 / −74     | **1**   | −611    |
+| 2.25 | 0.939 / −434    | 0.883 / −876     | 1.096 / +580    | 1.052 / +329    | 2       | −401    |
+| 2.5  | 0.967 / −228    | 0.903 / −744     | 1.091 / +553    | 1.034 / +216    | 2       | −203    |
+
+Findings under Watchman ON:
+- NO tp value is per-year robust — the best (2.5, 1.75) reach only 2/4 positive years; EVERY tp
+  is net-NEGATIVE in Y1 and Y2. Y2 is a disaster at all tp (Watchman churns that regime).
+- tp2.0 (current) is the WORST on per-year count (only Y3 positive) and its Val PF (0.988) sits
+  in a LOCAL DIP below both neighbors (1.75→1.039, 2.25→1.052) — but the whole Val band is a
+  jagged 0.99-1.05 noise band (SD ~0.025), so "2.0 is uniquely bad" is NOT a real signal, it's
+  the same isolated-dip noise EXP-006 flagged. tp2.5 beats tp2.0-ON in 3/4 yrs but by trivial
+  margins (Y1 +0.005) and stays net-negative Y1+Y2 → reshuffling within a losing band.
+- DECISIVE (criterion 5b-e): the ENTIRE Watchman-ON tp band (best agg −203 at 2.5) stays BELOW
+  Watchman-OFF tp2.0 (agg +1701 over the same 4 yrs, all positive). Raising tp does NOT recover
+  the edge because breakeven(1.0)/trail(1.5) engage far below even 2.0R, so a higher target is
+  mostly never reached — Watchman-OFF tp2.5 Val was 1.092, Watchman drags it to 1.034. CONFIRMS
+  EXP-006: the drag is the exit layer, not the TP target. A tp retune cannot fix it.
+- NO tp candidate clears the bar → tp family Test budget NOT spent (rule 2).
+
+#### 8.3 Part 2 — pivot_bars Watchman ON (NEW family) + Test confirmation
+
+Train+Val per-year:
+
+| pivot | Y1              | Y2               | Y3              | Y4/Val          | yrs≥1.0 | agg net |
+|-------|-----------------|------------------|-----------------|-----------------|---------|---------|
+| 2     | 0.987 / −94     | 0.817 / −1431    | 1.045 / +332    | 1.008 / +55     | 2       | −1138   |
+| 3*    | 0.962 / −273    | 0.876 / −911     | 1.100 / +647    | 0.988 / −74     | 1       | −611    |
+| **4** | 1.098 / +594    | 0.934 / −458     | 1.080 / +493    | 1.099 / +580    | **3**   | **+1209** |
+| 5     | 0.980 / −115    | 0.979 / −135     | 1.163 / +875    | 1.060 / +324    | 2       | +949    |
+| 7     | 0.869 / −709    | 0.959 / −243     | 1.052 / +272    | 1.274 / +1306   | 2       | +626    |
+
+pivot_bars=4 scored vs pre-registered §5 Part 2 bar (vs pivot3-ON):
+- (a) trades≥100/yr: ✓ (266/278/262/274).
+- (b) beats pivot3 in majority: ✓ 3/4 (Y1 1.098>0.962, Y2 0.934>0.876, Y4 1.099>0.988; loses
+  Y3 only by 0.02, within noise).
+- (c) no sign flip: ✓ (pivot3 positive only in Y3; pivot4 keeps Y3 positive at 1.080; turns Y1
+  and Y4 from LOSS to solid profit).
+- (d) plateau: ✓ (unimodal grid: agg net rises 2→3→4 monotone, gentle decline 4→5→7; the entire
+  high shoulder {4,5,7} is net-POSITIVE and all beat pivot≤3 — a shoulder, not an isolated
+  spike. Val neighbors within 15%: p3 0.988 / p4 1.099 / p5 1.060).
+- Per-year balance: pivot4's edge is spread across THREE positive years (Y1+594, Y3+493, Y4+580),
+  NOT owed to one — materially more robust than tp-2.5's Y3-only artifact. Only Y2 stays a loser
+  (−458, but far better than pivot3's −911). Mechanism (coherent, verified vs code): a wider
+  fractal (4 vs 3) confirms swings on more bars → stops placed at more-reliable structure AND
+  Watchman's always-on structure-invalidation (which references pivot_bars) fires on
+  better-confirmed breaks → less of EXP-006's premature winner-cutting churn.
+
+**TEST (2025-07-21→2026-07-21) — pivot family one-touch budget SPENT on the single clearly-best
+survivor (pivot4), per pre-registered §5/§6:**
+
+| pivot | trades | win% | PF     | net $   | DD%  | PF_ex5 |
+|-------|--------|------|--------|---------|------|--------|
+| 3*    | 243    | 39.5 | 1.2147 | +1121.4 | 3.81 | 1.110  | (== EXP-006 §1 CLI baseline, fidelity ✓)
+| **4** | 223    | 39.0 | **1.2427** | **+1144.3** | 4.01 | **1.127** |
+
+pivot4 CONFIRMS on Test: PF 1.243 > 1.215, net +1144 > +1121, PF_ex5 1.127 > 1.110, DD comparable
+(4.01 vs 3.81), trades 223 (> 200 gate). Direction consistent with Train+Val (pivot4 ≥ pivot3 on
+every metric in BOTH Val and Test), no sign flip. HONEST CAVEAT: the Test edge is MODEST (+0.028
+PF, +$23) — the large Train+Val gap (+1209 vs −611) does NOT fully replicate; on the favorable
+2025-26 regime both pivots earn PF~1.2 and pivot4 is only marginally ahead. So the robust claim is
+"pivot4 ≥ pivot3, never worse, per-year-balanced, and clearly better in the harder 2021-24
+regimes" — not "pivot4 is a large uniform edge."
+
+### 9. VERDICTS
+
+- **Part 1a (tp, Watchman OFF): REJECT change — keep tp 2.0.** Reproduces EXP-002 exactly; 2.0 is
+  the only per-year-robust value. Sanity check passed (harness faithful).
+- **Part 1b (tp, Watchman ON): REJECT change — keep tp 2.0.** No tp value is per-year robust under
+  Watchman; tp2.0's apparent Val weakness is a jagged-noise local dip, not a real signal; and the
+  whole Watchman-ON tp band stays below Watchman-OFF regardless of tp — CONFIRMING EXP-006 that the
+  problem is the exit layer, not the target. The EXP-002 conclusion SURVIVES the new Watchman
+  interaction: 2.0 stands. Test NOT touched for tp family (budget preserved).
+- **Part 2 (pivot_bars): RECOMMEND-CANDIDATE pivot_bars = 4** (config change is the USER's call;
+  analogous to EXP-003's ADOPT-CANDIDATE status). It is the strongest, most robust signal this log
+  has produced: clears the full per-year bar vs pivot3 (3/4 yrs, no sign flip), unimodal-plateau,
+  per-year-balanced (not single-year-owed), mechanistically coherent, AND Test-confirmed (≥ pivot3
+  on every metric). TWO MANDATORY caveats: (i) pivot_bars is NOT a config key — it is a hardcoded
+  default 3 (engine.py:274 + council/{decision_matrix,trivial_signal,scoring}.py + features/swing.py
+  + orchestrator/shadow_loop.py), UNLIKE every other [adjustable] knob and inconsistent with the
+  spec's own §6 sample (`swing_pivot_bars: 3`). Adopting requires FIRST exposing it in base.yaml and
+  wiring it through those defaults (code change, out of this analysis-only mandate). (ii) pivot4 was
+  tuned with Watchman ON at CURRENT defaults; it is COUPLED to the Watchman exit config via
+  structure-invalidation — see EXP-008 reconciliation below.
+
+### 10. Multiple-testing honesty (rule 7)
+
+tp family cumulative ≈ 16 (value×condition); genuinely-new bets this pass = 5 Watchman-ON values;
+no candidate cleared the bar, so magnitude is moot. pivot_bars family = 5 configs (fresh); pivot4 is
+the best-of-5 (winner's-curse risk) but the INDEPENDENT Test confirmation + per-year balance + the
+positive high-side shoulder {4,5,7} control for luck — the direction (raise pivot above 3) is robust
+even if the exact optimum (4 vs 5) is grid-resolution-limited.
+
+### 11. EXP-008 RECONCILIATION FLAG (read — coupling exists, but NOT via tp)
+
+- **tp does NOT disturb EXP-008.** My Part 1 recommends NO tp change → tp stays 2.0, exactly the
+  target EXP-008 jointly tuned breakeven/trail against. EXP-008's premise is intact; no follow-up
+  joint tp×be×trail check is needed on account of tp.
+- **pivot4 DOES couple to EXP-008.** pivot_bars feeds Watchman's ALWAYS-ON structure-invalidation
+  (EXP-008 §0a confirmed structure can't be config-disabled). pivot4's benefit partly comes from
+  structure-invalidation firing on better-confirmed swings under CURRENT Watchman defaults. If
+  EXP-008 changes/disables Watchman sub-mechanisms (esp. anything altering when structure-based or
+  trail exits fire), pivot4's measured edge could shift. RECOMMENDATION: pivot4 and EXP-008's
+  Watchman recommendation should be JOINTLY re-verified (pivot_bars × chosen Watchman config)
+  before EITHER is adopted — pivot4 was measured against be1.0/trail1.5/48h, not EXP-008's outcome.
+
+Test set: tp family UNSPENT (no candidate earned it); pivot_bars family SPENT once (pivot4, the
+single clearly-best survivor). `config/base.yaml`, `council/`, `backtest/engine.py`, `feed/` NOT
+modified (analysis-only). Auditor gate thresholds NOT touched (rule 8). Harness:
+`experiments/exp009_tp_pivot_harness.py` (committable); raw sweep outputs are session-local scratch.
+
+---
+
+## NOTE (not an EXP) 2026-07-22 — `cfo.risk_per_trade_pct` sizing quantification @ $3,000 demo
+
+NOT a predictive-edge search, so it deliberately does NOT follow the EXP-### pre-registration /
+Train-Val-Test / plateau protocol — a future reader should not expect it to. `risk_per_trade_pct`
+is a pure position-sizing scalar (`risk_amount = equity*pct`, `lot = risk_amount/(stop_dist*
+point_value)`, round-down to step, `None` below `volume_min`). It cannot change which bars signal,
+which get vetoed, or exit timing — so no split discipline is needed. Run over the FULL history
+(all of Train+Val+Test together) BY DESIGN, since nothing here is validated against a held-out
+edge; the Test one-touch budget is therefore UNSPENT and untouched by this note. Triggered by a
+live event: a valid Council BUY was skipped because the computed lot rounded below the broker's
+0.01 minimum at the current 0.5%.
+
+Method: read-only. Imported the reviewed `backtest/engine.py` unchanged and runtime-wrapped
+`compute_lot_size` in the engine namespace ONLY to count `None` (sub-min) returns — no source
+edited. `--starting-equity 3000`, `--commission-per-lot 7.0` (provisional, pending user's IC
+Markets Standard-vs-Raw verification; commission is a small symmetric per-trade cost and does not
+interact with the sizing question). Risk Voice + Watchman modeled per `config/base.yaml`, same as
+`scripts/run_backtest.py`. Harness: `scratchpad/one_level.py` (6 levels run in parallel; session-local).
+
+risk% | signals→sizing | skips | skip% | trades | PF   | net$   | maxDD% | maxDD$ | maxSingleLoss$ | worstLoseStreak$
+0.50  |          4214  | 3043  | 72.2  |  1171  | 1.017 |  +125  | 17.8   | -562   |  -33           | -191
+0.75  |          3117  | 1872  | 60.1  |  1245  | 0.972 |  -313  | 20.6   | -629   |  -39           | -208
+1.00  |          2718  | 1412  | 52.0  |  1306  | 0.982 |  -292  | 32.5   |-1095   |  -60           | -307
+1.25  |          2235  |  893  | 40.0  |  1342  | 0.991 |  -177  | 35.1   |-1136   |  -60           | -374
+1.50  |          1983  |  619  | 31.2  |  1364  | 0.983 |  -426  | 42.3   |-1426   |  -79           | -454
+2.00  |          1575  |  191  | 12.1  |  1384  | 1.017 |  +567  | 53.6   |-1818   | -181           | -608
+
+Findings:
+1. SKIP RATE (the user's actual question): at the current 0.5%, **72% of otherwise-valid signals
+   are discarded for sub-min lot** on $3,000. Raising risk monotonically cuts skip%: 0.75→60%,
+   1.0→52%, 1.25→40%, 1.5→31%, 2.0→12%. Even at 2.0% you still skip 12% — the $3,000 balance is
+   the binding constraint (given XAUUSD's ATR-based stops), NOT the risk% alone.
+2. PF is NOT constant across levels (0.97–1.02, non-monotonic) — CORRECTS the prior expectation.
+   It is NOT the circuit breaker: `backtest/engine.py` does not model `max_drawdown_halt_pct`/
+   `daily_loss_limit_pct`/`max_consecutive_losses` at all (grep-confirmed). The real coupling is
+   `max_positions_per_symbol=1` × the sub-min skip filter: a skipped signal leaves the account FLAT,
+   so a later signal that a held position would have blocked can now be taken → each risk level
+   trades a genuinely DIFFERENT trade SET. So PF/net$ differences here are a reshuffling artifact
+   (over a ~breakeven, PF≈1.0 in-sample strategy), NOT evidence that any risk level "trades better".
+3. Live circuit-breaker caveat: since the engine ignores the 8% drawdown halt, the higher-risk
+   equity curves are fictional beyond the first halt — every level except 0.5% blows well past 8%
+   DD (1.0%→32%, 2.0%→54%), so the higher-risk net$ (e.g. 2.0%'s +567) is NOT live-achievable.
+4. Recommendation to user (NOT adopted — `config/base.yaml` unchanged): a modest 0.5→1.0% roughly
+   halves skip rate (72→52%) while keeping worst single loss ~$60 and worst losing streak ~$307,
+   tolerable on $3k; going ≥1.25% buys marginally-lower skip rate at genuinely dangerous drawdowns
+   for a strategy with no proven positive expectancy. The more fundamental fix is a larger deposit
+   (e.g. $10k, as prior backtests used), which cuts skip rate far more than any risk% change.
+Config UNCHANGED; Auditor gates untouched (rule 8); Test budget UNSPENT.
+
+---
+
+## NOTE (not an EXP) 2026-07-22 — Shield (Portfolio Checkpoint) parity & threshold review
+
+NOT a predictive-edge search / no Train-Val-Test split (these are code-logic + config-soundness
+questions, not statistical ones), so it deliberately does NOT follow EXP-### pre-registration —
+same convention as the risk_per_trade_pct note above. Test one-touch budget UNSPENT / untouched.
+Triggered by user request "ดูเงื่อนไขของ Shield ว่าโอเคมั้ย". Read-only: `config/base.yaml`,
+`shield/`, `backtest/engine.py` NOT modified.
+
+### 1. Backtest-modeling gap — CONFIRMED (grep + full engine read)
+`grep -rn shield src/autotrade/backtest/` = 0 matches; no `OpenPositionInfo`/`min_rr`/
+`max_correlation`/`Shield` symbol anywhere in `backtest/`. `engine.py`'s `run_backtest` holds a
+SINGLE `position: _OpenPosition | None` for ONE symbol and only signals when flat (`if position
+is None and pending is None`). So NONE of Shield's 6 rules run in the backtest. This is the same
+"silently unmodeled" class as Risk Voice (fixed 03a236b) and Watchman exits (fixed 67df406) — but
+the consequences differ per rule and MOST are dormant on today's XAUUSD-only setup:
+
+- **min_rr (1.5) — STRUCTURALLY DEAD, never binds.** `order_construction.build_order_plan` sets
+  `take_profit = entry ± tp_r_multiple·stop_distance`; Shield rule 1 computes `rr =
+  |tp−entry|/stop_distance ≡ tp_r_multiple = 2.0` EXACTLY, always ≥ 1.5. It cannot block while
+  TP is the fixed 2R construction. Correct as a conservative safety FLOOR; would only ever bind
+  if TP became structure-based (spec §1.4's noted future option). Not a live/backtest divergence.
+- **correlation / max_positions_total / total_risk_ceiling — DORMANT.** All three need ≥2
+  concurrent positions across DIFFERENT symbols to ever evaluate. With 1 active symbol (XAUUSD)
+  + `max_positions_per_symbol=1`, they can never fire live either. The engine's single-position
+  model is in fact STRICTER than these. No parity gap today; latent until EUR/GBP/JPY return.
+  (Also flagged: `shield/correlation.py` is self-documented PLACEHOLDER values + no rolling-60d
+  calc — must be validated before any multi-symbol go-live, independent of thresholds.)
+- **duplicate_signal_cooldown_hours (4.0) — the ONE consequential live↔backtest divergence TODAY.**
+  Backtest re-enters immediately on the next bar after a close; live Shield rule 6 blocks a
+  same-symbol+direction re-entry firing < 4h after the prior same-dir OPEN, UNLESS a new confirmed
+  swing formed. Quick UPPER-bound probe (scratchpad/cooldown_probe.py, live-equiv Watchman-ON,
+  5yr): 116/1395 ≈ 8.3% of same-direction consecutive trade pairs re-enter within the 4h window
+  (Watchman-OFF 76/997 ≈ 7.6%; Val-year 19/222 ≈ 8.6% — consistent). UPPER bound because it
+  ignores the "new swing bypasses" clause (true rate lower, plausibly a few %). Direction of bias:
+  backtest INCLUDES rapid same-swing re-entries after a fast stop-out that live would filter —
+  i.e. backtest trade count slightly OVERSTATES live, and it is NOT conservative here (cooldown is
+  an anti-whipsaw guard the backtest simply lacks). Median same-dir gap is 34–45h, so 4h is a
+  light, targeted touch — value looks sound for an H1 system, not tunable via splits anyway
+  (unmodeled).
+
+### 2. Live journal evidence — TOO THIN (say so, don't overreach)
+`data/db/trade_journal_paper.sqlite` + `trade_journal.sqlite`: `blocked_signal_records` = 3 + 25
+rows spanning only a few HOURS on 2026-07-21 (risk_voice + borderline only); **shield blocks = 0**;
+`trade_records` = **0 completed trades** in both. The live/paper clock has run <1 day with no
+closed trades → no observable Shield-block phenomenon yet, and FAR too little history to reconsider
+`max_positions_per_symbol` (spec's "raise to 2 after 3 months live" is nowhere near met — clearly
+premature; keep 1).
+
+### 3. Threshold-value verdict: all SOUND as-is; NO change recommended
+min_rr 1.5 (correct floor, consistent with 2R TP), max_correlation 0.7 (fine value on placeholder
+data), max_positions_per_symbol 1 (premature to raise), max_positions_total 3 /
+total_risk_ceiling_pct 3.0 (dormant), duplicate_signal_cooldown_hours 4.0 (sensible H1 anti-whipsaw
+touch). None is being actively exercised on the single-symbol setup except the cooldown.
+
+### 4. Scoping the fix (do NOT reflexively "wire Shield in")
+- Cooldown (rule 6) IS a SMALL, self-contained single-symbol wiring fix (like Risk Voice/Watchman
+  were): track last same-dir entry time + swing_index, skip a signal within cooldown on the same
+  swing. The engine already re-derives swing_index at fill (`_build_watchman_metadata`), so the
+  machinery exists. This would close the only consequential-today gap and make backtest trade count
+  match live. RECOMMENDED as the one worthwhile parity fix (code change — out of this analysis-only
+  mandate; user's call).
+- correlation / total-risk / max-total are the ARCHITECTURAL pieces (need a multi-symbol concurrent
+  backtest state the current one-position engine cannot represent) — but they are DORMANT, so this
+  is DEFER-until-multi-symbol, NOT a quick fix. Do not conflate the two.
+
+Verdict: Shield thresholds are OK; no config change. Backtest gap is real but mostly DORMANT — only
+`duplicate_signal_cooldown_hours` diverges live-vs-backtest today (~≤8% of trades, upper bound),
+worth a small engine wiring fix; the rest waits for multi-symbol. `config/base.yaml`, `shield/`,
+`backtest/engine.py` UNCHANGED. Auditor gates untouched (rule 8). Probe: scratchpad/cooldown_probe.py.

@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1048 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1059 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1048 (including all parametrized variants)
+- **Total Test Count**: 1059 (including all parametrized variants)
 - **Test Files**: ~55 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -15,12 +15,12 @@ This document provides a comprehensive list of all 1048 test cases in the AutoTr
 | Subsystem | Test File | Test Count |
 |-----------|-----------|-----------|
 | Auditor | test_backtest_results.py | 8 |
-| | test_borderline.py | 17 |
+| | test_borderline.py | 15 |
 | | test_daily_report.py | 3 |
-| | test_demotion.py | 11 |
+| | test_demotion.py | 12 |
 | | test_metrics.py | 6 |
 | | test_promotion.py | 30 |
-| **Auditor Subtotal** | | **75** |
+| **Auditor Subtotal** | | **74** |
 | Backtest | test_clock.py | 3 |
 | | test_cost_model.py | 7 |
 | | test_engine.py | 37 |
@@ -65,13 +65,13 @@ This document provides a comprehensive list of all 1048 test cases in the AutoTr
 | | test_models.py | 3 |
 | **Store Subtotal** | | **20** |
 | Watchman | test_connectivity_watchdog.py | 10 |
-| | test_evaluate.py | 6 |
+| | test_evaluate.py | 7 |
 | | test_exit_conditions.py | 19 |
 | | test_loop.py | 28 |
 | | test_news_protection.py | 10 |
 | | test_position_metadata.py | 11 |
-| | test_stop_logic.py | 33 |
-| **Watchman Subtotal** | | **117** |
+| | test_stop_logic.py | 38 |
+| **Watchman Subtotal** | | **123** |
 | Scripts & CLI | test_autotrade_control.py | 19 |
 | | test_clock.py | 1 |
 | | test_config.py | 26 |
@@ -84,14 +84,14 @@ This document provides a comprehensive list of all 1048 test cases in the AutoTr
 | | test_pid_file.py | 19 |
 | | test_poller.py | 10 |
 | | test_run_auditor.py | 37 |
-| | test_run_backtest.py | 15 |
+| | test_run_backtest.py | 19 |
 | | test_run_shadow_loop.py | 24 |
 | | test_run_telegram_control.py | 10 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **235** |
+| **Scripts & CLI Subtotal** | | **239** |
 | | | |
-| **GRAND TOTAL** | | **1048** |
+| **GRAND TOTAL** | | **1059** |
 
 ---
 
@@ -961,6 +961,7 @@ This document provides a comprehensive list of all 1048 test cases in the AutoTr
 - test_structure_invalidation_wins_over_a_simultaneous_time_stop
 - test_clean_sl_update_only_case
 - test_genuine_no_action_case
+- test_both_gates_disabled_turns_a_would_be_modify_sl_into_no_action
 
 ### tests/unit/watchman/test_exit_conditions.py
 
@@ -1065,6 +1066,11 @@ This document provides a comprehensive list of all 1048 test cases in the AutoTr
 - test_buy_breakeven_wins_when_trail_candidate_is_less_favorable_despite_being_active
 - test_sell_breakeven_wins_when_trail_candidate_is_less_favorable_despite_being_active
 - test_sl_monotonicity_holds_across_a_wide_range_of_initial_stop_distances (12 parametrized cases)
+- test_breakeven_enabled_false_never_appends_breakeven_candidate_even_past_breakeven_r
+- test_breakeven_enabled_false_still_lets_trail_fire_independently_past_trail_start_r
+- test_trail_enabled_false_never_appends_trail_candidate_even_past_trail_start_r
+- test_both_gates_disabled_returns_current_sl_unchanged_regardless_of_profit_r
+- test_default_backward_compat_breakeven_and_trail_enabled_true_when_omitted
 - test_sell_sl_is_monotonically_non_increasing_across_an_adversarial_price_path
 
 ---
@@ -1270,6 +1276,7 @@ This document provides a comprehensive list of all 1048 test cases in the AutoTr
 - test_cmd_demotion_without_notify_flag_never_calls_notify
 - test_cmd_demotion_without_notify_flag_never_touches_gate_state
 - test_cmd_demotion_without_notify_does_not_suppress_a_later_notify_call
+- test_main_borderline_requires_commission_per_lot_argument
 - test_cmd_borderline_no_cases_logged_yet
 - test_cmd_borderline_skips_symbol_with_no_historical_data_and_stays_mt5_free
 - test_cmd_borderline_full_replay_with_mocked_mt5
@@ -1283,14 +1290,18 @@ This document provides a comprehensive list of all 1048 test cases in the AutoTr
 - test_filter_by_date_range_out_of_range_returns_empty_not_an_error
 - test_filter_by_date_range_returns_reindexed_copy_does_not_mutate_input
 - test_build_envelope_cost_model_complete_true_when_commission_set_and_min_spread_convention
-- test_build_envelope_cost_model_complete_false_when_commission_zero
+- test_build_envelope_cost_model_complete_true_when_commission_zero_and_min_spread_convention
 - test_build_envelope_cost_model_complete_false_when_slippage_explicitly_overridden
 - test_run_and_persist_writes_a_loadable_envelope
 - test_run_and_persist_risk_voice_cfg_marks_envelope_as_modeled
 - test_run_and_persist_watchman_cfg_marks_envelope_as_modeled
+- test_run_and_persist_threads_pivot_bars_into_backtest_config
+- test_main_requires_commission_per_lot_argument
 - test_main_constructs_risk_voice_cfg_from_config_with_every_field_mapped_correctly
 - test_main_constructs_watchman_cfg_from_config_with_every_field_mapped_correctly
+- test_main_threads_pivot_bars_from_config_into_run_and_persist
 - test_main_writes_an_envelope_with_risk_voice_modeled_true
+- test_main_with_commission_zero_writes_envelope_with_cost_model_complete_true
 
 ### tests/unit/test_run_shadow_loop.py
 

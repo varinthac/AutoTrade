@@ -124,7 +124,7 @@ def _fake_session(creds):
 
 _BASE_CFG = {
     "symbols": {"XAUUSD": "XAUUSD"},
-    "global": {"timeframe": "H1"},
+    "global": {"timeframe": "H1", "swing_pivot_bars": 7},
     "cfo": {
         "risk_per_trade_pct": 0.5, "daily_loss_limit_pct": 2.0,
         "max_consecutive_losses": 3, "max_drawdown_halt_pct": 8.0,
@@ -146,6 +146,7 @@ _BASE_CFG = {
         "breakeven_at_r": 1.0, "trail_start_r": 1.5, "trail_distance_atr": 1.0,
         "time_stop_hours": 48, "dead_trade_r_band": 0.3, "news_window_minutes": 30,
         "news_profit_threshold_r": 0.5, "news_close_mode": "half", "connectivity_timeout_minutes": 5,
+        "breakeven_enabled": False, "trail_enabled": False,
     },
 }
 
@@ -214,6 +215,18 @@ def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(mon
     assert risk_voice_cfg.session_start_hour == 14
     assert risk_voice_cfg.session_end_hour == 18
     assert run_calls["init_kwargs"]["cfg"].bull_threshold == 70
+    # pivot_bars is read from config/base.yaml's global.swing_pivot_bars, not
+    # silently defaulting to ShadowLoopConfig's own pivot_bars=3 default
+    # regardless of config -- _BASE_CFG's swing_pivot_bars=7 is a distinct
+    # value specifically to catch that.
+    assert run_calls["init_kwargs"]["cfg"].pivot_bars == 7
+    # breakeven_enabled/trail_enabled are read from config/base.yaml's
+    # watchman: block into the real WatchmanConfig wired into WatchmanLoop --
+    # _BASE_CFG sets both False (distinct from WatchmanConfig's own True
+    # default) specifically to catch a silently-ignored field.
+    watchman_config = run_calls["init_kwargs"]["watchman_loop"]._watchman_config
+    assert watchman_config.breakeven_enabled is False
+    assert watchman_config.trail_enabled is False
     # Phase 9: --mode defaults to "paper" -- trades from a plain
     # `AutoTrade_Start.bat` run must land in the DB run_auditor.py's
     # `--mode paper` gates actually read, not the generic default DB.

@@ -32,6 +32,8 @@ def compute_updated_stop_loss(
     breakeven_at_r: float,
     trail_start_r: float,
     trail_distance_atr: float,
+    breakeven_enabled: bool = True,
+    trail_enabled: bool = True,
 ) -> float:
     """New SL for an open position -- always at least as favorable as
     `current_sl` (see module docstring for why this is structural).
@@ -39,6 +41,13 @@ def compute_updated_stop_loss(
     `initial_stop_distance` is the FIXED R-multiple denominator recorded at
     entry (`watchman.position_metadata.PositionMetadata.initial_stop_distance`)
     -- never the current, possibly-already-moved stop distance.
+
+    `breakeven_enabled`/`trail_enabled` (default `True`, matching prior
+    behavior) gate whether the breakeven/trail candidates are ever appended
+    to `candidates` at all -- when `False`, the corresponding candidate is
+    simply never generated, regardless of `profit_r`. When BOTH are `False`,
+    `candidates == [current_sl]` always, so this function is provably a
+    no-op (per EXP-008, `experiments/experiments_log.md`).
     """
     if initial_stop_distance <= 0:
         raise ValueError(f"initial_stop_distance must be positive, got {initial_stop_distance}")
@@ -52,10 +61,10 @@ def compute_updated_stop_loss(
 
     candidates = [current_sl]
 
-    if profit_r >= breakeven_at_r:
+    if profit_r >= breakeven_at_r and breakeven_enabled:
         candidates.append(entry_price)
 
-    if profit_r >= trail_start_r:
+    if profit_r >= trail_start_r and trail_enabled:
         if direction == "BUY":
             candidates.append(current_price - trail_distance_atr * current_atr)
         else:

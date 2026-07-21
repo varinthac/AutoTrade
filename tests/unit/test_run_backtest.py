@@ -122,14 +122,19 @@ def test_build_envelope_cost_model_complete_true_when_commission_set_and_min_spr
     assert envelope["cost_model_complete"] is True
 
 
-def test_build_envelope_cost_model_complete_false_when_commission_zero():
+def test_build_envelope_cost_model_complete_true_when_commission_zero_and_min_spread_convention():
+    # 0.0 is a legitimate real commission for a commission-free account (e.g.
+    # IC Markets Standard, which recovers cost via a wider spread instead) --
+    # it must NOT be treated as an unconfigured placeholder by build_envelope
+    # itself. The "was this consciously chosen" safeguard lives in main()'s
+    # required --commission-per-lot CLI argument, not in this value check.
     df = _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}])
     report = run_backtest_script.generate_report([], 10_000.0)
     envelope = run_backtest_script.build_envelope(
         "XAUUSD", df, report, CostModelConfig(commission_per_lot=0.0, slippage_points=None),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
     )
-    assert envelope["cost_model_complete"] is False
+    assert envelope["cost_model_complete"] is True
 
 
 def test_build_envelope_cost_model_complete_false_when_slippage_explicitly_overridden():
@@ -206,6 +211,32 @@ def test_run_and_persist_watchman_cfg_marks_envelope_as_modeled(tmp_path, monkey
     assert envelope.watchman_exits_modeled is True
 
 
+def test_run_and_persist_threads_pivot_bars_into_backtest_config(tmp_path, monkeypatch):
+    # Proves run_and_persist's pivot_bars= kwarg reaches BacktestConfig
+    # itself (not just relying on BacktestConfig's own pivot_bars=3
+    # default), by capturing the constructed config's field directly.
+    captured = {}
+    real_run_backtest = run_backtest_script.run_backtest
+
+    def _capturing_run_backtest(df, symbol, symbol_spec, config):
+        captured["pivot_bars"] = config.pivot_bars
+        return real_run_backtest(df, symbol, symbol_spec, config)
+
+    monkeypatch.setattr(run_backtest_script, "run_backtest", _capturing_run_backtest)
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    output_dir = tmp_path / "backtest_reports"
+
+    run_backtest_script.run_and_persist(
+        "XAUUSD", df, SYMBOL, 10_000.0, 1.0,
+        CostModelConfig(commission_per_lot=2.0, slippage_points=None),
+        False, output_dir, pivot_bars=7,
+    )
+
+    assert captured["pivot_bars"] == 7
+
+
 # --- main() end-to-end wiring -----------------------------------------------
 #
 # The tests above exercise build_envelope/run_and_persist/_council_signal_fn
@@ -224,6 +255,7 @@ def _fake_session(creds):
 
 
 _FAKE_MAIN_CFG = {
+    "global": {"swing_pivot_bars": 7},
     "cfo": {"risk_per_trade_pct": 0.75},
     "risk_voice": {
         "max_spread_multiple": 2.5, "max_spread_points_xauusd": 40.0,
@@ -234,6 +266,7 @@ _FAKE_MAIN_CFG = {
     "watchman": {
         "breakeven_at_r": 1.5, "trail_start_r": 2.0, "trail_distance_atr": 1.2,
         "time_stop_hours": 36.0, "dead_trade_r_band": 0.25,
+        "breakeven_enabled": False, "trail_enabled": False,
     },
 }
 
@@ -247,6 +280,17 @@ def _patch_main_wiring(monkeypatch, tmp_path, csv_df: pd.DataFrame) -> None:
     monkeypatch.setattr(run_backtest_script, "mt5_session", _fake_session)
     monkeypatch.setattr(run_backtest_script, "get_symbol_spec", lambda symbol: SYMBOL)
     monkeypatch.setattr(run_backtest_script, "load_yaml_config", lambda name: _FAKE_MAIN_CFG)
+
+
+def test_main_requires_commission_per_lot_argument(monkeypatch, tmp_path):
+    # 0.0 is a legitimate real commission (e.g. a commission-free "Standard"
+    # account) so it cannot be a silent argparse default -- the caller must
+    # always pass this flag explicitly, even to choose 0.0.
+    _patch_main_wiring(monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}]))
+    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "XAUUSD"])
+
+    with pytest.raises(SystemExit):
+        run_backtest_script.main()
 
 
 def test_main_constructs_risk_voice_cfg_from_config_with_every_field_mapped_correctly(monkeypatch, tmp_path):
@@ -305,6 +349,30 @@ def test_main_constructs_watchman_cfg_from_config_with_every_field_mapped_correc
     assert wc.trail_distance_atr == 1.2
     assert wc.time_stop_hours == 36.0
     assert wc.dead_trade_r_band == 0.25
+    assert wc.breakeven_enabled is False
+    assert wc.trail_enabled is False
+
+
+def test_main_threads_pivot_bars_from_config_into_run_and_persist(monkeypatch, tmp_path):
+    # A KeyError, a swapped field, or silently relying on run_and_persist's/
+    # BacktestConfig's own pivot_bars=3 default (regardless of config) would
+    # all fail this -- _FAKE_MAIN_CFG's global.swing_pivot_bars=7 is a
+    # distinct value from that default specifically to catch that.
+    _patch_main_wiring(monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}]))
+    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0"])
+
+    captured = {}
+
+    def _fake_run_and_persist(*args, **kwargs):
+        captured["pivot_bars"] = kwargs.get("pivot_bars")
+        return tmp_path / "envelope.json"
+
+    monkeypatch.setattr(run_backtest_script, "run_and_persist", _fake_run_and_persist)
+
+    exit_code = run_backtest_script.main()
+
+    assert exit_code == 0
+    assert captured["pivot_bars"] == 7
 
 
 def test_main_writes_an_envelope_with_risk_voice_modeled_true(monkeypatch, tmp_path):
@@ -323,3 +391,28 @@ def test_main_writes_an_envelope_with_risk_voice_modeled_true(monkeypatch, tmp_p
     envelope = load_backtest_report_envelope(out_path)
     assert envelope.risk_voice_modeled is True
     assert envelope.watchman_exits_modeled is True
+
+
+def test_main_with_commission_zero_writes_envelope_with_cost_model_complete_true(monkeypatch, tmp_path):
+    # The real motivating scenario for this fix: a genuinely commission-free
+    # account (e.g. IC Markets "Standard") passes 0.0 deliberately through
+    # the CLI. This must flow all the way through to a written envelope with
+    # cost_model_complete=True -- not just be true of build_envelope() in
+    # isolation (a falsy-check regression, e.g. `args.commission_per_lot or
+    # X`, would silently corrupt this exact path without tripping any other
+    # main()-level test, since all of them use a truthy commission value).
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    _patch_main_wiring(monkeypatch, tmp_path, _council_signal_bars())
+    output_dir = tmp_path / "backtest_reports"
+    monkeypatch.setattr(sys, "argv", [
+        "run_backtest.py", "XAUUSD", "--commission-per-lot", "0.0", "--output-dir", str(output_dir),
+    ])
+
+    exit_code = run_backtest_script.main()
+
+    assert exit_code == 0
+    [out_path] = list(output_dir.glob("XAUUSD_*.json"))
+    envelope = load_backtest_report_envelope(out_path)
+    assert envelope.cost_model.commission_per_lot == 0.0
+    assert envelope.cost_model_complete is True

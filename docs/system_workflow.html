@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoTrade — คู่มือระบบและ Workflow</title>
+<style>
+  :root {
+    --bg: #F3F4F7;
+    --surface: #FFFFFF;
+    --surface-alt: #F8F9FB;
+    --text: #1A1D23;
+    --text-muted: #5C6370;
+    --border: #E1E4EA;
+    --accent: #96661A;
+    --accent-soft: #FBF1DE;
+    --code-bg: #EEF0F4;
+    --code-fg: #6A3E13;
+    --shadow: 0 1px 2px rgba(20,22,26,0.04), 0 4px 16px rgba(20,22,26,0.05);
+    --adopted-bg: #E4F3EA;   --adopted-fg: #276B47;
+    --pending-bg: #FBF0DE;   --pending-fg: #92600F;
+    --rejected-bg: #FBE9E9;  --rejected-fg: #9B3A3A;
+    --neutral-bg: #EDEFF3;   --neutral-fg: #4C525E;
+    --font-body: "Leelawadee UI", "Noto Sans Thai", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: "Cascadia Code", "Consolas", ui-monospace, "Courier New", monospace;
+  }
+  :root[data-theme="dark"] {
+    --bg: #14161B;
+    --surface: #1B1E25;
+    --surface-alt: #20242C;
+    --text: #E7E9EE;
+    --text-muted: #9BA1AE;
+    --border: #2B2F38;
+    --accent: #D8A544;
+    --accent-soft: rgba(216,165,68,0.12);
+    --code-bg: #23272F;
+    --code-fg: #E7B978;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35);
+    --adopted-bg: rgba(95,190,142,0.14);  --adopted-fg: #7FD9AC;
+    --pending-bg: rgba(224,160,92,0.14);  --pending-fg: #E7B978;
+    --rejected-bg: rgba(224,128,128,0.14); --rejected-fg: #E59999;
+    --neutral-bg: rgba(160,166,178,0.14); --neutral-fg: #B7BCC6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14161B; --surface: #1B1E25; --surface-alt: #20242C; --text: #E7E9EE;
+      --text-muted: #9BA1AE; --border: #2B2F38; --accent: #D8A544;
+      --accent-soft: rgba(216,165,68,0.12); --code-bg: #23272F; --code-fg: #E7B978;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35);
+      --adopted-bg: rgba(95,190,142,0.14); --adopted-fg: #7FD9AC;
+      --pending-bg: rgba(224,160,92,0.14); --pending-fg: #E7B978;
+      --rejected-bg: rgba(224,128,128,0.14); --rejected-fg: #E59999;
+      --neutral-bg: rgba(160,166,178,0.14); --neutral-fg: #B7BCC6;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent-soft); }
+
+  /* ---------- top bar ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar-inner {
+    max-width: 900px; margin: 0 auto; padding: 0.7rem 1.5rem;
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+  }
+  .topbar-title { font-weight: 700; font-size: 0.95rem; letter-spacing: 0.01em; white-space: nowrap; }
+  .topbar-nav { display: flex; gap: 0.9rem; flex-wrap: wrap; font-size: 0.85rem; flex: 1; }
+  .topbar-nav a { color: var(--text-muted); text-decoration: none; }
+  .topbar-nav a:hover { color: var(--accent); }
+  .theme-toggle {
+    border: 1px solid var(--border); background: var(--surface-alt); color: var(--text);
+    border-radius: 6px; padding: 0.3rem 0.6rem; font-size: 0.8rem; cursor: pointer; font-family: inherit;
+  }
+  .theme-toggle:hover { border-color: var(--accent); }
+  .theme-toggle:focus-visible, a:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+
+  /* ---------- shell ---------- */
+  .wrap { max-width: 900px; margin: 0 auto; padding: 0 1.5rem 5rem; }
+
+  header.hero { padding: 3rem 0 2rem; border-bottom: 1px solid var(--border); }
+  .eyebrow {
+    text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.75rem;
+    color: var(--accent); font-weight: 700; margin: 0 0 0.6rem;
+  }
+  h1 { font-size: 2rem; margin: 0 0 0.5rem; text-wrap: balance; letter-spacing: -0.01em; }
+  .subtitle { color: var(--text-muted); font-size: 1.05rem; max-width: 62ch; margin: 0; }
+  .meta-row { display: flex; gap: 1.2rem; flex-wrap: wrap; margin-top: 1.4rem; font-size: 0.85rem; color: var(--text-muted); }
+  .meta-row strong { color: var(--text); }
+
+  section { padding: 2.8rem 0; border-bottom: 1px solid var(--border); }
+  section:last-of-type { border-bottom: none; }
+  h2 {
+    font-size: 1.5rem; margin: 0 0 0.3rem; display: flex; align-items: baseline; gap: 0.6rem;
+    text-wrap: balance;
+  }
+  .section-num { font-family: var(--font-mono); color: var(--text-muted); font-size: 1rem; font-weight: 400; }
+  h2 .role-tag { font-size: 0.85rem; font-weight: 400; color: var(--text-muted); }
+  h3 { font-size: 1.1rem; margin: 1.8rem 0 0.6rem; }
+  p { margin: 0.6rem 0; }
+  .lede { color: var(--text-muted); max-width: 68ch; }
+
+  code, .kbd {
+    font-family: var(--font-mono); background: var(--code-bg); color: var(--code-fg);
+    padding: 0.1em 0.4em; border-radius: 4px; font-size: 0.88em;
+  }
+  pre {
+    font-family: var(--font-mono); background: var(--code-bg); color: var(--text);
+    padding: 1rem 1.2rem; border-radius: 8px; overflow-x: auto; font-size: 0.85rem;
+    border: 1px solid var(--border); line-height: 1.6;
+  }
+
+  ul.role-why { padding-left: 1.3rem; margin: 0.8rem 0; }
+  ul.role-why li { margin: 0.45rem 0; }
+  ul.role-why b { color: var(--text); }
+
+  /* ---------- tables ---------- */
+  .table-scroll { overflow-x: auto; border-radius: 10px; border: 1px solid var(--border); margin: 1rem 0; }
+  table { width: 100%; border-collapse: collapse; background: var(--surface); font-size: 0.92rem; }
+  caption { text-align: left; padding: 0.7rem 1rem; font-size: 0.8rem; color: var(--text-muted); background: var(--surface-alt); }
+  th, td { padding: 0.65rem 1rem; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+  thead th {
+    background: var(--surface-alt); font-size: 0.78rem; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--text-muted); font-weight: 700; white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-alt); }
+  td.num, th.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td code { white-space: nowrap; }
+
+  /* ---------- pills / badges ---------- */
+  .pill {
+    display: inline-flex; align-items: center; gap: 0.35em; padding: 0.15em 0.65em;
+    border-radius: 999px; font-size: 0.76rem; font-weight: 700; letter-spacing: 0.02em;
+    white-space: nowrap; line-height: 1.6;
+  }
+  .pill::before { content: ""; width: 0.45em; height: 0.45em; border-radius: 50%; background: currentColor; }
+  .pill.adopted  { background: var(--adopted-bg);  color: var(--adopted-fg); }
+  .pill.pending  { background: var(--pending-bg);  color: var(--pending-fg); }
+  .pill.rejected { background: var(--rejected-bg); color: var(--rejected-fg); }
+  .pill.neutral  { background: var(--neutral-bg);  color: var(--neutral-fg); }
+
+  /* ---------- callouts ---------- */
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--accent-soft);
+    padding: 0.9rem 1.1rem; border-radius: 0 8px 8px 0; margin: 1rem 0; font-size: 0.94rem;
+  }
+  .callout.note-neutral { border-left-color: var(--text-muted); background: var(--surface-alt); }
+
+  /* ---------- workflow step-flow (top summary) ---------- */
+  .flow { display: flex; flex-direction: column; margin: 1.5rem 0; }
+  .flow-step {
+    display: grid; grid-template-columns: 2.4rem 1fr; gap: 1rem; position: relative; padding-bottom: 1.6rem;
+  }
+  .flow-step:last-child { padding-bottom: 0; }
+  .flow-step:not(:last-child)::before {
+    content: ""; position: absolute; left: 1.15rem; top: 2.4rem; bottom: -0.3rem; width: 2px;
+    background: var(--border);
+  }
+  .flow-num {
+    width: 2.4rem; height: 2.4rem; border-radius: 50%; background: var(--surface-alt);
+    border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono); font-weight: 700; color: var(--accent); font-size: 0.95rem; z-index: 1;
+  }
+  .flow-body { padding-top: 0.15rem; }
+  .flow-title { font-weight: 700; margin: 0 0 0.15rem; }
+  .flow-desc { color: var(--text-muted); font-size: 0.92rem; margin: 0; }
+  .flow-branch {
+    margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap; font-size: 0.82rem;
+  }
+  .branch-tag {
+    border: 1px solid var(--border); border-radius: 6px; padding: 0.15rem 0.55rem; color: var(--text-muted);
+    background: var(--surface);
+  }
+  .branch-tag.stop { color: var(--rejected-fg); border-color: color-mix(in srgb, var(--rejected-fg) 40%, var(--border)); }
+  .branch-tag.go { color: var(--adopted-fg); border-color: color-mix(in srgb, var(--adopted-fg) 40%, var(--border)); }
+
+  /* ---------- role summary grid (top) ---------- */
+  .role-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.9rem; margin: 1.3rem 0; }
+  .role-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.1rem;
+    box-shadow: var(--shadow);
+  }
+  .role-card a { color: inherit; text-decoration: none; }
+  .role-card .role-name { font-weight: 700; margin-bottom: 0.3rem; display: block; }
+  .role-card .role-blurb { color: var(--text-muted); font-size: 0.87rem; margin: 0; }
+
+  /* ---------- score breakdown ---------- */
+  .score-bar-row { display: flex; align-items: center; gap: 0.7rem; margin: 0.3rem 0; }
+  .score-bar-track { flex: 1; height: 8px; background: var(--surface-alt); border-radius: 4px; overflow: hidden; }
+  .score-bar-fill { height: 100%; background: var(--accent); border-radius: 4px; }
+  .score-max { font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-muted); width: 3.4rem; text-align: right; }
+
+  /* ---------- glossary ---------- */
+  .glossary-term { color: var(--accent); font-weight: 700; }
+
+  /* ---------- tuning history (bottom) ---------- */
+  .history-item {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 1.1rem 1.3rem; margin: 0.9rem 0; box-shadow: var(--shadow);
+  }
+  .history-head { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+  .history-title { font-weight: 700; font-size: 1rem; }
+  .history-exp { font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-muted); }
+  .history-grid { display: grid; grid-template-columns: auto 1fr; gap: 0.3rem 0.9rem; font-size: 0.9rem; margin-top: 0.6rem; }
+  .history-grid dt { color: var(--text-muted); white-space: nowrap; }
+  .history-grid dd { margin: 0; }
+
+  footer { padding: 2.5rem 0 1rem; color: var(--text-muted); font-size: 0.82rem; }
+
+  @media (max-width: 640px) {
+    .topbar-nav { display: none; }
+    h1 { font-size: 1.6rem; }
+    .wrap { padding: 0 1.1rem 4rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <span class="topbar-title">AutoTrade</span>
+    <nav class="topbar-nav">
+      <a href="#workflow">Workflow</a>
+      <a href="#council">Council</a>
+      <a href="#risk-voice">Risk Voice</a>
+      <a href="#shield">Shield</a>
+      <a href="#cfo">CFO</a>
+      <a href="#watchman">Watchman</a>
+      <a href="#auditor">Auditor</a>
+      <a href="#glossary">ศัพท์</a>
+      <a href="#history">ประวัติการจูน</a>
+    </nav>
+    <button class="theme-toggle" id="themeToggle" type="button" aria-label="สลับโหมดสว่าง/มืด">โหมดมืด/สว่าง</button>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <header class="hero">
+    <p class="eyebrow">ระบบเทรดอัตโนมัติ · เอกสารอ้างอิง</p>
+    <h1>แต่ละ &ldquo;บทบาท&rdquo; ในระบบทำอะไรบ้าง</h1>
+    <p class="subtitle">
+      คู่มืออธิบายว่าสัญญาณเทรดหนึ่งครั้งเดินทางผ่านขั้นตอนอะไรบ้างตั้งแต่แท่งเทียนปิด
+      จนถึงปิดตำแหน่งและบันทึกผล พร้อมเงื่อนไข/ค่าที่ใช้จริงในระบบตอนนี้ และประวัติการปรับจูนที่ผ่านมา
+      เขียนสำหรับผู้อ่านที่ไม่เคยเทรดมาก่อนก็อ่านเข้าใจได้
+    </p>
+    <div class="meta-row">
+      <span>อัปเดตล่าสุด: <strong>22 ก.ค. 2026</strong></span>
+      <span>อ้างอิงค่าจาก: <strong>config/base.yaml</strong> (ปัจจุบัน)</span>
+      <span>สัญลักษณ์ที่ถือปฏิบัติ: <strong class="pill adopted">ใช้งานจริง</strong> <strong class="pill pending">รอตัดสินใจ</strong> <strong class="pill rejected">ถูกปฏิเสธ</strong></span>
+    </div>
+  </header>
+
+  <!-- ============================================================ -->
+  <section id="workflow">
+    <h2><span class="section-num">00</span> ภาพรวม Workflow แบบย่อ</h2>
+    <p class="lede">
+      ระบบถูกออกแบบเป็น <strong>pipeline ของ 6 &ldquo;บทบาท&rdquo;</strong> ที่ทำงานต่อกันเป็นลำดับ
+      แต่ละบทบาทมีสิทธิ์ &ldquo;ยับยั้ง&rdquo; ไม่ให้ไปต่อได้ถ้าเงื่อนไขของตัวเองไม่ผ่าน —
+      สัญญาณที่ดีอาจถูกระงับได้หลายจุด ไม่ใช่แค่ Council อย่างเดียว
+    </p>
+
+    <div class="role-grid">
+      <div class="role-card"><a href="#council">
+        <span class="role-name">1 · Council</span>
+        <p class="role-blurb">ให้คะแนนว่าน่าซื้อ/น่าขายแค่ไหน จากราคาและอินดิเคเตอร์</p>
+      </a></div>
+      <div class="role-card"><a href="#risk-voice">
+        <span class="role-name">2 · Risk Voice</span>
+        <p class="role-blurb">เช็กว่า &ldquo;เวลานี้&rdquo; ปลอดภัยพอจะเข้าไม้จริงหรือไม่</p>
+      </a></div>
+      <div class="role-card"><a href="#shield">
+        <span class="role-name">3 · Shield</span>
+        <p class="role-blurb">เช็กว่าพอร์ตโดยรวมยังสมดุล ไม่เสี่ยงซ้ำซ้อน</p>
+      </a></div>
+      <div class="role-card"><a href="#cfo">
+        <span class="role-name">4 · CFO</span>
+        <p class="role-blurb">คำนวณว่าไม้นี้ควรใช้เงินเสี่ยงเท่าไหร่</p>
+      </a></div>
+      <div class="role-card"><a href="#watchman">
+        <span class="role-name">5 · Watchman</span>
+        <p class="role-blurb">ดูแลตำแหน่งที่เปิดอยู่ ล็อกกำไร/ตัดขาดทุนตามเงื่อนไข</p>
+      </a></div>
+      <div class="role-card"><a href="#auditor">
+        <span class="role-name">6 · Auditor</span>
+        <p class="role-blurb">บันทึกผล ตัดสินว่าระบบพร้อมขยับไปเทรดเงินจริงหรือยัง</p>
+      </a></div>
+    </div>
+
+    <h3>ลำดับการทำงานจริง (ต่อการปิดแท่งเทียน 1 ครั้ง)</h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-num">1</div>
+        <div class="flow-body">
+          <p class="flow-title">แท่งเทียน H1 ปิด</p>
+          <p class="flow-desc">ระบบตรวจสอบ Kill Switch (ปุ่มหยุดฉุกเฉิน) และ Circuit Breaker (สุขภาพบัญชี) ก่อนเสมอ</p>
+          <div class="flow-branch">
+            <span class="branch-tag stop">ขาดทุนวันนี้ ≥ 2% → หยุดเทรดวันนี้</span>
+            <span class="branch-tag stop">Drawdown ≥ 8% → หยุดทั้งระบบ ต้อง restart เอง</span>
+          </div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">2</div>
+        <div class="flow-body">
+          <p class="flow-title">Council ให้คะแนน Bull/Bear</p>
+          <p class="flow-desc">คำนวณ Stop Loss / Take Profit ทันทีถ้าได้สัญญาณ BUY หรือ SELL</p>
+          <div class="flow-branch"><span class="branch-tag stop">คะแนนไม่ถึงเกณฑ์ → ไม่เทรด</span></div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">3</div>
+        <div class="flow-body">
+          <p class="flow-title">Risk Voice ตรวจสอบรอบแรก</p>
+          <p class="flow-desc">เช็กข่าว, spread, ช่วงเวลาเทรด, ความผันผวนผิดปกติ</p>
+          <div class="flow-branch"><span class="branch-tag stop">ไม่ผ่าน → veto ทันที</span></div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">4</div>
+        <div class="flow-body">
+          <p class="flow-title">Shield ตรวจสอบพอร์ต</p>
+          <p class="flow-desc">correlation, จำนวนตำแหน่งเปิด, สัญญาณซ้ำเร็วเกินไป</p>
+          <div class="flow-branch"><span class="branch-tag stop">ไม่ผ่าน → ระงับไม้นี้</span></div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">5</div>
+        <div class="flow-body">
+          <p class="flow-title">CFO คำนวณขนาดไม้</p>
+          <p class="flow-desc">คิดจาก equity, ระยะ Stop Loss, ขั้นต่ำของ broker</p>
+          <div class="flow-branch"><span class="branch-tag stop">lot ต่ำกว่าขั้นต่ำ broker → ไม่เทรดไม้นี้</span></div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">6</div>
+        <div class="flow-body">
+          <p class="flow-title">Risk Voice ตรวจซ้ำ + ส่งคำสั่ง</p>
+          <p class="flow-desc">เช็กข่าว/spread อีกครั้งก่อนยิงจริง (เผื่อเปลี่ยนระหว่างขั้นตอนก่อนหน้า) แล้วส่งคำสั่งไปที่ broker</p>
+          <div class="flow-branch"><span class="branch-tag go">ผ่าน → เปิดตำแหน่งจริง</span></div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">7</div>
+        <div class="flow-body">
+          <p class="flow-title">Watchman ดูแลต่อเนื่อง</p>
+          <p class="flow-desc">ทุกครั้งที่มีแท่งใหม่ปิด ตรวจว่าโครงสร้างพังหรือยัง, ครบเวลาหรือยัง, ควรล็อกกำไร/เลื่อน stop หรือยัง, มีข่าวเข้ามาไหม</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">8</div>
+        <div class="flow-body">
+          <p class="flow-title">ปิดตำแหน่ง → Auditor บันทึกผล</p>
+          <p class="flow-desc">อัปเดตรายงานประจำวัน และประเมินว่าระบบพร้อม &ldquo;เลื่อนขั้น&rdquo; (เช่นจาก backtest ไป paper trading) หรือควร &ldquo;ถอยขั้น&rdquo; หรือไม่</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="council">
+    <h2><span class="section-num">01</span> Council <span class="role-tag">— ผู้ให้คะแนนสัญญาณ</span></h2>
+    <p class="lede">
+      Council ทำหน้าที่ตอบคำถามเดียว: <em>&ldquo;ตอนนี้ราคามีเหตุผลมากพอจะซื้อหรือขายไหม&rdquo;</em>
+      โดยให้คะแนน 0–100 แยกเป็น 2 เสียง (voice) อิสระจากกัน — <strong>Bull Voice</strong> (มองหาเหตุผลฝั่งซื้อ)
+      และ <strong>Bear Voice</strong> (มองหาเหตุผลฝั่งขาย) คิดจากสูตรตายตัว ไม่ใช่ดุลยพินิจ
+    </p>
+
+    <h3>เงื่อนไขการให้คะแนน (คะแนนเต็ม 100 ต่อฝั่ง แบ่งเป็น 5 องค์ประกอบ)</h3>
+    <div class="table-scroll">
+      <table>
+        <caption>Bull Voice (หาเหตุผลฝั่งซื้อ) — Bear Voice ใช้ตรรกะเดียวกันแต่กลับทิศทาง</caption>
+        <thead>
+          <tr><th>องค์ประกอบ</th><th class="num">คะแนนเต็ม</th><th>เงื่อนไขที่ได้คะแนน</th><th>เหตุผล</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>แนวโน้ม</b> (Trend Alignment)</td>
+            <td class="num">30</td>
+            <td>EMA20 &gt; EMA50 &gt; EMA200 → 30 แต้ม<br>EMA20 &gt; EMA50 เท่านั้น → 15 แต้ม<br>นอกนั้น → 0</td>
+            <td>เส้นค่าเฉลี่ยเรียงจากเร็วไปช้าตามลำดับ = แนวโน้มขาขึ้นชัดเจน</td>
+          </tr>
+          <tr>
+            <td><b>โมเมนตัม RSI</b></td>
+            <td class="num">20</td>
+            <td>RSI(14) อยู่ในช่วง 50–70 → 20 แต้ม</td>
+            <td>โซนที่กำลังซื้อแข็งแรงแต่ยังไม่ &ldquo;ซื้อมากเกินไป&rdquo; (overbought)</td>
+          </tr>
+          <tr>
+            <td><b>โมเมนตัม MACD</b></td>
+            <td class="num">15</td>
+            <td>MACD histogram เป็นบวก <em>และ</em> มากกว่าแท่งก่อนหน้า → 15 แต้ม</td>
+            <td>แรงซื้อไม่ใช่แค่เป็นบวก แต่กำลัง &ldquo;เร่ง&rdquo; ขึ้นด้วย</td>
+          </tr>
+          <tr>
+            <td><b>โครงสร้างราคา</b> (Market Structure)</td>
+            <td class="num">20</td>
+            <td>ยืนยันเป็น &ldquo;Higher Low&rdquo; (จุดต่ำสุดใหม่สูงกว่าจุดต่ำสุดก่อนหน้า)</td>
+            <td>รูปแบบราคาขาขึ้นแบบคลาสสิก ไม่ใช่แค่ตัวเลขอินดิเคเตอร์</td>
+          </tr>
+          <tr>
+            <td><b>Confluence</b> (จุดราคาสำคัญ)</td>
+            <td class="num">15</td>
+            <td>ราคาปัจจุบันอยู่ใกล้ &ldquo;เลขกลม&rdquo; หรือจุด pivot ของเมื่อวาน (ในระยะ 0.5×ATR)</td>
+            <td>หลายคนจับตาราคาบริเวณนี้พร้อมกัน มักเป็นจุดกลับตัว/ยืนยัน</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="lede" style="font-size:0.88rem;">
+      Bear Voice คิดแบบเดียวกันทุกจุดแต่กลับทิศทาง เช่น แนวโน้มต้อง EMA20 &lt; EMA50 &lt; EMA200,
+      RSI ต้องอยู่ 30–50, MACD histogram ต้องติดลบและยิ่งติดลบมากขึ้น, โครงสร้างต้องเป็น &ldquo;Lower High&rdquo;
+    </p>
+
+    <h3>ตารางตัดสินใจ (Decision Matrix) — เอาคะแนนสองฝั่งมาเทียบกัน</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>เงื่อนไข</th><th>ผลลัพธ์</th></tr></thead>
+        <tbody>
+          <tr><td>Bull ≥ 70 <b>และ</b> Bear &lt; 40</td><td><span class="pill adopted">เปิดไม้ BUY</span></td></tr>
+          <tr><td>Bear ≥ 70 <b>และ</b> Bull &lt; 40</td><td><span class="pill adopted">เปิดไม้ SELL</span></td></tr>
+          <tr><td>ทั้งสองฝั่ง ≥ 55 (<code>conflict_threshold</code>)</td><td><span class="pill neutral">ไม่เทรด — สัญญาณขัดแย้งกัน</span></td></tr>
+          <tr><td>ฝั่งหนึ่ง ≥ 70 แต่อีกฝั่งอยู่ 40–54 (ไม่เข้าเงื่อนไข BUY/SELL แต่ก็ไม่ถึงขั้น &ldquo;ขัดแย้ง&rdquo;)</td><td><span class="pill neutral">ไม่เทรด — แต่บันทึกไว้ดูย้อนหลัง</span></td></tr>
+          <tr><td>ไม่มีฝั่งไหนถึง 70 แต่มีฝั่งใดฝั่งหนึ่งอยู่ 60–69 (เฉียดเกณฑ์)</td><td><span class="pill neutral">ไม่เทรด — แต่บันทึกไว้ดูย้อนหลัง</span></td></tr>
+          <tr><td>นอกเหนือจากทั้งหมดข้างต้น</td><td><span class="pill neutral">ไม่เทรด — คะแนนไม่พอ ไม่มีอะไรน่าสนใจ</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout note-neutral">
+      <strong>ทำไมต้องบันทึกเคสที่ &ldquo;เฉียดเกณฑ์&rdquo; ไว้ด้วย:</strong> แม้จะไม่เทรดจริง แต่ระบบจำลอง (Auditor)
+      จะย้อนกลับไปดูว่าถ้าเทรดเคสเหล่านี้จริงจะเป็นอย่างไร — ถ้าในระยะยาวเคสเฉียดเกณฑ์เหล่านี้ทำกำไรได้ดีสม่ำเสมอ
+      อาจเป็นสัญญาณว่าเกณฑ์ 70 แต้มเข้มงวดเกินไป โดยไม่ต้องเดา ใช้ข้อมูลจริงตัดสิน
+    </div>
+
+    <h3>เมื่อสัญญาณผ่าน — คำนวณจุดเข้า/ออกทันที</h3>
+    <ul class="role-why">
+      <li><b>Stop Loss</b> — วางให้ต่ำกว่าจุดต่ำสุด (BUY) หรือสูงกว่าจุดสูงสุด (SELL) ของโครงสร้างที่เพิ่งยืนยัน บวกระยะกันชนเพิ่ม</li>
+      <li><b>Take Profit</b> — ตั้งเป้าไว้ที่ 2 เท่าของระยะ Stop Loss (2R) เสมอ</li>
+    </ul>
+
+    <h3>เงื่อนไข/Threshold ปัจจุบัน</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Parameter</th><th class="num">ค่าปัจจุบัน</th><th>ความหมาย</th></tr></thead>
+        <tbody>
+          <tr><td><code>bull_threshold</code></td><td class="num">70</td><td>คะแนนขั้นต่ำที่ Bull ต้องถึงเพื่อเปิดไม้ BUY</td></tr>
+          <tr><td><code>bear_threshold</code></td><td class="num">70</td><td>คะแนนขั้นต่ำที่ Bear ต้องถึงเพื่อเปิดไม้ SELL</td></tr>
+          <tr><td><code>conflict_threshold</code></td><td class="num">55</td><td>ถ้าทั้งสองฝั่งถึงค่านี้พร้อมกัน = สัญญาณขัดแย้งกัน ไม่เทรด</td></tr>
+          <tr><td><code>sl_buffer_atr</code></td><td class="num">0.2</td><td>ระยะกันชนเพิ่มจากจุดสูงสุด/ต่ำสุด หน่วยเป็นเท่าของ ATR (ตัวชี้วัดความผันผวน)</td></tr>
+          <tr><td><code>sl_min_atr</code></td><td class="num">0.8</td><td>Stop Loss ต้องกว้างอย่างน้อย 0.8×ATR กันโดน &ldquo;สัญญาณรบกวน&rdquo; เตะออกง่ายเกินไป</td></tr>
+          <tr><td><code>sl_max_atr</code></td><td class="num">2.5</td><td>Stop Loss ห้ามกว้างเกิน 2.5×ATR กันเสี่ยงมากเกินไปต่อไม้</td></tr>
+          <tr><td><code>tp_r_multiple</code></td><td class="num">2.0</td><td>เป้าหมายกำไร = 2 เท่าของความเสี่ยงที่ตั้งไว้ (2R)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>ประวัติการปรับจูน</h3>
+    <p><span class="pill rejected">ถูกปฏิเสธ</span> ทดสอบ 2 รอบ (<span class="history-exp">EXP-002, EXP-009</span>) ลอง <code>tp_r_multiple</code> ตั้งแต่ 1.5 ถึง 2.5 — ค่า 2.0 ที่ใช้อยู่ยังคงเป็นค่าที่ดีที่สุด แข็งแรงในทุกปีที่ทดสอบ ค่าอื่นล้มเหลวเมื่อเจอปีที่ตลาดผันผวนสูง (2021–22)</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="risk-voice">
+    <h2><span class="section-num">02</span> Risk Voice <span class="role-tag">— ประตูความปลอดภัยของ Council</span></h2>
+    <p class="lede">
+      แม้ Council จะให้คะแนนดี แต่ &ldquo;ตอนนี้&rdquo; อาจไม่ใช่เวลาที่เหมาะเข้าไม้ — Risk Voice มีหน้าที่ตอบคำถามนี้โดยเฉพาะ
+    </p>
+    <ul class="role-why">
+      <li><b>ข่าวเศรษฐกิจสำคัญกำลังจะประกาศ</b> — ราคาอาจกระโดดแรงเกินคาดการณ์ในไม่กี่วินาที</li>
+      <li><b>Spread กว้างผิดปกติ</b> — ต้นทุนการเข้า/ออกไม้ (ส่วนต่างราคาซื้อ-ขาย) สูงเกินคุ้ม</li>
+      <li><b>นอกช่วงเวลาที่เหมาะสม</b> — เช่น ใกล้ปิดตลาดวันศุกร์ที่เสี่ยงราคากระโดดข้ามวันหยุด</li>
+      <li><b>ตลาดผันผวนผิดปกติ</b> — ความผันผวนสูงกว่าค่าเฉลี่ยมาก อาจเป็นช่วง panic ที่คาดเดาไม่ได้</li>
+    </ul>
+
+    <h3>เงื่อนไข/Threshold ปัจจุบัน</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Parameter</th><th class="num">ค่าปัจจุบัน</th><th>ความหมาย</th></tr></thead>
+        <tbody>
+          <tr><td><code>max_spread_multiple</code></td><td class="num">1.5</td><td>Spread ตอนนี้ห้ามเกิน 1.5 เท่าของค่าเฉลี่ย 20 วัน</td></tr>
+          <tr><td><code>max_spread_points_xauusd</code></td><td class="num">35</td><td>เพดานตายตัวสำหรับทองคำ: spread ห้ามเกิน 35 จุด ไม่ว่าค่าเฉลี่ยจะเป็นเท่าไหร่</td></tr>
+          <tr><td><code>news_blackout_before_min</code></td><td class="num">45</td><td>ห้ามเปิดไม้ใหม่ 45 นาที <b>ก่อน</b> ข่าวสำคัญ</td></tr>
+          <tr><td><code>news_blackout_after_min</code></td><td class="num">30</td><td>ห้ามเปิดไม้ใหม่ 30 นาที <b>หลัง</b> ข่าวสำคัญ</td></tr>
+          <tr><td><code>max_stop_atr_multiple</code></td><td class="num">2.5</td><td>Stop Loss ที่ Council คำนวณมาต้อง ≤ 2.5×ATR ซ้ำอีกชั้น</td></tr>
+          <tr><td><code>session_start_hour</code></td><td class="num">0</td><td>เริ่มอนุญาตให้เทรดตั้งแต่ชั่วโมงนี้ (เวลา server)</td></tr>
+          <tr><td><code>session_end_hour</code></td><td class="num">24</td><td>ช่วง [0, 24) = อนุญาตเทรดได้ตลอด 24 ชั่วโมง</td></tr>
+          <tr><td><code>friday_close_hour</code></td><td class="num">20</td><td>วันศุกร์ห้ามเปิดไม้ใหม่หลัง 20:00 กันความเสี่ยงข้ามวันหยุดสุดสัปดาห์</td></tr>
+          <tr><td><code>max_atr_panic_multiple</code></td><td class="num">3.0</td><td>ถ้าความผันผวนพุ่งเกิน 3 เท่าของค่าเฉลี่ย = ตลาด panic → ระงับทุกไม้</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>ประวัติการปรับจูน</h3>
+    <p><span class="pill adopted">ใช้งานจริง</span> <span class="history-exp">EXP-003</span> — ทดสอบเปรียบเทียบ &ldquo;เทรดได้แค่ช่วง 14:00–18:00&rdquo (เดิม) กับ &ldquo;เทรดได้ตลอด 24 ชั่วโมง&rdquo; พบว่าเปิดตลอด 24 ชม. ชนะใน 4 จาก 5 ปีที่ทดสอบ (รวมปีที่กันไว้ทดสอบสุดท้ายด้วย) — ช่วงเดิมบังเอิญปิดกั้นเวลาที่ทำกำไรได้ดีจากตลาดเอเชียไปด้วย จึงเปลี่ยนเป็นเปิดตลอด 24 ชม.</p>
+    <p><span class="pill rejected">ถูกปฏิเสธ</span> <span class="history-exp">EXP-004</span> — ทดสอบทางเลือกกลางๆ คือเปิดตลอดยกเว้นชั่วโมง 22:00–24:00 (ช่วงเปลี่ยนกะตลาด) ผลปรากฏว่าแย่กว่าเปิดตลอด 24 ชม.เฉยๆ เพราะ &ldquo;ชั่วโมง 22-23 ขาดทุน&rdquo; ที่ดูเหมือนจริงในภาพรวมหลายปี จริงๆ แล้วไม่ได้เกิดขึ้นสม่ำเสมอทุกปี</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="shield">
+    <h2><span class="section-num">03</span> Shield <span class="role-tag">— ตรวจสอบความสมดุลของพอร์ต</span></h2>
+    <p class="lede">
+      ต่อให้ไม้นี้ดีเดี่ยวๆ แต่ถ้าเปิดแล้วทำให้พอร์ตโดยรวมเสี่ยงเกินไป (เช่น เปิดไม้ที่เคลื่อนไหวตามกันเยอะเกินไป)
+      ก็ไม่ควรเปิด — Shield ตรวจสอบภาพรวมทั้งพอร์ต ไม่ใช่แค่ไม้เดียว
+    </p>
+    <ul class="role-why">
+      <li><b>อัตราส่วนกำไรต่อความเสี่ยง (Reward:Risk)</b> — กำไรที่คาดหวังต้องคุ้มกับความเสี่ยงที่รับ</li>
+      <li><b>Correlation guard</b> — ถ้ามีตำแหน่งอื่นที่ราคามักขยับไปทางเดียวกันอยู่แล้ว การเปิดเพิ่มคือเสี่ยงซ้ำ ไม่ใช่กระจายความเสี่ยง</li>
+      <li><b>จำนวนตำแหน่งสูงสุด</b> — กันไม่ให้เปิดพร้อมกันเยอะเกินจนควบคุมความเสี่ยงรวมไม่ได้</li>
+      <li><b>คูลดาวน์สัญญาณซ้ำ</b> — กันไม่ให้เปิดไม้เดิมซ้ำเร็วเกินไปจากสัญญาณที่โดยเนื้อแท้ก็คือสัญญาณเดียวกัน</li>
+    </ul>
+
+    <h3>เงื่อนไข/Threshold ปัจจุบัน</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Parameter</th><th class="num">ค่าปัจจุบัน</th><th>ความหมาย</th></tr></thead>
+        <tbody>
+          <tr><td><code>min_rr</code></td><td class="num">1.5</td><td>อัตราส่วนกำไรต่อความเสี่ยงขั้นต่ำ = เสี่ยง 1 ต้องหวังกำไรอย่างน้อย 1.5</td></tr>
+          <tr><td><code>max_correlation</code></td><td class="num">0.7</td><td>ปฏิเสธไม้ใหม่ถ้าเคลื่อนไหวสัมพันธ์กับตำแหน่งที่เปิดอยู่มากกว่า 0.7 (0=ไม่เกี่ยว, 1=เคลื่อนตามกันเป๊ะ)</td></tr>
+          <tr><td><code>max_positions_per_symbol</code></td><td class="num">1</td><td>เปิดได้สูงสุด 1 ตำแหน่งต่อสัญลักษณ์ (เช่น ทองคำได้ 1 ไม้พร้อมกัน)</td></tr>
+          <tr><td><code>max_positions_total</code></td><td class="num">3</td><td>เปิดพร้อมกันได้สูงสุด 3 ตำแหน่งทั้งพอร์ต</td></tr>
+          <tr><td><code>total_risk_ceiling_pct</code></td><td class="num">3.0</td><td>ผลรวมความเสี่ยงของทุกตำแหน่งที่เปิดอยู่ ≤ 3.0% ของบัญชี</td></tr>
+          <tr><td><code>duplicate_signal_cooldown_hours</code></td><td class="num">4.0</td><td>หลังปิดตำแหน่งหนึ่งแล้ว ห้ามเปิดสัญญาณเดิมซ้ำภายใน 4 ชั่วโมง</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>ประวัติการปรับจูน</h3>
+    <p><span class="pill neutral">ยังไม่มีการทดลอง</span> ใช้ค่าตั้งต้นตามสเปกเดิม ยังไม่มีการทดสอบปรับจูนพารามิเตอร์กลุ่มนี้</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="cfo">
+    <h2><span class="section-num">04</span> CFO <span class="role-tag">— ผู้จัดการขนาดเงินเสี่ยง</span></h2>
+    <p class="lede">
+      CFO ตอบคำถาม: <em>&ldquo;ไม้นี้ควรเสี่ยงเงินเท่าไหร่&rdquo;</em> — ไม่ว่าสัญญาณจะดูดีแค่ไหน
+      ถ้าคำนวณแล้วขนาดไม้เล็กเกินกว่าที่โบรกเกอร์อนุญาต ก็จะไม่เปิดไม้นั้นเลย ดีกว่าฝืนเสี่ยงเกินแผนที่วางไว้
+    </p>
+    <div class="table-scroll">
+      <table>
+        <caption>สูตรคำนวณขนาดไม้ (position size)</caption>
+        <tbody>
+          <tr><td style="width:40%">จำนวนเงินที่ยอมเสี่ยงในไม้นี้</td><td><code>equity × risk_per_trade_pct</code></td></tr>
+          <tr><td>ระยะห่างจากจุดเข้าไปยัง Stop Loss</td><td><code>entry − stop_loss</code></td></tr>
+          <tr><td>ขนาดไม้ที่คำนวณได้</td><td><code>risk_amount ÷ (stop_distance × point_value)</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="lede">ผลลัพธ์: ไม่ว่า Stop Loss จะกว้างหรือแคบแค่ไหน เงินที่เสี่ยงจริงต่อไม้จะเท่ากันเสมอ (เป็น % ของบัญชี)</p>
+
+    <h3>เงื่อนไข/Threshold ปัจจุบัน</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Parameter</th><th class="num">ค่าปัจจุบัน</th><th>ความหมาย</th></tr></thead>
+        <tbody>
+          <tr><td><code>risk_per_trade_pct</code></td><td class="num">1.0</td><td>เสี่ยงเงิน 1.0% ของบัญชีต่อไม้</td></tr>
+          <tr><td><code>daily_loss_limit_pct</code></td><td class="num">2.0</td><td>ขาดทุนสะสมวันนี้ถึง 2% → หยุดเทรดจนกว่าจะถึงวันถัดไป</td></tr>
+          <tr><td><code>max_consecutive_losses</code></td><td class="num">3</td><td>แพ้ติดกัน 3 ไม้ → หยุดเทรด 24 ชั่วโมง</td></tr>
+          <tr><td><code>max_drawdown_halt_pct</code></td><td class="num">8.0</td><td>ขาดทุนจากจุดสูงสุด (drawdown) ถึง 8% → หยุดทั้งระบบ ต้องเข้ามา restart ด้วยมือ</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>ประวัติการปรับจูน</h3>
+    <p><span class="pill adopted">ใช้งานจริง</span> ปรับ <code>risk_per_trade_pct</code> จาก 0.5% เป็น <b>1.0%</b> เมื่อ 22 ก.ค. 2026 หลังพบเหตุการณ์จริง: สัญญาณที่ผ่านทุกด่านแล้วถูกทิ้งเพราะคำนวณขนาดไม้ได้ต่ำกว่าขั้นต่ำของโบรกเกอร์ (0.01 lot) — วัดผลแล้วพบว่าที่ 0.5% สัญญาณถูกทิ้งไปถึง ~72% เพราะบัญชีทดลอง $3,000 เล็กเกินไปเทียบกับระยะ Stop Loss ของทองคำ ที่ 1.0% อัตราการถูกทิ้งลดลงเหลือ ~52% โดยความเสียหายสูงสุดต่อไม้/ต่อรอบแพ้ติดยังอยู่ในระดับที่รับได้ (ประมาณ $60 ต่อไม้, $307 ต่อรอบแพ้ติด) — การวัดผลเดียวกันนี้ยัง flag ไว้ว่าการเพิ่มเงินฝากในบัญชีทดลอง (เช่นเป็น $10,000) จะแก้ปัญหานี้ได้ตรงจุดกว่าการเพิ่ม risk% ต่อไปอีก</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="watchman">
+    <h2><span class="section-num">05</span> Watchman <span class="role-tag">— ผู้ดูแลตำแหน่งที่เปิดอยู่</span></h2>
+    <p class="lede">
+      เมื่อไม้เปิดไปแล้ว งานยังไม่จบ — Watchman ทำงานต่อเนื่องทุกครั้งที่มีแท่งเทียนใหม่ปิด
+      เพื่อตัดสินใจว่าควรล็อกกำไรไว้ก่อน, เลื่อน Stop Loss ตามราคา, หรือปิดไม้ทันทีเพราะเหตุผลบางอย่าง
+    </p>
+    <ul class="role-why">
+      <li><b>ล็อกกำไร (Breakeven)</b> — เมื่อกำไรถึง 1.0R เลื่อน Stop Loss มาที่ราคาเข้า เพื่อให้ไม้นี้ &ldquo;ขาดทุนไม่ได้อีกแล้ว&rdquo; อย่างมากก็แค่เสมอตัว</li>
+      <li><b>ตาม Stop Loss ให้ราคา (Trailing)</b> — เมื่อกำไรเกิน 1.5R เลื่อน Stop Loss ตามราคาขึ้นไปเรื่อยๆ เพื่อล็อกกำไรเพิ่ม</li>
+      <li><b>ตรวจจับโครงสร้างพัง (Structure Invalidation)</b> — ถ้าราคาทำลายจุดโครงสร้างที่ใช้เป็นเหตุผลเข้าไม้ตั้งแต่แรก แปลว่าสมมติฐานเดิมผิดแล้ว → ปิดทันที ไม่รอ Stop Loss</li>
+      <li><b>ไม้ค้าง (Time Stop)</b> — ไม้ที่เปิดมานานเกินไปแล้วยังไม่ไปทางไหนชัดเจน (กำไร/ขาดทุนน้อยมาก) → ปิดทิ้ง ไม่ปล่อยให้เงินจมอยู่เฉยๆ</li>
+      <li><b>ป้องกันข่าว (News Protection)</b> — ถ้าข่าวสำคัญใกล้เข้ามาและไม้นี้มีกำไรอยู่แล้ว → ปิดครึ่งหนึ่งเก็บกำไรไว้ก่อน กันข่าวทำราคาผันผวนจนพลิกกลับ</li>
+    </ul>
+
+    <h3>เงื่อนไข/Threshold ปัจจุบัน</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Parameter</th><th class="num">ค่าปัจจุบัน</th><th>ความหมาย</th></tr></thead>
+        <tbody>
+          <tr><td><code>breakeven_at_r</code></td><td class="num">1.0</td><td>เลื่อน Stop Loss มาที่ราคาเข้า เมื่อกำไร ≥ 1.0R</td></tr>
+          <tr><td><code>trail_start_r</code></td><td class="num">1.5</td><td>เริ่มเลื่อน Stop Loss ตามราคา เมื่อกำไร ≥ 1.5R</td></tr>
+          <tr><td><code>trail_distance_atr</code></td><td class="num">1.0</td><td>Stop Loss ที่เลื่อนตามจะห่างจากราคาสูงสุดล่าสุด 1.0 เท่าของ ATR</td></tr>
+          <tr><td><code>time_stop_hours</code></td><td class="num">48</td><td>ไม้ที่เปิดเกิน 48 ชั่วโมงและยังเป็น &ldquo;ไม้ค้าง&rdquo; จะถูกปิด</td></tr>
+          <tr><td><code>dead_trade_r_band</code></td><td class="num">0.3</td><td>นิยาม &ldquo;ไม้ค้าง&rdquo; = กำไร/ขาดทุนอยู่ในช่วง ±0.3R เท่านั้น</td></tr>
+          <tr><td><code>news_window_minutes</code></td><td class="num">30</td><td>เริ่มป้องกันข่าวล่วงหน้า 30 นาทีก่อนข่าวประกาศ</td></tr>
+          <tr><td><code>news_profit_threshold_r</code></td><td class="num">0.5</td><td>ปิดครึ่งไม้เมื่อมีข่าวเข้ามาและไม้มีกำไร ≥ 0.5R</td></tr>
+          <tr><td><code>connectivity_timeout_minutes</code></td><td class="num">5</td><td>ขาดการเชื่อมต่อ MT5 เกิน 5 นาที → แจ้งเตือน</td></tr>
+          <tr><td><code>breakeven_enabled</code></td><td class="num">false</td><td>สวิตช์เปิด/ปิดกลไก breakeven — <span class="pill adopted">ปิดอยู่</span> (ADOPTED 22 ก.ค. 2026)</td></tr>
+          <tr><td><code>trail_enabled</code></td><td class="num">false</td><td>สวิตช์เปิด/ปิดกลไก trailing stop — <span class="pill adopted">ปิดอยู่</span> (ADOPTED 22 ก.ค. 2026)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <strong>ข้อค้นพบสำคัญ (แก้ไขแล้ว):</strong> การทดสอบพบว่ากลไก breakeven+trailing ที่ค่าเดิมกลับ &ldquo;ทำร้าย&rdquo;
+      ผลกำไรในการจำลองย้อนหลัง เพราะเริ่มทำงานเร็วเกินไป (ที่ 1.0R/1.5R) ก่อนที่ไม้จะไปถึงเป้าหมายจริงที่ 2.0R
+      ทำให้ไม้ที่ควรจะได้กำไรเต็มเป้าถูกตัดจบเร็วเกินไปบ่อยครั้ง — <strong>ปิดกลไกทั้งสองไปแล้ว</strong> (22 ก.ค. 2026)
+      หลังยืนยันผลด้วย 3 วิธีอิสระ ดูรายละเอียดในส่วน
+      <a href="#history">ประวัติการปรับจูน</a> ด้านล่าง
+    </div>
+
+    <h3>ประวัติการปรับจูน</h3>
+    <p><span class="pill adopted">ใช้งานจริง</span> ดูหัวข้อ <strong><a href="#history">08. ประวัติการปรับจูนโดยละเอียด</a></strong> ด้านล่างของเอกสาร สำหรับรายละเอียดการทดสอบและ joint verification ที่นำไปสู่การตัดสินใจนี้</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="auditor">
+    <h2><span class="section-num">06</span> Auditor <span class="role-tag">— ผู้บันทึกและประเมินผล</span></h2>
+    <p class="lede">
+      Auditor คือผู้ตัดสินว่า &ldquo;ระบบนี้พร้อมขยับไปขั้นถัดไปหรือยัง&rdquo; — เช่น จากการทดสอบย้อนหลังล้วนๆ (backtest)
+      ไปสู่การเทรดจริงแบบไม่ใช้เงินจริง (paper trading) แล้วค่อยไปสู่เงินจริงทีละน้อย ทุกขั้นต้องผ่านเกณฑ์ที่วางไว้ล่วงหน้า
+      ไม่ใช่ความรู้สึกว่า &ldquo;น่าจะพร้อมแล้ว&rdquo;
+    </p>
+    <ul class="role-why">
+      <li>บันทึกจำนวนไม้ที่เทรด, กำไร/ขาดทุนแต่ละไม้, และ <span class="glossary-term">Profit Factor</span> (ทำกำไรได้กี่เท่าของที่ขาดทุนไป)</li>
+      <li>บันทึกสัญญาณที่ถูกระงับโดย Council / Risk Voice / Shield ไว้ด้วย เพื่อดูภาพรวมว่าระบบเข้มงวดเกินไปหรือไม่</li>
+    </ul>
+
+    <h3>เกณฑ์การเลื่อนขั้น (Promotion Gates)</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>จากขั้น</th><th>ไปขั้น</th><th>ต้องผ่านทุกข้อ</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>ทดสอบย้อนหลัง<br>(Backtest)</td>
+            <td>เทรดจำลอง<br>(Paper)</td>
+            <td>ทดสอบกับข้อมูลที่ไม่เคยใช้จูนค่าเลย: Profit Factor ≥ 1.3, ขาดทุนสูงสุด ≤ 15%, อย่างน้อย 200 ไม้, รวมต้นทุนจริงครบ (spread+ค่าคอม+slippage)</td>
+          </tr>
+          <tr>
+            <td>เทรดจำลอง<br>(Paper)</td>
+            <td>เงินจริงระยะแรก<br>(Live Ramp)</td>
+            <td>≥ 100 ไม้ หรือ ≥ 16 สัปดาห์, Profit Factor ≥ 1.2, ขาดทุนสูงสุด ≤ 12%, ผลจริงต่างจาก backtest ไม่เกิน 30%</td>
+          </tr>
+          <tr>
+            <td>เงินจริงระยะแรก<br>(Live Ramp)</td>
+            <td>เงินจริงเต็มขนาด<br>(Full Size)</td>
+            <td>≥ 3 เดือนที่ risk 0.25%, Profit Factor ≥ 1.2, ไม่โดน circuit breaker ระดับรุนแรง, ต้นทุนจริงไม่ทำให้ขาดทุน</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>ประวัติการปรับจูน</h3>
+    <p><span class="pill neutral">ยังไม่มีการทดลอง</span> เกณฑ์การเลื่อน/ถอดขั้นเหล่านี้ยังไม่เคยถูกปรับ — เป็นกฎที่ตั้งใจให้แข็ง ไม่ปรับตามผลการทดลองอื่นๆ เพื่อป้องกันการ &ldquo;จูนเกณฑ์ให้ผ่านง่ายขึ้น&rdquo; โดยไม่ตั้งใจ</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="glossary">
+    <h2><span class="section-num">07</span> ศัพท์พื้นฐาน <span class="role-tag">— สำหรับผู้ไม่เคยเทรดมาก่อน</span></h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>คำศัพท์</th><th>ความหมาย</th><th>ตัวอย่าง</th></tr></thead>
+        <tbody>
+          <tr><td class="glossary-term">Position / ไม้</td><td>ตำแหน่งเทรดที่เปิดอยู่ (ซื้อหรือขาย)</td><td>&ldquo;เปิดไม้ BUY ทองคำ&rdquo;</td></tr>
+          <tr><td class="glossary-term">Stop Loss (SL)</td><td>ราคาที่ตั้งไว้ล่วงหน้าเพื่อปิดไม้อัตโนมัติถ้าขาดทุนถึงจุดนี้ — เหมือนตาข่ายนิรภัย</td><td>เข้าที่ 2000, SL ที่ 1990 = ขาดทุนสูงสุด 10 จุด</td></tr>
+          <tr><td class="glossary-term">Take Profit (TP)</td><td>ราคาที่ตั้งไว้ล่วงหน้าเพื่อปิดไม้อัตโนมัติเมื่อกำไรถึงเป้า</td><td>TP ที่ 2020 = ปิดขายเมื่อได้กำไร 20 จุด</td></tr>
+          <tr><td class="glossary-term">Spread</td><td>ส่วนต่างระหว่างราคาซื้อกับราคาขาย ณ ขณะนั้น — คือต้นทุนแฝงของการเทรด</td><td>ราคาซื้อ 2000.5 / ราคาขาย 2000.8 = spread 0.3 จุด</td></tr>
+          <tr><td class="glossary-term">Profit Factor (PF)</td><td>เงินรวมที่กำไรทั้งหมด หารด้วยเงินรวมที่ขาดทุนทั้งหมด — ต้องมากกว่า 1.0 ถึงจะเรียกว่ากำไรสุทธิ</td><td>PF 1.2 = ได้กำไรรวม $120 จากทุก $100 ที่ขาดทุน → กำไรสุทธิ +$20</td></tr>
+          <tr><td class="glossary-term">R / ขนาดความเสี่ยง</td><td>ระยะห่างจากจุดเข้าถึง Stop Loss ใช้เป็น &ldquo;หน่วยวัดความเสี่ยง&rdquo; ของไม้นั้น</td><td>เข้าที่ 2000, SL ที่ 1990 → 1R = 10 จุด</td></tr>
+          <tr><td class="glossary-term">R-multiple</td><td>กำไร/ขาดทุนที่ได้จริง วัดเป็นกี่เท่าของ R</td><td>ถ้า 1R = 10 จุด แล้วได้กำไร 20 จุด = 2R</td></tr>
+          <tr><td class="glossary-term">Drawdown (DD)</td><td>เงินทุนลดลงมากที่สุดกี่ % จากจุดสูงสุดล่าสุด — วัด &ldquo;ความเจ็บปวดชั่วขณะ&rdquo; ของกลยุทธ์</td><td>เคยมีกำไรถึง $1,000 แล้วลดลงเหลือ $950 = Drawdown 5%</td></tr>
+          <tr><td class="glossary-term">ATR (Average True Range)</td><td>ตัวชี้วัดความผันผวนของราคาโดยเฉลี่ยในช่วงเวลาหนึ่ง ใช้กำหนดว่า &ldquo;ปกติแล้วราคาขยับแค่ไหน&rdquo;</td><td>ATR = 20 จุด แปลว่าปกติราคาขยับประมาณ 20 จุดต่อชั่วโมง</td></tr>
+          <tr><td class="glossary-term">Correlation</td><td>ความสัมพันธ์ของการเคลื่อนไหวราคาระหว่างสองสินทรัพย์ — 0 คือไม่เกี่ยวกันเลย, 1 คือเคลื่อนไปทางเดียวกันเป๊ะ</td><td>ทองคำกับเงิน correlation 0.8 = มักขึ้นลงพร้อมกัน</td></tr>
+          <tr><td class="glossary-term">Slippage</td><td>ราคาที่ได้จริงต่างจากราคาที่สั่งไว้ — ความเสียดทานในการส่งคำสั่ง</td><td>สั่งที่ 2000.0 แต่ได้ราคาจริง 2000.5 = slippage 0.5 จุด</td></tr>
+          <tr><td class="glossary-term">News Blackout</td><td>ช่วงเวลาห้ามเปิดไม้ใหม่เพราะมีข่าวเศรษฐกิจสำคัญกำลังจะประกาศ</td><td>ก่อนประกาศดอกเบี้ย Fed 45 นาที ห้ามเข้าไม้ใหม่</td></tr>
+          <tr><td class="glossary-term">Session</td><td>ช่วงเวลาซื้อขายของแต่ละภูมิภาค — ลอนดอนตอนเช้า, นิวยอร์กตอนบ่าย, เอเชียตอนกลางคืน (เวลาไทย)</td><td>ช่วงเอเชียมักซื้อขายเบาบางกว่าช่วงลอนดอน/นิวยอร์ก</td></tr>
+          <tr><td class="glossary-term">Circuit Breaker</td><td>กลไกความปลอดภัยอัตโนมัติที่หยุดระบบเมื่อขาดทุนหรือความเสี่ยงเกินเกณฑ์ที่ตั้งไว้</td><td>ขาดทุนวันนี้ถึง 2% → ระบบไม่เปิดไม้ใหม่จนกว่าจะถึงวันถัดไป</td></tr>
+          <tr><td class="glossary-term">Breakeven</td><td>การเลื่อน Stop Loss มาไว้ที่ราคาที่เข้าไม้พอดี — ทำให้ไม้นี้ &ldquo;ขาดทุนไม่ได้อีกแล้ว&rdquo;</td><td>เข้าที่ 2000 กำไรถึง 1R (ราคา 2010) → เลื่อน SL จาก 1990 ไปที่ 2000</td></tr>
+          <tr><td class="glossary-term">Trailing Stop</td><td>Stop Loss ที่เลื่อนตามราคาที่วิ่งไปในทางที่ดีขึ้นเรื่อยๆ เพื่อล็อกกำไรเพิ่ม</td><td>ราคาขึ้นไปสูงสุด 2050 เลื่อน SL ตามไปที่ 2030</td></tr>
+          <tr><td class="glossary-term">Structure Invalidation</td><td>การปิดไม้เพราะโครงสร้างราคาที่ใช้เป็นเหตุผลเข้าไม้ตั้งแต่แรกถูกทำลายไปแล้ว</td><td>เข้า BUY เพราะราคายืนเหนือจุดต่ำสุดเดิม — ถ้าราคาหลุดจุดนั้นลงไป = สมมติฐานผิด ปิดทันที</td></tr>
+          <tr><td class="glossary-term">Lot size</td><td>หน่วยขนาดของการเทรด — ยิ่ง lot มาก ยิ่งเสี่ยง/ได้มากต่อการขยับราคาเท่ากัน</td><td>ทองคำ 1.0 lot = ทองคำ 100 ออนซ์</td></tr>
+          <tr><td class="glossary-term">Commission</td><td>ค่าธรรมเนียมที่โบรกเกอร์เก็บต่อการเทรด — มีหรือไม่มีขึ้นอยู่กับประเภทบัญชี</td><td>บัญชี Raw Spread มักมีค่าคอม แต่บัญชี Standard มักไม่มี (แต่ spread กว้างกว่าแทน)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="history">
+    <h2><span class="section-num">08</span> ประวัติการปรับจูน <span class="role-tag">— โดยละเอียด (session 21–22 ก.ค. 2026)</span></h2>
+    <p class="lede">
+      สรุปการเปลี่ยนแปลงทั้งหมดที่เกิดขึ้นในช่วงนี้ เรียงจากผลกระทบมากไปน้อย พร้อมสถานะปัจจุบันของแต่ละเรื่อง
+      ทุกการเปลี่ยนแปลงผ่านการทดสอบแบบมีวินัย (แบ่งข้อมูลเป็นชุดฝึก/ตรวจสอบ/ทดสอบจริงแยกกัน ไม่แอบดูชุดทดสอบก่อนเวลา)
+    </p>
+
+    <h3 style="margin-top:2rem;">ใช้งานจริงแล้ว</h3>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill adopted">ใช้งานจริง</span>
+        <span class="history-title">เปิดเทรดได้ตลอด 24 ชั่วโมง (เดิมจำกัดแค่ 14:00–18:00)</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>EXP-003 (21 ก.ค. 2026)</dd>
+        <dt>เปลี่ยนจาก</dt><dd><code>session_start_hour: 14, session_end_hour: 18</code></dd>
+        <dt>เปลี่ยนเป็น</dt><dd><code>session_start_hour: 0, session_end_hour: 24</code></dd>
+        <dt>เหตุผล</dt><dd>เปิดตลอด 24 ชม. ชนะใน 4 จาก 5 ปีที่ทดสอบ รวมปีทดสอบสุดท้ายด้วย ช่วงเดิมบังเอิญปิดกั้นเวลาที่ทำกำไรได้ดีจากตลาดเอเชียไปด้วย</dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill adopted">ใช้งานจริง</span>
+        <span class="history-title">เพิ่มความเสี่ยงต่อไม้จาก 0.5% เป็น 1.0%</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>บันทึกวัดผล 22 ก.ค. 2026 (ไม่ใช่ EXP-### เพราะเป็นแค่การวัดผลกระทบของขนาดไม้ ไม่ใช่การหา edge ใหม่)</dd>
+        <dt>เปลี่ยนจาก</dt><dd><code>risk_per_trade_pct: 0.5</code></dd>
+        <dt>เปลี่ยนเป็น</dt><dd><code>risk_per_trade_pct: 1.0</code></dd>
+        <dt>เหตุผล</dt><dd>พบเหตุการณ์จริงที่สัญญาณผ่านทุกด่านแล้วถูกทิ้งเพราะ lot ต่ำกว่าขั้นต่ำของโบรกเกอร์ — ที่ 0.5% เกิดเหตุนี้ถึง ~72% ของสัญญาณ ที่ 1.0% ลดเหลือ ~52% โดยความเสียหายสูงสุดยังรับได้ (~$60/ไม้, ~$307/รอบแพ้ติด)</dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill adopted">ใช้งานจริง</span>
+        <span class="history-title">ปิดกลไก breakeven + trailing ของ Watchman</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>EXP-006, EXP-008 (21–22 ก.ค. 2026) + joint re-verification (22 ก.ค. 2026)</dd>
+        <dt>เปลี่ยนจาก</dt><dd><code>breakeven_enabled: true, trail_enabled: true</code></dd>
+        <dt>เปลี่ยนเป็น</dt><dd><code>breakeven_enabled: false, trail_enabled: false</code></dd>
+        <dt>ปัญหาที่พบ</dt><dd>กลไก breakeven (1.0R) และ trailing (1.5R) ทำงานเร็วเกินไป — ทั้งคู่ต่ำกว่าเป้าหมายจริงที่ 2.0R มาก ทำให้ตัดไม้ที่ควรได้กำไรเต็มเป้าออกก่อนเวลาบ่อยครั้ง วัดผลจากข้อมูลย้อนหลังพบว่าทำกำไรได้ <b>ลดลง</b> ใน 3 จาก 5 ปีที่ทดสอบ (เก็บกลไก &ldquo;ตรวจจับโครงสร้างพัง&rdquo; และ &ldquo;ไม้ค้าง&rdquo; ไว้เหมือนเดิม เพราะสองอย่างนี้วัดผลแล้วช่วยได้จริง)</dd>
+        <dt>ผลทดสอบเบื้องต้น</dt><dd>บนชุดข้อมูลทดสอบจริง: Profit Factor จาก 1.215 เป็น <b>1.304</b> — ผ่านเกณฑ์เลื่อนขั้น Backtest → Paper (PF ≥ 1.3) เป็นครั้งแรก</dd>
+        <dt>Joint re-verification</dt><dd>ทดสอบซ้ำด้วย 3 วิธีอิสระที่ตัดปัญหา &ldquo;สัญญาณถูกทิ้งเพราะ lot ขั้นต่ำ&rdquo; ออก (risk-based sizing ที่ equity $50,000 และ $10,000, กับ fixed-lot 0.1 ที่ equity จริง $3,000) — ทั้ง 3 วิธียืนยันตรงกันว่าปิดกลไกนี้ดีขึ้นจริง เช่นที่ equity $50,000: PF 1.18→<b>1.24</b>, กำไรสุทธิ $13,357→<b>$17,060</b></dd>
+        <dt>สถานะ</dt><dd>✅ ใช้งานจริงแล้ว, config อัปเดตและ restart ระบบแล้ว (22 ก.ค. 2026)</dd>
+      </dl>
+    </div>
+
+    <h3 style="margin-top:2.6rem;">ทดสอบแล้ว — ไม่นำมาใช้</h3>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill rejected">ถูกปฏิเสธ (superseded)</span>
+        <span class="history-title">ปรับความกว้างของการยืนยันจุดกลับตัว (<code>pivot_bars</code>) จาก 3 เป็น 4</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>EXP-009 (22 ก.ค. 2026), พิจารณาใหม่โดย joint re-verification (22 ก.ค. 2026)</dd>
+        <dt>คืออะไร</dt><dd><code>pivot_bars</code> คือจำนวนแท่งเทียนซ้าย-ขวาที่ต้องใช้ยืนยันว่าเป็นจุดกลับตัวจริง (ไม่ใช่แค่ราคาแกว่งเล็กน้อย) ใช้ทั้งวางจุด Stop Loss และตรวจจับโครงสร้างพัง</dd>
+        <dt>ผลทดสอบเดิม (EXP-009)</dt><dd>ค่า 4 ดูเหมือนดีกว่าค่า 3 ทั้งในชุดตรวจสอบและชุดทดสอบจริง (PF 1.243 เทียบกับ 1.215) — แต่วัดตอนที่ Watchman ยังใช้ค่า breakeven/trailing เดิมที่รู้แล้วว่ามีปัญหา</dd>
+        <dt>Joint re-verification</dt><dd>ทดสอบเทียบ &ldquo;ปิด breakeven/trail อย่างเดียว&rdquo; กับ &ldquo;ปิด breakeven/trail + เปลี่ยน pivot_bars=4 พร้อมกัน&rdquo; ด้วย 3 วิธีที่ตัดปัญหา lot ขั้นต่ำออก — <b>ทั้ง 3 วิธีเห็นตรงกันว่าการเปลี่ยน pivot_bars=4 ไม่ได้เพิ่มคุณค่าอะไรอีกเลย</b> หลังจากปิด breakeven/trail ไปแล้ว (ทำทั้งคู่พร้อมกัน แย่กว่าหรือเท่ากับปิด breakeven/trail อย่างเดียวเสมอ ในทุกวิธีที่ทดสอบ)</dd>
+        <dt>สถานะ</dt><dd>❌ ไม่ adopt — <code>global.swing_pivot_bars</code> ยังคงอยู่ที่ 3 (ช่อง config พร้อมใช้แล้วหากมีหลักฐานใหม่ในอนาคต); ค่าเดิมของ EXP-009 ถูก supersede ไม่ใช่แค่เลื่อนออกไป</dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill rejected">ถูกปฏิเสธ</span>
+        <span class="history-title">ปรับเป้าหมายกำไร (<code>tp_r_multiple</code>) จาก 2.0 เป็นค่าอื่น</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>EXP-002, EXP-009</dd>
+        <dt>ทดสอบ</dt><dd>ค่าตั้งแต่ 1.5 ถึง 2.5</dd>
+        <dt>ผลลัพธ์</dt><dd>ค่าต่ำกว่า 2.0 ทำกำไรน้อยลงชัดเจน ค่าสูงกว่า 2.0 ดูดีในภาพรวมหลายปีรวมกัน แต่ล้มเหลวเมื่อแยกดูเป็นรายปี (โดยเฉพาะปี 2021–22 ที่ตลาดผันผวนหนัก) — ค่า 2.0 เดิมยังคงเป็นค่าเดียวที่แข็งแรงทุกปี</dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill rejected">ถูกปฏิเสธ</span>
+        <span class="history-title">ใช้ข้อมูลกราฟ 15 นาที (M15) ช่วยยืนยันจุดเข้าไม้</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>EXP-005</dd>
+        <dt>ทดสอบ</dt><dd>ทดลอง 8 ตัวชี้วัดจากกราฟ 15 นาที ว่าช่วยแยกไม้ที่จะชนะ/แพ้ได้หรือไม่</dd>
+        <dt>ผลลัพธ์</dt><dd>7 จาก 8 ตัวให้ผลกลับด้านกันระหว่างชุดฝึกกับชุดตรวจสอบ (สัญญาณสับสน ไม่ใช่ของจริง) ตัวที่เหลือพอเจาะลึกก็พบว่าเป็นความบังเอิญเช่นกัน — ไม่มีตัวไหนใช้งานได้จริง</dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill rejected">ถูกปฏิเสธ</span>
+        <span class="history-title">ใช้ข้อมูลกราฟ 30 นาที (M30) ช่วยยืนยันจุดเข้าไม้</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>EXP-007</dd>
+        <dt>ทดสอบ</dt><dd>ทดลองแนวคิดเดียวกับ M15 แต่ใช้กราฟ 30 นาทีแทน ด้วยข้อมูลย้อนหลังที่ยาวกว่าเดิม (ครอบคลุมปี 2021–22 ที่ M15 ยังไม่มีข้อมูลถึง)</dd>
+        <dt>ผลลัพธ์</dt><dd>ผลปฏิเสธเช่นเดียวกับ M15 และเป็นหลักฐานที่หนักแน่นกว่าเดิม (เพราะมีข้อมูลครอบคลุมมากกว่า) — ยืนยันว่าไทม์เฟรมที่เล็กกว่าไม่ได้ช่วยอะไร</dd>
+      </dl>
+    </div>
+
+    <h3 style="margin-top:2.6rem;">โครงสร้างพื้นฐานที่เตรียมไว้</h3>
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill neutral">โครงสร้างพร้อมแล้ว</span>
+        <span class="history-title">ระบบจำลองย้อนหลังตอนนี้จำลองการทำงานของ Watchman ได้ครบถ้วนจริง</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>Commit 67df406</dd>
+        <dt>รายละเอียด</dt><dd>ก่อนหน้านี้ระบบจำลองย้อนหลังไม่เคยจำลองกลไก breakeven/trailing/ไม้ค้าง/โครงสร้างพังของ Watchman เลย — ทำให้การปรับจูนค่าพวกนี้ในอดีตไม่มีผลอะไรกับผลทดสอบ (เพราะมันไม่เคยถูกใช้จริงในการจำลอง) ตอนนี้แก้ไขแล้ว ทำให้ EXP-006 เป็นการทดสอบครั้งแรกที่ได้เห็นผลจริงของค่าพวกนี้</dd>
+      </dl>
+    </div>
+  </section>
+
+  <footer>
+    <p>เอกสารนี้อ้างอิงค่าจาก <code>config/base.yaml</code> และผลการทดลองใน <code>experiments/experiments_log.md</code> ณ วันที่ 22 กรกฎาคม 2026 — เมื่อมีการปรับจูนค่าเพิ่มเติม ควรอัปเดตเอกสารนี้ให้ตรงกันเสมอ</p>
+  </footer>
+
+</div>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById('themeToggle');
+    var stored = null;
+    try { stored = localStorage.getItem('autotrade-doc-theme'); } catch (e) {}
+    if (stored === 'dark' || stored === 'light') { root.setAttribute('data-theme', stored); }
+
+    btn.addEventListener('click', function () {
+      var current = root.getAttribute('data-theme');
+      var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      var effectiveCurrent = current || (prefersDark ? 'dark' : 'light');
+      var next = effectiveCurrent === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem('autotrade-doc-theme', next); } catch (e) {}
+    });
+  })();
+</script>
+
+</body>
+</html>

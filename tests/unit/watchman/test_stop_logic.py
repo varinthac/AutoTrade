@@ -344,6 +344,55 @@ def test_sl_monotonicity_holds_across_a_wide_range_of_initial_stop_distances(
     assert sl_history[-1] != sl_history[0]
 
 
+# --- breakeven_enabled/trail_enabled gates (EXP-008) ----------------------
+
+
+def test_breakeven_enabled_false_never_appends_breakeven_candidate_even_past_breakeven_r():
+    # profit_r = (110-100)/10 = 1.0, exactly breakeven_at_r -- would move SL
+    # to entry (100) by default, but breakeven_enabled=False must suppress
+    # that candidate entirely, leaving current_sl unchanged.
+    assert _buy(current_sl=90.0, current_price=110.0, breakeven_enabled=False) == 90.0
+
+
+def test_breakeven_enabled_false_still_lets_trail_fire_independently_past_trail_start_r():
+    # profit_r = (115-100)/10 = 1.5, past trail_start_r -- with breakeven
+    # disabled but trail left at its True default, the trail candidate (113)
+    # must still fire on its own. A regression that accidentally nests the
+    # trail check inside the breakeven gate (so disabling breakeven silently
+    # disables trail too) would make this return 90.0 (current_sl unchanged)
+    # instead of 113.0 -- the earlier breakeven-disabled test never exercises
+    # this since its profit_r (1.0) never reaches trail_start_r (1.5).
+    assert _buy(current_sl=90.0, current_price=115.0, current_atr=2.0, breakeven_enabled=False) == 113.0
+
+
+def test_trail_enabled_false_never_appends_trail_candidate_even_past_trail_start_r():
+    # profit_r = (115-100)/10 = 1.5, exactly trail_start_r -- would trail to
+    # 113 by default, but trail_enabled=False must suppress that candidate;
+    # the breakeven candidate (100) still fires since breakeven_enabled
+    # defaults to True.
+    assert _buy(current_sl=90.0, current_price=115.0, current_atr=2.0, trail_enabled=False) == 100.0
+
+
+def test_both_gates_disabled_returns_current_sl_unchanged_regardless_of_profit_r():
+    """The key regression-safety property for a future 'disable both' live
+    config: with breakeven_enabled=trail_enabled=False, candidates always
+    equals [current_sl], so the function is provably a no-op no matter how
+    deep in profit the position is."""
+    for price in (101.0, 110.0, 115.0, 200.0, 500.0):
+        assert _buy(current_sl=90.0, current_price=price, current_atr=2.0,
+                     breakeven_enabled=False, trail_enabled=False) == 90.0
+        assert _sell(current_sl=110.0, current_price=200.0 - price, current_atr=2.0,
+                      breakeven_enabled=False, trail_enabled=False) == 110.0
+
+
+def test_default_backward_compat_breakeven_and_trail_enabled_true_when_omitted():
+    # Omitting breakeven_enabled/trail_enabled must reproduce the exact
+    # pre-existing behavior (both effectively True) -- same numbers as
+    # test_buy_at_breakeven_r_moves_sl_to_entry / test_buy_at_trail_start_r_trails_by_atr.
+    assert _buy(current_sl=90.0, current_price=110.0) == 100.0
+    assert _buy(current_sl=90.0, current_price=115.0, current_atr=2.0) == 113.0
+
+
 def test_sell_sl_is_monotonically_non_increasing_across_an_adversarial_price_path():
     """Mirror of the BUY monotonicity test: a sharp favorable drop followed
     by a sharp pullback (price rising back up), asserting the SL never

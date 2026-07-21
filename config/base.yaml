@@ -5,6 +5,20 @@
 global:
   timeframe: H1
   timezone: server # MT5 server time, per spec.md Appendix A §0
+  # swing_pivot_bars: the fractal-confirmation lookback (features/swing.py)
+  # used for stop-loss placement, structure-invalidation, and Council
+  # scoring -- trading_system_summary_v2.md §6's own example config already
+  # names this exact key (global.swing_pivot_bars: 3), an [adjustable]
+  # parameter. 2026-07-22, EXP-009 (experiments/experiments_log.md) found
+  # pivot_bars=4 beat 3 on Validation/Test, but that result was tuned against
+  # the watchman: breakeven_enabled/trail_enabled defaults below when they
+  # were still `true` (the now-fixed, net-harmful setting) -- a joint
+  # re-verification the same day, after those gates were adopted as `false`,
+  # found pivot_bars=4 does NOT add value on top of that fix (tested 3 ways:
+  # risk-based sizing at $50,000 and $10,000 equity, and fixed 0.1 lot at the
+  # real $3,000 equity -- all three agreed). Stays at 3; EXP-009's candidate
+  # is superseded, not merely deferred.
+  swing_pivot_bars: 3
 
 # Canonical symbol name -> broker symbol name. IC Markets uses no suffix on
 # its standard demo servers; change the right-hand side here if your account
@@ -44,8 +58,21 @@ shield:
 
 # The CFO -- Money Manager (risk/), per trading_system_summary_v2.md
 # Appendix A §3 / §6. All values [adjustable] per the spec.
+#
+# risk_per_trade_pct: 2026-07-22, raised from 0.5 -> 1.0 after a live signal
+# was skipped for computing a lot size below the broker's 0.01 minimum on
+# this $3,000 demo account. A param-tuner measurement (informational note,
+# experiments/experiments_log.md) found 0.5% discards ~72% of otherwise-valid
+# Council signals for this reason; 1.0% roughly halves that (~52%) while
+# keeping worst-case single-trade/streak losses modest (~$60 / ~$307) on the
+# current balance. The measurement also found PF is NOT stable across risk
+# levels in this sweep, but for an unrelated reason (max_positions_per_symbol
+# widening trade selection as skip-rate drops, not risk% itself) and flagged
+# that a larger demo deposit would address the underlying constraint more
+# directly than raising risk% further -- worth revisiting if skip-rate is
+# still high in practice.
 cfo:
-  risk_per_trade_pct: 0.5
+  risk_per_trade_pct: 1.0
   daily_loss_limit_pct: 2.0
   max_consecutive_losses: 3
   max_drawdown_halt_pct: 8.0
@@ -122,6 +149,23 @@ risk_voice:
 # the spec's primary rule) or "all" (the spec's own explicitly-noted
 # alternative, "[adjustable: หรือปิดทั้งไม้]"). connectivity_timeout_minutes
 # is item 7's connectivity watchdog (watchman/connectivity_watchdog.py).
+#
+# breakeven_enabled/trail_enabled: 2026-07-22, EXP-008 (experiments/
+# experiments_log.md), ADOPTED after a joint re-verification against
+# global.swing_pivot_bars above. With Watchman's exit management modeled in
+# the backtest (commit 67df406), the breakeven-then-trail mechanism engages
+# well before trades reach the 2R take-profit target, cutting winners short;
+# isolating structure-invalidation/time-stop (both gates `false`) beat the
+# prior live config (both `true`) significantly on the held-out Test year
+# and passes the Backtest -> Paper promotion Gate 1 (PF>=1.3) where the
+# prior config did not. The joint re-verification (2026-07-22, three
+# independent sizing-confound-free methods: risk-based sizing at $50,000
+# equity, at $10,000 equity, and fixed 0.1 lot at the real $3,000 equity)
+# found disabling ONLY these two gates (pivot_bars left at 3) consistently
+# beat also changing pivot_bars to 4 -- EXP-009's pivot_bars=4 candidate was
+# tuned against the now-superseded broken Watchman defaults and does not
+# add value on top of this fix, so pivot_bars stays at 3 (see global block
+# above) even though this pair was adopted.
 watchman:
   breakeven_at_r: 1.0
   trail_start_r: 1.5
@@ -132,6 +176,8 @@ watchman:
   news_profit_threshold_r: 0.5
   news_close_mode: half
   connectivity_timeout_minutes: 5
+  breakeven_enabled: false
+  trail_enabled: false
 
 # The Auditor -- Performance Reviewer (auditor/), per
 # trading_system_summary_v2.md Appendix A §5 / §6. `current_stage` is a

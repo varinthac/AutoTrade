@@ -172,6 +172,35 @@ def test_clean_sl_update_only_case():
     assert decision.new_stop_loss == 100.0
 
 
+def test_both_gates_disabled_turns_a_would_be_modify_sl_into_no_action():
+    # Same setup as test_clean_sl_update_only_case (profit_r=1.0, would
+    # MODIFY_SL to 100.0 under defaults), but with breakeven_enabled=
+    # trail_enabled=False -- structure-invalidation/time-stop don't
+    # independently trigger in this fixture (recent opened_at, no
+    # invalidation), so the result must be NO_ACTION.
+    meta = _meta(opened_at=OPENED_AT)
+    config = WatchmanConfig(
+        breakeven_at_r=1.0, trail_start_r=1.5, trail_distance_atr=1.0, time_stop_hours=48.0,
+        breakeven_enabled=False, trail_enabled=False,
+    )
+    now = OPENED_AT + timedelta(hours=1)
+    current_price = 110.0  # profit_r = 1.0 -- would trigger breakeven move to 100 by default
+
+    decision = evaluate_watchman(
+        position_metadata=meta,
+        current_sl=90.0,
+        current_price=current_price,
+        current_atr=2.0,
+        df=_df_no_invalidation(),
+        as_of_index=1,
+        now=now,
+        config=config,
+    )
+
+    assert decision.action == "NO_ACTION"
+    assert decision.new_stop_loss is None
+
+
 def test_genuine_no_action_case():
     meta = _meta(opened_at=OPENED_AT)
     config = WatchmanConfig(breakeven_at_r=1.0, trail_start_r=1.5, trail_distance_atr=1.0, time_stop_hours=48.0)

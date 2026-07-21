@@ -13,6 +13,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from autotrade.common.config import MT5Credentials
 from autotrade.common.symbol_spec import SymbolSpec
@@ -629,6 +630,16 @@ def test_cmd_demotion_without_notify_does_not_suppress_a_later_notify_call(tmp_p
 
 
 # --- borderline ---
+
+def test_main_borderline_requires_commission_per_lot_argument(monkeypatch):
+    # 0.0 is a legitimate real commission (e.g. a commission-free "Standard"
+    # account) so it cannot be a silent argparse default -- same rationale
+    # and fix as scripts/run_backtest.py's --commission-per-lot.
+    monkeypatch.setattr(sys, "argv", ["run_auditor.py", "borderline"])
+
+    with pytest.raises(SystemExit):
+        run_auditor.main()
+
 
 def test_cmd_borderline_no_cases_logged_yet(tmp_path, capsys):
     args = argparse.Namespace(

@@ -20,12 +20,19 @@ from autotrade.common.symbol_spec import SymbolSpec
 
 @dataclass(frozen=True)
 class CostModelConfig:
-    """`commission_per_lot` defaults to `0.0` as an explicit PLACEHOLDER, not
-    a real value -- it MUST be updated with this account's actual commission
-    structure (currency per 1.0 lot round-trip) before any backtest result
-    from this module is used for a promotion decision (Appendix A §5.2). A
-    silently-wrong nonzero default would be worse than an honestly-flagged
-    `0.0`: it would look like real costs were modeled when they weren't.
+    """`commission_per_lot` defaults to `0.0` here only as a convenience for
+    callers (tests, tooling) that don't need commission modeled at all --
+    NOT every account genuinely pays commission (e.g. an IC Markets
+    "Standard" account charges `0.0` and recovers its cost entirely through a
+    wider spread, vs. a "Raw Spread" account's nonzero per-lot commission on
+    top of a tighter spread). Because of this, `0.0` is NOT a reliable
+    "forgot to configure this" signal -- a genuinely-zero-commission account
+    and a never-configured placeholder are indistinguishable by value alone.
+    `scripts/run_backtest.py`'s CLI enforces the real safeguard structurally
+    instead: `--commission-per-lot` is a REQUIRED argument, so a promotion-
+    relevant run can never silently inherit this dataclass default without
+    the caller consciously choosing a value (`0.0` included) -- see that
+    script's `build_envelope()` for how `cost_model_complete` is derived.
 
     `slippage_points` defaults to `None`, meaning "use the bar's own spread
     as the slippage assumption" -- Appendix A §5.2's "slippage สมมติขั้นต่ำ 1

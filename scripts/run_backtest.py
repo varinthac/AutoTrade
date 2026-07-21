@@ -6,8 +6,14 @@ autotrade.auditor.backtest_results.load_backtest_report_envelope), not a raw
 ClosedTrade list.
 
     python scripts/run_backtest.py XAUUSD --starting-equity 10000
-        [--commission-per-lot 0.5] [--slippage-points 5.0]
+        --commission-per-lot 0.5 [--slippage-points 5.0]
         [--risk-per-trade-pct 0.5] [--out-of-sample]
+
+`--commission-per-lot` is REQUIRED (not optional) -- it must be a conscious,
+account-specific choice every run, since `0.0` is a legitimate real value for
+a commission-free account (e.g. IC Markets "Standard", which recovers cost
+entirely through a wider spread) and NOT a safe silent default: see
+`backtest/cost_model.py`'s `CostModelConfig` docstring.
 
 Requires an active MT5 session only to resolve the symbol's `SymbolSpec`
 (digits/point/tick_value/... -- same as scripts/download_historical.py); the
@@ -65,16 +71,22 @@ def build_envelope(
     """The JSON-serializable envelope written to disk -- see
     `auditor/backtest_results.py`'s `BacktestReportEnvelope` for the
     corresponding load-side shape/validation. `cost_model_complete` per
-    Appendix A §5.2's "backtest ที่ไม่มี cost model = ไม่นับ": true only if
-    commission is actually modeled (non-placeholder) AND slippage uses the
-    minimum-1-spread convention (`slippage_points is None`, see
-    `CostModelConfig`'s docstring) rather than a possibly-too-small override.
+    Appendix A §5.2's "backtest ที่ไม่มี cost model = ไม่นับ": true iff
+    slippage uses the minimum-1-spread convention (`slippage_points is
+    None`, see `CostModelConfig`'s docstring) rather than a possibly-too-
+    small override. Commission is NOT checked for `> 0` here -- `0.0` is a
+    legitimate real value for a commission-free account (e.g. IC Markets
+    "Standard"), not just an unconfigured placeholder, so it can't be used
+    to infer completeness. The "did the caller actually decide this"
+    safeguard instead lives in `main()`'s CLI: `--commission-per-lot` is a
+    required argument, so this function is never reached with an
+    un-considered commission value in the normal CLI path.
     `risk_voice_modeled`/`watchman_exits_modeled` mirror that same "don't
     silently count an incomplete simulation" philosophy for Risk Voice and
     Watchman's exit management respectively -- see `backtest/engine.py`'s
     module docstring.
     """
-    cost_model_complete = cost_model.commission_per_lot > 0 and cost_model.slippage_points is None
+    cost_model_complete = cost_model.slippage_points is None
     return {
         "symbol": symbol,
         "bar_range": {"start": str(df["time"].iloc[0]), "end": str(df["time"].iloc[-1])},
@@ -99,6 +111,7 @@ def run_and_persist(
     output_dir: Path,
     risk_voice_cfg: RiskVoiceConfig | None = None,
     watchman_cfg: WatchmanConfig | None = None,
+    pivot_bars: int = 3,
 ) -> Path:
     """`risk_voice_cfg=None`/`watchman_cfg=None` (the defaults) mean Risk
     Voice / Watchman's exit management are NOT modeled in this run -- an
@@ -107,10 +120,12 @@ def run_and_persist(
     run_backtest.py`'s CLI (`main()`, below) always constructs real ones
     from `config/base.yaml`'s `risk_voice:`/`watchman:` blocks; leaving
     either `None` is only appropriate for tests/tooling that don't need
-    that veto/exit behavior."""
+    that veto/exit behavior. `pivot_bars` defaults to `BacktestConfig`'s own
+    default (3); `main()` always passes `config/base.yaml`'s
+    `global.swing_pivot_bars` instead of relying on that default."""
     config = BacktestConfig(
         starting_equity=starting_equity, risk_per_trade_pct=risk_per_trade_pct, cost_model=cost_model,
-        risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg,
+        risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg, pivot_bars=pivot_bars,
     )
     trades = run_backtest(df, symbol, symbol_spec, config)
     report = generate_report(trades, starting_equity)
@@ -152,7 +167,12 @@ def main() -> int:
         "--risk-per-trade-pct", type=float, default=None,
         help="Overrides config/base.yaml's cfo.risk_per_trade_pct",
     )
-    parser.add_argument("--commission-per-lot", type=float, default=0.0)
+    parser.add_argument(
+        "--commission-per-lot", type=float, required=True,
+        help="Currency per 1.0 lot round-trip. REQUIRED -- 0.0 is a legitimate value for a "
+             "commission-free account (e.g. IC Markets Standard) but must be consciously chosen, "
+             "never a silent default; see CostModelConfig's docstring.",
+    )
     parser.add_argument(
         "--slippage-points", type=float, default=None,
         help="Omit to use the bar's own spread (minimum-1-spread convention)",
@@ -211,6 +231,8 @@ def main() -> int:
         trail_distance_atr=cfg["watchman"]["trail_distance_atr"],
         time_stop_hours=cfg["watchman"]["time_stop_hours"],
         dead_trade_r_band=cfg["watchman"]["dead_trade_r_band"],
+        breakeven_enabled=cfg["watchman"]["breakeven_enabled"],
+        trail_enabled=cfg["watchman"]["trail_enabled"],
     )
 
     creds = load_mt5_credentials()
@@ -225,6 +247,7 @@ def main() -> int:
         args.symbol, df, symbol_spec, args.starting_equity, risk_per_trade_pct,
         cost_model, args.out_of_sample, args.output_dir,
         risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg,
+        pivot_bars=cfg["global"]["swing_pivot_bars"],
     )
     return 0
 
