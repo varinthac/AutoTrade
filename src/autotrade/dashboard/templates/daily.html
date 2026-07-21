@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Daily report -- AutoTrade Dashboard{% endblock %}
+{% block content %}
+<h1>Daily report</h1>
+{% if report is none %}
+<p>No trades recorded yet.</p>
+{% else %}
+<h2>{{ report.server_date.isoformat() }}</h2>
+{% if used_default %}<p>(showing the most recent recorded day)</p>{% endif %}
+<p>Trades: {{ report.trade_count }} (win {{ report.win_count }} / loss {{ report.loss_count }})</p>
+<p>Net P&amp;L: {{ report.net_pnl }}</p>
+<p>Avg R multiple: {{ report.avg_r_multiple if report.avg_r_multiple is not none else "n/a" }}</p>
+<p>Blocked signals: {{ report.blocked_total }} total</p>
+<ul>
+  {% for source, count in report.blocked_by_source.items() %}
+  <li>{{ source }}: {{ count }}</li>
+  {% endfor %}
+</ul>
+<p>Avg entry spread (expected slippage): {{ report.avg_entry_spread_points if report.avg_entry_spread_points is not none else "n/a" }} points</p>
+<p>Avg actual slippage: {{ report.avg_actual_slippage if report.avg_actual_slippage is not none else "n/a" }} points</p>
+<p>Anomalies: {{ report.anomaly_counts.values() | sum }} total</p>
+<ul>
+  {% for event_type, count in report.anomaly_counts.items() %}
+  <li>{{ event_type }}: {{ count }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

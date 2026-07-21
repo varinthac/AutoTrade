@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}AutoTrade Dashboard{% endblock %}</title>
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="{{ url_for('trades') }}">Trades</a>
+      <a href="{{ url_for('daily') }}">Daily</a>
+    </nav>
+    <p><strong>All times are MT5 broker SERVER time, not your local time.</strong></p>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

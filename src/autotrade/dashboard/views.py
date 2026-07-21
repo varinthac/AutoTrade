@@ -1,0 +1,95 @@
+"""Pure display logic for the read-only trade dashboard -- no Flask import,
+so it's independently testable, same separation `gui/control.py`/
+`gui/env_file.py` already use for the desktop GUI (framework shell vs. pure
+logic).
+
+Every timestamp here is already MT5 broker SERVER time (`store/models.py`'s
+module docstring) -- formatted verbatim, with zero timezone conversion.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime
+
+from autotrade.store.models import TradeRecord
+
+# Wide-but-finite bounds for "all trades ever" range queries -- same
+# convention as scripts/run_auditor.py's _EPOCH/_FAR_FUTURE (safer across
+# SQLite/SQLAlchemy datetime handling than datetime.min/datetime.max).
+EPOCH = datetime(2000, 1, 1)
+FAR_FUTURE = datetime(2100, 1, 1)
+
+TRADES_PER_PAGE = 50
+
+
+def format_server_time(value: datetime) -> str:
+    return value.strftime("%Y-%m-%d %H:%M")
+
+
+@dataclass(frozen=True)
+class TradeRow:
+    exit_time: str
+    symbol: str
+    direction: str
+    entry_time: str
+    entry_price: float
+    exit_price: float
+    lot_size: float
+    net_pnl: float
+    r_multiple: float
+    exit_reason: str
+
+
+def to_trade_row(trade: TradeRecord) -> TradeRow:
+    return TradeRow(
+        exit_time=format_server_time(trade.exit_time),
+        symbol=trade.symbol,
+        direction=trade.direction,
+        entry_time=format_server_time(trade.entry_time),
+        entry_price=trade.entry_price,
+        exit_price=trade.exit_price,
+        lot_size=trade.lot_size,
+        net_pnl=trade.net_pnl,
+        r_multiple=trade.r_multiple,
+        exit_reason=trade.exit_reason,
+    )
+
+
+def newest_first(trades: list[TradeRecord]) -> list[TradeRecord]:
+    """`journal.get_trades_in_range` returns ascending by `exit_time` --
+    reverse for the dashboard's newest-first display."""
+    return list(reversed(trades))
+
+
+def paginate(trades: list[TradeRecord], page: int, per_page: int = TRADES_PER_PAGE) -> list[TradeRecord]:
+    """Slices an already-fetched list in Python -- `store/journal.py` has no
+    `limit`/`offset` param today and this dashboard should NOT add one; if
+    the paper DB ever grows large enough for this to matter, pushing
+    pagination into SQL via a new `journal.py` param would be the right
+    follow-up, not something to build now."""
+    page = max(page, 1)
+    start = (page - 1) * per_page
+    return trades[start:start + per_page]
+
+
+def parse_date_param(value: str | None) -> datetime | None:
+    """`None` for both "not given" and "malformed" -- a query param a user
+    can easily mistype by hand (or a stale/hand-edited bookmark) must
+    degrade to the route's own default behavior, never a 500."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def default_daily_date(all_trades: list[TradeRecord]) -> date | None:
+    """The server date to default `/daily` to when `?date=` is omitted: the
+    server date of the most recent trade's `exit_time`, derived purely from
+    already-fetched data -- never MT5/`date.today()` local wall-clock, same
+    server-day-only convention as `scripts/run_auditor.py`'s `_server_today`.
+    `None` when there are no trades at all (nothing to default to)."""
+    if not all_trades:
+        return None
+    return max(t.exit_time for t in all_trades).date()
