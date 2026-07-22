@@ -691,7 +691,7 @@
           <tr><td class="glossary-term">Trailing Stop</td><td>Stop Loss ที่เลื่อนตามราคาที่วิ่งไปในทางที่ดีขึ้นเรื่อยๆ เพื่อล็อกกำไรเพิ่ม</td><td>ราคาขึ้นไปสูงสุด 2050 เลื่อน SL ตามไปที่ 2030</td></tr>
           <tr><td class="glossary-term">Structure Invalidation</td><td>การปิดไม้เพราะโครงสร้างราคาที่ใช้เป็นเหตุผลเข้าไม้ตั้งแต่แรกถูกทำลายไปแล้ว</td><td>เข้า BUY เพราะราคายืนเหนือจุดต่ำสุดเดิม — ถ้าราคาหลุดจุดนั้นลงไป = สมมติฐานผิด ปิดทันที</td></tr>
           <tr><td class="glossary-term">Lot size</td><td>หน่วยขนาดของการเทรด — ยิ่ง lot มาก ยิ่งเสี่ยง/ได้มากต่อการขยับราคาเท่ากัน</td><td>ทองคำ 1.0 lot = ทองคำ 100 ออนซ์</td></tr>
-          <tr><td class="glossary-term">Commission</td><td>ค่าธรรมเนียมที่โบรกเกอร์เก็บต่อการเทรด — มีหรือไม่มีขึ้นอยู่กับประเภทบัญชี</td><td>บัญชี Raw Spread มักมีค่าคอม แต่บัญชี Standard มักไม่มี (แต่ spread กว้างกว่าแทน)</td></tr>
+          <tr><td class="glossary-term">Commission</td><td>ค่าธรรมเนียมที่โบรกเกอร์เก็บต่อการเทรด — ขึ้นอยู่กับประเภทบัญชี</td><td>บัญชี <b>Standard</b> (ของเรา) = $0 commission (cost lives in spread); Raw Spread = $7/lot (2 ways: open + close = $14/trade)</td></tr>
         </tbody>
       </table>
     </div>
@@ -746,6 +746,49 @@
         <dt>ผลทดสอบเบื้องต้น</dt><dd>บนชุดข้อมูลทดสอบจริง: Profit Factor จาก 1.215 เป็น <b>1.304</b> — ผ่านเกณฑ์เลื่อนขั้น Backtest → Paper (PF ≥ 1.3) เป็นครั้งแรก</dd>
         <dt>Joint re-verification</dt><dd>ทดสอบซ้ำด้วย 3 วิธีอิสระที่ตัดปัญหา &ldquo;สัญญาณถูกทิ้งเพราะ lot ขั้นต่ำ&rdquo; ออก (risk-based sizing ที่ equity $50,000 และ $10,000, กับ fixed-lot 0.1 ที่ equity จริง $3,000) — ทั้ง 3 วิธียืนยันตรงกันว่าปิดกลไกนี้ดีขึ้นจริง เช่นที่ equity $50,000: PF 1.18→<b>1.24</b>, กำไรสุทธิ $13,357→<b>$17,060</b></dd>
         <dt>สถานะ</dt><dd>✅ ใช้งานจริงแล้ว, config อัปเดตและ restart ระบบแล้ว (22 ก.ค. 2026)</dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill adopted">ใช้งานจริง</span>
+        <span class="history-title">เพิ่ม fallback ขั้นต่ำไม้: เทรด 0.01 lot แม้ขนาดจะต่ำกว่าขั้นต่ำ ถ้าเสี่ยงไม่เกิน 1.5% ของบัญชี</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>บันทึกวัดผล Stage 1-2, 22 ก.ค. 2026 (ไม่ใช่ EXP-### เพราะเป็นการวัดผลกระทบของ position-sizing ไม่ใช่การหา edge ใหม่)</dd>
+        <dt>เปลี่ยนจาก</dt><dd><code>min_lot_risk_cap_pct: null</code> (ปิด)</dd>
+        <dt>เปลี่ยนเป็น</dt><dd><code>min_lot_risk_cap_pct: 1.5</code> (เปิด)</dd>
+        <dt>เหตุผล</dt><dd>ที่ risk=1.0% ยังมีสัญญาณ ~31.6% ถูกทิ้งเพราะ lot ต่ำกว่าขั้นต่ำของโบรกเกอร์ — Fallback นี้ (ซึ่งเบี่ยงเบนจากสเปค §3.1 อย่างตั้งใจ) ช่วยกู้สัญญาณที่เสียไปได้ 63 ไม้ในหน้าต่าง 1257 ไม้ (full history 2021–2026; ไม้ที่กู้ได้ทั้งหมดกระจุกอยู่ช่วง 2025–26 เพราะเป็นช่วงราคาทอง/ATR สูงที่ stop กว้างจน lot ต่ำกว่าขั้นต่ำ) โดยไม้ที่กู้กลับมามี PF 1.60 ค่อนข้างสูง ไม่ใช่ไม้ขยะ</dd>
+        <dt>Trade-off</dt><dd>maxSingleLoss ต่อไม้ขยับได้ถึง ~3.5% ของ equity เมื่อ fallback ทำงาน (เดิม ~1.9% ที่ risk 1.0% ปกติ) — ยอมรับได้ด้วยข้อมูลเต็มๆ</dd>
+        <dt>สถานะ</dt><dd>✅ ใช้งานจริงแล้ว (22 ก.ค. 2026)</dd>
+      </dl>
+    </div>
+
+    <h3 style="margin-top:2.6rem;">สำรวจแล้ว — ไม่เปลี่ยนแปลง</h3>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill adopted">ยืนยันแล้ว</span>
+        <span class="history-title">ไทม์เฟรม H1 ยังคงเป็นตัวหลัก — M5/M15/M30 ถูกปฏิเสธอย่างเด็ดขาด</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>Timeframe probe (NOTE ไม่ใช่ EXP-###), 22 ก.ค. 2026</dd>
+        <dt>ทดสอบ</dt><dd>นำกฎ H1 ปัจจุบันมาใช้บนกราฟ M30, M15, M5 เปรียบเทียบผล</dd>
+        <dt>ผลลัพธ์</dt><dd>Full-history: <b>H1 PF 1.081</b> vs <b>M30 1.007 / M15 1.001 (= เสมอตัว)</b>; หน้าต่างร่วม ก.พ. 2025–ก.ค. 2026 (ไกลสุดที่ข้อมูล M5 มี): H1 1.215 → M30 1.111 → M15 1.075 → <b>M5 1.017</b> พร้อม drawdown บันได 11.5%→53.7% — ลดลงทีละขั้นทุกมุมมอง ทั้งนี้ cost/R ratio แย่ลงมาก: H1 ~1.7% vs M30 ~2.5% vs M15 ~3.7% vs M5 ~6.7% (ตัวเลขวัดก่อนแก้ spread floor/commission — ทิศทางยืน แต่ตัวเลขเป๊ะๆ ล้าสมัยแล้ว ดู ADDENDUM ใน experiments log)</dd>
+        <dt>สถานะ</dt><dd>✅ H1 ยืนยันว่าเป็นตัวหลัก; lower-TF as primary ถูกปฏิเสธอย่างแน่นอน</dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill pending">ลงทะเบียนไว้ ยังไม่รัน</span>
+        <span class="history-title">H1→M30 hybrid: ให้ H1 ตัดสินใจ แต่เข้าไม้ด้วยสัญญาณ M30</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>EXP-010 (pre-registered, 22 ก.ค. 2026)</dd>
+        <dt>สมมติฐาน</dt><dd>ใช้สัญญาณ H1 Council แต่จับเวลาเข้าไม้ด้วย M30 pullback-then-resume trigger + M30-structure stop → ได้ entry ที่ดีกว่า stop ที่แคบกว่า lot ที่ใหญ่กว่า ใช้สิ่งที่เก็บเกี่ยวได้ → น้อยสัญญาณที่ถูกทิ้งเพราะ lot ขั้นต่ำ</dd>
+        <dt>ก่อนเงื่อนไข</dt><dd>(a) แก้ spread=0 ในข้อมูล historical — <b>✅ เคลียร์แล้ว 22 ก.ค. 2026</b> (floor เฉพาะแถวที่เป็น 0: XAUUSD → 5 pts ทุก TF; <b>ระวัง:</b> ไฟล์เป็น gitignored และโค้ด download ไม่ floor ให้ — download ใหม่เมื่อไหร่ต้อง re-apply ทุกครั้ง); (b) re-baseline H1/M30 ด้วยข้อมูลที่แก้แล้ว + commission 0 (บัญชี Standard); (c) สร้าง two-TF bridge harness</dd>
+        <dt>สถานะ</dt><dd>🔄 <b>PRE-REGISTERED</b> — spread fix เคลียร์แล้ว พร้อมเริ่มเมื่อ re-baseline + harness เสร็จ (rule 1: rigor in cost model)</dd>
       </dl>
     </div>
 

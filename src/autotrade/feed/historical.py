@@ -32,6 +32,21 @@ _TIMEFRAME_DELTA = {
     "D1": timedelta(days=1),
 }
 
+# 2026-07-22: MT5's copy_rates_range()/copy_rates_from() does not
+# retroactively populate real historical spread -- older bars come back with
+# spread=0 (non-physical, bid==ask), which backtest/cost_model.py would
+# otherwise model as ZERO transaction cost on that bar. These are the same
+# per-symbol floors manually applied to the existing data/historical/*.csv
+# files (see experiments/experiments_log.md NOTE 2026-07-22 "Historical
+# spread zero-value floor"); applying them here at the source prevents any
+# future re-download from silently reintroducing the bug.
+SPREAD_ZERO_FLOOR_POINTS = {
+    "XAUUSD": 5,
+    "EURUSD": 10,
+    "GBPUSD": 13,
+    "USDJPY": 10,
+}
+
 
 class HistoricalDownloadError(RuntimeError):
     pass
@@ -55,6 +70,32 @@ def _is_weekend_gap(prev_time: datetime, next_time: datetime) -> bool:
     return prev_time.weekday() == 4 and next_time.weekday() in (5, 6, 0) and (
         next_time - prev_time
     ) <= timedelta(days=3, hours=6)
+
+
+def _floor_zero_spread(df: pd.DataFrame, symbol: str, timeframe: str) -> pd.DataFrame:
+    """Replace spread=0 rows (MT5's non-physical "not populated" quirk) with
+    the per-symbol floor -- leaves any populated nonzero value untouched, no
+    matter how low, per the manual fix this codifies (see
+    SPREAD_ZERO_FLOOR_POINTS)."""
+    try:
+        floor = SPREAD_ZERO_FLOOR_POINTS[symbol]
+    except KeyError as e:
+        raise HistoricalDownloadError(
+            f"no spread-zero floor configured for {symbol!r} (known: "
+            f"{sorted(SPREAD_ZERO_FLOOR_POINTS)}) -- add an entry to "
+            "SPREAD_ZERO_FLOOR_POINTS (feed/historical.py) before downloading "
+            "this symbol, see experiments/experiments_log.md NOTE 2026-07-22"
+        ) from e
+
+    zero_mask = df["spread"] == 0
+    n_zero = int(zero_mask.sum())
+    if n_zero:
+        logger.warning(
+            "%s %s: flooring %d zero-spread rows to %d points (MT5 does not "
+            "retroactively populate historical spread)", symbol, timeframe, n_zero, floor,
+        )
+        df.loc[zero_mask, "spread"] = floor
+    return df
 
 
 def download_historical(
@@ -109,6 +150,8 @@ def download_historical(
         if gap > expected_delta and not _is_weekend_gap(prev_time, next_time):
             unexplained_gaps += 1
             logger.warning("%s %s: unexplained gap %s -> %s (%s)", symbol, timeframe, prev_time, next_time, gap)
+
+    df = _floor_zero_spread(df, symbol, timeframe)
 
     HISTORICAL_DIR.mkdir(parents=True, exist_ok=True)
     out_path = HISTORICAL_DIR / f"{symbol}_{timeframe}.csv"

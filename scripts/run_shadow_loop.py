@@ -16,6 +16,8 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 import MetaTrader5 as mt5
 import pandas as pd
@@ -50,8 +52,12 @@ from autotrade.watchman.loop import WatchmanLoop
 from autotrade.watchman.news_protection import NewsProtectionConfig
 from autotrade.watchman.position_metadata import DEFAULT_STATE_PATH as DEFAULT_POSITION_METADATA_PATH
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+# Where per-run log files are written (see _configure_logging() below) --
+# module-level constant so tests can monkeypatch it to a tmp_path, same
+# pattern as pid_file.DEFAULT_PID_PATH.
+LOG_DIR = Path("logs")
 
 DEFAULT_SEED_BARS = 200
 
@@ -154,7 +160,50 @@ def build_news_provider(clock: RealClock) -> NewsCalendarProvider:
     return StubNewsCalendarProvider()
 
 
+def _configure_logging(log_dir: Path) -> None:
+    """Console logging (StreamHandler) always works; a per-run timestamped
+    FileHandler is added on top so a closed console window, machine restart,
+    or crash still leaves a durable record on disk -- previously this loop
+    only ever logged to the console, so any of those left zero trace of what
+    it had done. The file mirrors the console exactly (same level, same
+    format) -- this is a mirror, not a separate debug/info split.
+
+    Filename uses run_backtest.py's own report-envelope timestamp convention
+    (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")) for consistency
+    across the project, rather than inventing a new format -- this is just a
+    filesystem artifact for human debugging, not a trading-decision
+    timestamp, so wall-clock time at process startup (not broker server
+    time) is fine. Log files accumulate under log_dir and are NOT
+    auto-pruned -- no existing retention/cleanup mechanism exists elsewhere
+    in this codebase to match, and deleting trading logs should be a human
+    decision, not a silent automatic one.
+
+    If log_dir can't be created or written to (fresh machine, permissions),
+    this falls back to console-only logging with a warning rather than
+    raising -- a logging setup problem must never prevent the shadow loop
+    from trading, but it also shouldn't be silently swallowed.
+    """
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    file_log_error: OSError | None = None
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        handlers.append(logging.FileHandler(log_dir / f"shadow_loop_{stamp}.log", encoding="utf-8"))
+    except OSError as exc:
+        file_log_error = exc
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers, force=True,
+    )
+    if file_log_error is not None:
+        logger.warning(
+            "Could not set up file logging under %s (%s) -- continuing with console-only logging.",
+            log_dir, file_log_error,
+        )
+
+
 def main() -> int:
+    _configure_logging(LOG_DIR)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--adapter", choices=["noop", "demo"], default="noop",

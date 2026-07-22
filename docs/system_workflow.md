@@ -288,12 +288,28 @@ lot_size = risk_amount / (stop_distance × point_value)
    - **ผลลัพธ์:** Same rejection as M15; 3/8 crude sign-flip, 5 pass binary but fail per-year/per-value coherence
    - **สถานะ:** ❌ REJECTED; REINFORCES M15 finding on stronger evidence (full Train coverage incl. 2021-22)
 
+7. **Timeframe probe: H1 vs M30/M15/M5** — Probe (not EXP-###)
+   - **ทดสอบ:** Apply current H1 rules on M30/M15/M5 → edge collapse
+   - **ผลลัพธ์:** Full-history: **H1 PF 1.081** vs M30 1.007 / M15 1.001 (= breakeven, ตัด top-5 winners แล้วเหลือ ≤1.0); common window (ก.พ. 2025–ก.ค. 2026): H1 1.215 → M30 1.111 → M15 1.075 → M5 1.017 พร้อม DD บันได 11.5%→53.7% — monotone staircase ทุกมุมมอง; cost/R แย่ลงตาม TF (~1.7% H1 → ~6.7% M5)
+   - **หมายเหตุ:** ตัวเลข probe รันก่อนแก้ spread floor + ก่อนรู้ว่า commission จริงเป็น 0 (ดู ADDENDUM ใน experiments_log.md) — verdict ยืน แต่ห้ามอ้างตัวเลขเป๊ะๆ ต่อ
+   - **สถานะ:** ✅ **H1 CONFIRMED** as primary signal timeframe; lower TFs rejected; M5 rejected outright
+
+8. **H1→M30 hybrid entry timing** — EXP-010 pre-registered
+   - **ทดสอบ:** (NOT YET RUN) Keep H1 Council bias/veto, but enter on M30 pullback-then-resume trigger with M30-structure stop → tighter stop, better entry price, fewer sub-min-lot skips on $3k account
+   - **Prerequisites:** (a) ~~spread-zero data fix~~ ✅ เคลียร์แล้ว 2026-07-22 (spread floor applied); (b) re-baseline H1/M30 ด้วยข้อมูลที่แก้แล้ว + commission 0 (ตัวเลข baseline ใน pre-registration เป็นค่าก่อนแก้ cost); (c) two-TF bridge harness ยังไม่ได้สร้าง
+   - **สถานะ:** 🔄 **PRE-REGISTERED ONLY** — พร้อมเริ่มเมื่อ re-baseline + harness เสร็จ
+
 ### 🔄 INFRASTRUCTURE READY, AWAITING REAL-WORLD VERIFICATION
 
 7. **Watchman exits modeled in backtest** — Commit 67df406
    - **Backtest engine** now simulates breakeven/trail/time-stop/structure-invalidation when `WatchmanConfig` passed
    - **Impact:** EXP-006+ first time these params have real backtest exposure
    - **สถานะ:** ✅ Code ready, pending parameter tuning outcomes (see point 2 above)
+
+8. **Historical spread=0 floored (data-integrity fix, 2026-07-22)** — ⚠️ มี gotcha ประจำ
+   - **ปัญหา:** MT5 ไม่ retro-populate spread ของ bars เก่า → `spread=0` ~50% ของไฟล์ H1 = backtest คิดต้นทุนต่ำเกินจริงมาตลอด
+   - **แก้แล้ว:** แทนเฉพาะแถว `spread==0` (ค่าจริง 1–4 pts ไม่แตะ): XAUUSD ทุก TF → 5 pts, EURUSD → 10, GBPUSD → 13, USDJPY → 10 (ที่มาเต็มใน experiments_log.md NOTE "Historical `spread` zero-value floor")
+   - **⚠️ Gotcha:** ไฟล์ `data/historical/*` เป็น gitignored และ `feed/historical.py` ไม่ post-process spread — **download ข้อมูลใหม่เมื่อไหร่ zeros กลับมา ต้อง re-apply floor ทุกครั้ง** จนกว่าจะแก้ถาวรใน feed/historical.py (งานค้าง มอบหมายแล้ว) — GBPUSD/USDJPY ข้อมูล spread ที่มีอยู่ก็ไม่น่าเชื่อถือ ต้อง re-download ก่อน FX go-live
 
 ---
 
@@ -393,7 +409,7 @@ auditor:
 | **Trailing Stop** | SL ที่​เคลื่อนตาม​ราคา​ขึ้นเรื่อยๆ​ เพื่อ​ล็อก​กำไร | ราคาสูงสุด 2050, ทราเล 1.0×ATR → SL ที่ 2030 (ตาม​ขึ้น​) |
 | **Structure Invalidation** | ปิดตำแหน่ง​ เมื่อ​โครงสร้าง​ราคา​ที่​ใช้​สร้าง​สัญญาณ​พัง | BUY เพราะ higher low ยืนเหนือ swing low; ถ้า​ราคา​ลง​ล่าง​ swing low → โครงสร้าง​พัง​ → ปิด |
 | **Lot size** | จำนวน units ที่​ trade — XAUUSD lot = 1 oz troy | 1.0 lot = 1 ounce gold ≈ $2000 (ราคาปัจจุบัน) |
-| **Commission** | ค่า​ธรรมเนียม​โบรกเกอร์​ต่อ​ไม้ — fixed per lot | IC Markets Raw = $7/lot (2 ways: open + close = $14/trade) |
+| **Commission** | ค่า​ธรรมเนียม​โบรกเกอร์​ต่อ​ไม้ — depends on account type | IC Markets **Standard** = $0 commission (cost lives in spread); Raw Spread = $7/lot (2 ways: open + close = $14/trade) |
 
 ---
 
@@ -413,5 +429,5 @@ auditor:
 ---
 
 **Document Date:** 2026-07-22  
-**Config Version:** `config/base.yaml` (post-EXP-003 session-gate change, post-EXP-008 Watchman breakeven/trail adoption)  
-**Last Major Change:** EXP-008 ADOPTED 2026-07-22 (`watchman.breakeven_enabled`/`trail_enabled: false`, live restarted); EXP-009's `pivot_bars=4` superseded by the same joint re-verification -- `global.swing_pivot_bars` stays 3 by deliberate choice, not a pending decision
+**Config Version:** `config/base.yaml` (post-EXP-003 session-gate change, post-EXP-008 Watchman breakeven/trail adoption, min-lot-risk-cap-pct: 1.5 adopted, Standard account cost model)  
+**Last Major Change:** EXP-008 ADOPTED 2026-07-22 (`watchman.breakeven_enabled`/`trail_enabled: false`, live restarted); min-lot fallback adopted (cfo.min_lot_risk_cap_pct: 1.5); Account type confirmed **Standard** (ZERO commission); Timeframe probe H1-confirmed (M30/M15/M5 rejected); EXP-010 pre-registered (H1→M30 hybrid entry timing — spread fix เคลียร์แล้ว รอ re-baseline + harness)

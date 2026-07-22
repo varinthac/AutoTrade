@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1072 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1085 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1072 (including all parametrized variants)
+- **Total Test Count**: 1085 (including all parametrized variants)
 - **Test Files**: ~55 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -75,7 +75,7 @@ This document provides a comprehensive list of all 1072 test cases in the AutoTr
 | Scripts & CLI | test_autotrade_control.py | 19 |
 | | test_clock.py | 1 |
 | | test_config.py | 26 |
-| | test_historical_download.py | 6 |
+| | test_historical_download.py | 14 |
 | | test_historical_gaps.py | 4 |
 | | test_kill_switch_flag.py | 9 |
 | | test_kill_switch_script.py | 25 |
@@ -85,13 +85,13 @@ This document provides a comprehensive list of all 1072 test cases in the AutoTr
 | | test_poller.py | 10 |
 | | test_run_auditor.py | 37 |
 | | test_run_backtest.py | 22 |
-| | test_run_shadow_loop.py | 24 |
+| | test_run_shadow_loop.py | 29 |
 | | test_run_telegram_control.py | 10 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **242** |
+| **Scripts & CLI Subtotal** | | **255** |
 | | | |
-| **GRAND TOTAL** | | **1072** |
+| **GRAND TOTAL** | | **1085** |
 
 ---
 
@@ -1148,6 +1148,14 @@ This document provides a comprehensive list of all 1072 test cases in the AutoTr
 - test_download_historical_reports_zero_unexplained_gaps_for_clean_data
 - test_download_historical_drops_still_forming_last_bar
 - test_download_historical_keeps_last_bar_once_it_has_fully_closed
+- test_download_historical_floors_zero_spread_rows
+- test_download_historical_leaves_nonzero_spread_untouched
+- test_download_historical_floors_each_known_symbol_correctly[XAUUSD-5]
+- test_download_historical_floors_each_known_symbol_correctly[EURUSD-10]
+- test_download_historical_floors_each_known_symbol_correctly[GBPUSD-13]
+- test_download_historical_floors_each_known_symbol_correctly[USDJPY-10]
+- test_download_historical_raises_for_symbol_with_no_configured_floor
+- test_download_historical_floors_zero_spread_on_non_h1_timeframe
 
 ### tests/unit/test_historical_gaps.py
 
@@ -1342,6 +1350,11 @@ This document provides a comprehensive list of all 1072 test cases in the AutoTr
 - test_main_writes_pid_file_during_run_and_removes_it_on_clean_exit
 - test_main_removes_pid_file_even_when_run_raises_keyboard_interrupt
 - test_main_removes_pid_file_even_when_run_raises_unhandled_exception
+- test_configure_logging_creates_a_log_file_in_the_expected_location
+- test_configure_logging_creates_the_log_directory_if_missing
+- test_configure_logging_console_handler_still_present_and_file_receives_records
+- test_configure_logging_falls_back_to_console_only_when_log_dir_unwritable
+- test_main_continues_running_when_log_directory_is_unwritable
 
 ### tests/unit/test_run_telegram_control.py
 

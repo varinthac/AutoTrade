@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pandas as pd
 import pytest
 
 from autotrade.feed import historical
@@ -118,3 +119,89 @@ def test_download_historical_keeps_last_bar_once_it_has_fully_closed(monkeypatch
 
     assert result.rows == 5
     assert result.end == datetime(2026, 7, 20, 4)
+
+
+def test_download_historical_floors_zero_spread_rows(monkeypatch, tmp_path):
+    rates = [_rate(2026, 7, 20, h) for h in range(3)]
+    rates[1]["spread"] = 0  # MT5's "not populated" quirk
+    monkeypatch.setattr(historical.mt5, "copy_rates_range", lambda *a, **k: rates)
+    monkeypatch.setattr(historical, "HISTORICAL_DIR", tmp_path)
+    monkeypatch.setattr(historical, "server_now", lambda broker_symbol: datetime(2026, 7, 20, 10))
+
+    result = download_historical("XAUUSD", "H1", days=1)
+
+    saved = pd.read_csv(result.path)
+    assert list(saved["spread"]) == [2, 5, 2]
+
+
+def test_download_historical_leaves_nonzero_spread_untouched(monkeypatch, tmp_path):
+    rates = [_rate(2026, 7, 20, h) for h in range(3)]
+    rates[0]["spread"] = 1
+    rates[1]["spread"] = 3
+    rates[2]["spread"] = 4
+    monkeypatch.setattr(historical.mt5, "copy_rates_range", lambda *a, **k: rates)
+    monkeypatch.setattr(historical, "HISTORICAL_DIR", tmp_path)
+    monkeypatch.setattr(historical, "server_now", lambda broker_symbol: datetime(2026, 7, 20, 10))
+
+    result = download_historical("XAUUSD", "H1", days=1)
+
+    saved = pd.read_csv(result.path)
+    assert list(saved["spread"]) == [1, 3, 4]
+
+
+@pytest.mark.parametrize(
+    "symbol, expected_floor",
+    [
+        ("XAUUSD", 5),
+        ("EURUSD", 10),
+        ("GBPUSD", 13),
+        ("USDJPY", 10),
+    ],
+)
+def test_download_historical_floors_each_known_symbol_correctly(monkeypatch, tmp_path, symbol, expected_floor):
+    rates = [_rate(2026, 7, 20, h) for h in range(2)]
+    rates[0]["spread"] = 0
+    monkeypatch.setattr(historical.mt5, "copy_rates_range", lambda *a, **k: rates)
+    monkeypatch.setattr(historical, "HISTORICAL_DIR", tmp_path)
+    monkeypatch.setattr(historical, "server_now", lambda broker_symbol: datetime(2026, 7, 20, 10))
+    monkeypatch.setattr(historical, "to_broker_name", lambda s: s)
+
+    result = download_historical(symbol, "H1", days=1)
+
+    saved = pd.read_csv(result.path)
+    assert saved["spread"].iloc[0] == expected_floor
+
+
+def test_download_historical_raises_for_symbol_with_no_configured_floor(monkeypatch, tmp_path):
+    rates = [_rate(2026, 7, 20, h) for h in range(2)]
+    rates[0]["spread"] = 0
+    monkeypatch.setattr(historical.mt5, "copy_rates_range", lambda *a, **k: rates)
+    monkeypatch.setattr(historical, "HISTORICAL_DIR", tmp_path)
+    monkeypatch.setattr(historical, "server_now", lambda broker_symbol: datetime(2026, 7, 20, 10))
+    monkeypatch.setattr(historical, "to_broker_name", lambda s: s)
+
+    with pytest.raises(HistoricalDownloadError, match="no spread-zero floor configured"):
+        download_historical("NZDUSD", "H1", days=1)
+
+
+def test_download_historical_floors_zero_spread_on_non_h1_timeframe(monkeypatch, tmp_path):
+    rates = [
+        {
+            "time": _epoch(2026, 7, 20, 0),
+            "open": 99.0, "high": 101.0, "low": 98.0, "close": 100.0,
+            "tick_volume": 10, "spread": 0,
+        },
+        {
+            "time": _epoch(2026, 7, 20, 0) + 900,
+            "open": 99.0, "high": 101.0, "low": 98.0, "close": 100.0,
+            "tick_volume": 10, "spread": 2,
+        },
+    ]
+    monkeypatch.setattr(historical.mt5, "copy_rates_range", lambda *a, **k: rates)
+    monkeypatch.setattr(historical, "HISTORICAL_DIR", tmp_path)
+    monkeypatch.setattr(historical, "server_now", lambda broker_symbol: datetime(2026, 7, 20, 10))
+
+    result = download_historical("XAUUSD", "M15", days=1)
+
+    saved = pd.read_csv(result.path)
+    assert list(saved["spread"]) == [5, 2]

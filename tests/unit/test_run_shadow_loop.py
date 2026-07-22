@@ -9,6 +9,7 @@ only its downstream collaborator (orchestrator/shadow_loop.py) was tested.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import sys
 from contextlib import contextmanager
@@ -169,6 +170,7 @@ def _patch_common_main_wiring(monkeypatch, tmp_path) -> None:
         "open": [100.0], "high": [101.0], "low": [99.0], "close": [100.0],
     }))
     monkeypatch.setattr(pid_file, "DEFAULT_PID_PATH", tmp_path / "shadow_loop.pid")
+    monkeypatch.setattr(run_shadow_loop, "LOG_DIR", tmp_path / "logs")
 
 
 def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(monkeypatch, tmp_path):
@@ -392,8 +394,9 @@ def test_build_news_provider_falls_back_to_stub_when_neither_mql5_nor_finnhub_av
     assert isinstance(provider, run_shadow_loop.StubNewsCalendarProvider)
 
 
-def test_main_unknown_adapter_choice_rejected_by_argparse(monkeypatch, capsys):
+def test_main_unknown_adapter_choice_rejected_by_argparse(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(sys, "argv", ["run_shadow_loop.py", "--adapter", "live"])
+    monkeypatch.setattr(run_shadow_loop, "LOG_DIR", tmp_path / "logs")
 
     with pytest.raises(SystemExit):
         run_shadow_loop.main()
@@ -519,3 +522,79 @@ def test_main_removes_pid_file_even_when_run_raises_unhandled_exception(monkeypa
         run_shadow_loop.main()
 
     assert pid_file.read() is None
+
+
+# --- _configure_logging() -- durable log file alongside console output ------
+
+
+def test_configure_logging_creates_a_log_file_in_the_expected_location(tmp_path):
+    log_dir = tmp_path / "logs"
+
+    run_shadow_loop._configure_logging(log_dir)
+
+    log_files = list(log_dir.glob("shadow_loop_*.log"))
+    assert len(log_files) == 1
+
+
+def test_configure_logging_creates_the_log_directory_if_missing(tmp_path):
+    log_dir = tmp_path / "does_not_exist_yet"
+    assert not log_dir.exists()
+
+    run_shadow_loop._configure_logging(log_dir)
+
+    assert log_dir.is_dir()
+
+
+def test_configure_logging_console_handler_still_present_and_file_receives_records(tmp_path):
+    """Adding the FileHandler must not come at the expense of the console
+    output operators watching the shadow loop's console window rely on --
+    both handlers must be attached, and a record logged through the module's
+    logger must reach the file (proving it's actually wired up, not just
+    present)."""
+    log_dir = tmp_path / "logs"
+
+    run_shadow_loop._configure_logging(log_dir)
+
+    handlers = logging.getLogger().handlers
+    assert any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in handlers)
+    assert any(isinstance(h, logging.FileHandler) for h in handlers)
+
+    logging.getLogger(run_shadow_loop.__name__).info("integration marker line")
+    for handler in handlers:
+        handler.flush()
+
+    log_file = next(log_dir.glob("shadow_loop_*.log"))
+    assert "integration marker line" in log_file.read_text(encoding="utf-8")
+
+
+class _UnwritableLogDir:
+    """Stand-in for an unwritable/uncreatable logs/ directory (e.g. a fresh
+    machine with a permissions problem) -- duck-types the one method
+    _configure_logging() calls before it would otherwise touch the
+    filesystem."""
+
+    def mkdir(self, parents=True, exist_ok=True):
+        raise OSError("simulated: logs directory unwritable")
+
+
+def test_configure_logging_falls_back_to_console_only_when_log_dir_unwritable():
+    run_shadow_loop._configure_logging(_UnwritableLogDir())
+
+    handlers = logging.getLogger().handlers
+    assert len(handlers) == 1
+    assert isinstance(handlers[0], logging.StreamHandler)
+    assert not isinstance(handlers[0], logging.FileHandler)
+
+
+def test_main_continues_running_when_log_directory_is_unwritable(monkeypatch, tmp_path):
+    """The most important test here: a logging setup problem (an unwritable
+    logs/ directory) must never prevent the shadow loop from actually
+    running/trading."""
+    _patch_common_main_wiring(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_shadow_loop, "load_finnhub_api_key", lambda: None)
+    monkeypatch.setattr(run_shadow_loop, "ShadowLoop", _FakeShadowLoop)
+    monkeypatch.setattr(run_shadow_loop, "LOG_DIR", _UnwritableLogDir())
+
+    exit_code = run_shadow_loop.main()
+
+    assert exit_code == 0

@@ -2168,3 +2168,46 @@ the probe's exact PF/net figures as current. Any EXP-010 work must FIRST re-run 
 on the floored data with a consciously-chosen commission (now a required CLI arg) — the baseline
 figures cited in EXP-010 §4 are stale for the same reason. No re-run performed here (compute-heavy;
 EXP-010 re-baselines as its own first step anyway). Config UNCHANGED; Test budget UNSPENT.
+
+---
+
+## NOTE (not an EXP) 2026-07-22 — `feed/historical.py` now floors zero-spread at the source (closes the re-download recurrence gap)
+
+Code-level fix, NOT a parameter search / edge selection — same convention as the two NOTEs above
+(no EXP-### pre-registration, no Train/Val/Test discipline, no plateau protocol, Test one-touch
+budget UNSPENT/NA). `config/base.yaml` UNCHANGED. `src/autotrade/feed/historical.py` and
+`tests/unit/test_historical_download.py` CHANGED. pytest: 1085 passed (was 1072 recorded in the
+prior NOTE; +8 new tests for this change, +5 from a pre-existing `test_run_shadow_loop.py` doc-count
+drift found and corrected while updating `docs/test_cases.md`, unrelated to this fix).
+
+### What this closes
+The "Historical `spread` zero-value floor" NOTE above fixed the existing `data/historical/*.csv`
+files on disk by flooring `spread==0` rows, but flagged a "RECURRING GOTCHA": those files are
+gitignored and the fix was applied by hand, so a fresh `download_historical()` call would silently
+reintroduce `spread=0` on older bars every time, with no code change to prevent it. This closes that
+gap: `download_historical()` in `src/autotrade/feed/historical.py` now floors any `spread==0` row to
+a per-symbol constant (`SPREAD_ZERO_FLOOR_POINTS`, defined at module scope next to
+`_TIMEFRAME_DELTA`) immediately before the CSV is written, applying to whichever timeframe was
+requested (not H1-only) — same floors as the manual fix: XAUUSD 5, EURUSD 10, GBPUSD 13, USDJPY 10
+points. Only `spread==0` rows are touched; any populated nonzero value (even 1-4 pts) is left as-is,
+matching the manual fix's deliberately conservative rule. A symbol requested with no entry in
+`SPREAD_ZERO_FLOOR_POINTS` raises `HistoricalDownloadError` (matching this codebase's established
+"fail loudly on missing symbol-specific config" convention, e.g. `common/symbols.py`'s
+`UnknownSymbolError` for an unmapped canonical name) rather than silently skipping the floor.
+
+### Verification
+Unit tests (`tests/unit/test_historical_download.py`, mocked MT5): zero-spread rows get floored to
+the correct value; nonzero rows (1, 3, 4 pts) are left untouched; each of the 4 known symbols gets
+its own distinct correct floor; an unconfigured symbol raises `HistoricalDownloadError`; the floor
+applies on a non-H1 timeframe (M15) too. Real-world sanity check: ran `download_historical("XAUUSD",
+"H1", days=10)` against the live MT5 demo connection (writing to a scratch directory, NOT
+`data/historical/`, so the already-fixed on-disk CSVs were not touched) — 38 of 167 fresh bars came
+back `spread=0` from MT5 as expected, and the saved CSV had **0** zero-spread rows after the fix
+(spread value_counts: 1×7, 2×6, 3×5, 4×5, 5×144 — confirms the floor lands exactly on the zero rows
+and nowhere else).
+
+### Scope / what does NOT need to change
+The existing on-disk `data/historical/*.csv` files (already manually floored per the prior NOTE) do
+NOT need to be re-touched or re-downloaded because of this change — this fix only prevents the bug
+from being reintroduced on FUTURE downloads/re-downloads. `data/historical/*.csv` UNCHANGED by this
+pass (verified: only the scratch-directory copy was written to during the live sanity check above).
