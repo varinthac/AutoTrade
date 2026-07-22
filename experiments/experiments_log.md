@@ -2735,3 +2735,239 @@ M15-primary families' one-touch Test budgets remain UNSPENT/pristine (rule 2). `
 (analysis-only, rule 10). Auditor gate thresholds NOT touched (rule 8). Harness:
 `experiments/exp011_native_tf_harness.py` (committable, reusable for any future native-TF sweep); raw run
 outputs are session-local background-task logs.
+
+---
+
+## EXP-012 2026-07-22 — H1 + M30 momentum CONFIRMATION FILTER (pure-additive; NEW family "confluence filter")
+
+Status: PRE-REGISTERED, then RUN 2026-07-22 (see RESULTS block below). Analysis-only:
+`config/base.yaml`, `council/`, `backtest/engine.py`, `feed/`, `risk/`, `watchman/` NOT modified.
+New code lives only in `experiments/exp012_013_confluence_harness.py` (signal_fn gate wrapper;
+production pure-functions reused verbatim). Test one-touch budget for this NEW family: reserved,
+NOT to be touched without explicit user approval (per this task's ground rule 5 — Train/Val only).
+
+### 0. What this is / NEW family / why EXP-005/007/010/011 do NOT already answer it
+
+The idea (user-approved): keep the CURRENT-LIVE H1 pipeline (Council/RiskVoice/Shield/CFO/Watchman)
+COMPLETELY UNCHANGED as the decision-maker, and add a PURE ADDITIVE boolean gate on top — an H1
+signal that would normally trade is TAKEN ONLY IF a second timeframe agrees in the same direction.
+This can ONLY REDUCE trade count (a filter; it never adds signals). Distinct from all prior lower-TF
+work and its own family (own multiple-testing budget, own unspent one-touch Test):
+- **EXP-005 (M15) / EXP-007 (M30):** asked whether lower-TF pre-entry STRUCTURE *discriminates* which
+  H1 signals win vs lose — a predictive-feature search. Rejected (no cross-split sign-consistent
+  feature). EXP-012 does NOT claim M30 predicts H1 outcome; it is a coarse same-direction MOMENTUM
+  agreement gate whose only job is to skip signals fired while M30 is moving the OTHER way (the
+  choppy/conflicting condition that whipsawed EXP-010/011).
+- **EXP-010 (H1→M30 hybrid) / EXP-011 (M30/M15 as PRIMARY):** both CHANGED the decision/entry/stop
+  mechanics (tighter M30 stop, or M30 as the brain) → whipsawed in 2021-22 chop (F2/F5) and gave back
+  the 2023-24 trend. EXP-012 changes NOTHING about entry price, stop, or decision — same H1 bar-i+1
+  open fill, same H1 ATR stop, same Watchman. It ONLY drops a subset of H1 signals. So EXP-010/011's
+  whipsaw failure mode (tighter stop) structurally CANNOT recur here; the open question is whether the
+  agreement gate removes the *right* (losing) H1 signals in Y1/Y2 without gutting Y3/Val or trade count.
+
+### 1. Hypothesis (falsifiable, pre-registered)
+
+**H1:** Requiring the last CLOSED M30 bar to show momentum in the SAME direction as the H1 signal
+(m30_close on the signal's side of a short M30 EMA(P)) screens out the choppy/conflicting-direction
+H1 entries that lost in 2021-22 (Y1, PF 1.001) and 2022-23 (Y2, PF 0.967) — RAISING those two weak
+years' PF — WITHOUT materially degrading the trend-capture years (Y3 1.199, Val 1.101) and WITHOUT
+dropping any year below the 100-trade floor.
+
+**Mechanism choice (ONE, justified — NOT a grid over mechanisms, per ground rule 7):** "last closed
+M30 close vs short M30 EMA(P)". Chosen over (i) "last N M30 closes strictly monotonic" (noisy, jumps
+in strictness with N) and (ii) "M30 RSI vs 50" (RSI adds its own 14-bar smoothing constant, muddying
+what the single knob controls) because close-vs-EMA is smooth, has ONE clean tunable knob P (the EMA
+lookback = filter strictness), and is a direct read of "is M30 moving the same way as the H1 signal
+RIGHT NOW." Small P ≈ price-vs-recent-price (loose, agrees with a fresh H1 signal almost always →
+removes few trades); large P ≈ price-vs-longer-average (strict → removes more). ATR/indicator periods
+untouched. NO LOOKAHEAD: the M30 bar used is the last one CLOSED at/before the H1 decision instant
+(H1 open+1h); an M30 bar closing exactly at the H1 close is composed only of price ≤ that instant.
+
+**Null / falsifiers (any one ⇒ REJECT, H1-as-is stands):**
+- (F1) No Y1/Y2 repair: the gate does NOT raise Y1 AND Y2 PF (it removes losers and winners roughly
+  equally — the agreement condition is near-collinear with "H1 just fired", so it carries no extra info).
+- (F2) Trend give-back: it materially degrades Y3 or Val (PF drop > 0.03, or turns either net-negative).
+- (F3) Trade starvation: any year drops < 100 trades → INSUFFICIENT for that config; and if the viable
+  configs cut frequency so hard the $3,000 small-account trade-frequency need is breached, that is a
+  reported tradeoff even if edge improves (never hidden — ground rule 8).
+- (F4) Regime luck / no plateau: any PF lift shows up in different years across P, i.e. no stable
+  same-direction improvement and no plateau over neighboring P (rule 5).
+
+### 2. Baseline to beat — H1-AS-IS (current live config, honest costs)
+
+Reproduced fresh in this harness (`--filter none`), BYTE-FOR-BYTE matching EXP-010 §9 / RE-VERIFICATION
+P1 BOTH-OFF (Watchman struct+time ON / be+trail OFF, RV all-24h ON, tp 2.0, pivot 3, equity $10k,
+comm $0, spread-floored data):
+
+| Year | H1-as-is PF | net $ | trades | avgR | DD% | PF_ex5 |
+|------|-------------|-------|--------|------|-----|--------|
+| Y1 2021-22 (Train) | 1.001 | +20  | 277 | 0.010 | 14.3 | 0.935 |
+| Y2 2022-23 (Train) | 0.967 | −548 | 256 | −0.022 | 28.9 | 0.894 |
+| Y3 2023-24 (Train) | 1.199 | +2935 | 234 | 0.123 | 15.2 | 1.111 |
+| Y4 2024-25 (Val)   | 1.101 | +1557 | 262 | 0.068 | 10.4 | 1.024 |
+
+### 3. Sweep (ONE knob, per rule 3) + splits
+
+Knob = M30 EMA period P ∈ {6, 10, 14, 20, 30} M30 bars (= 3h/5h/7h/10h/15h wall-clock momentum
+context). 5 configs (family multiple-testing count for EXP-012 = 5, < 20). Splits reuse the whole
+log's: Train per-year Y1/Y2/Y3 (2021-07-22→2024-07-21), Validation Y4 (2024-07-21→2025-07-21). Test
+(2025-07-21→2026-07-21) reserved/UNSPENT — NOT touched without explicit user approval.
+
+### 4. Acceptance criteria (pre-registered — mirrors the log's per-year robustness bar)
+
+Deciding metric: **per-year PF + net $ + avgR** vs H1-as-is, gated by trade floor and plateau.
+Candidate P is worth-pursuing iff ALL:
+- (a) Trade floor ≥ 100 in EVERY year Y1–Y4 (else INSUFFICIENT for that P);
+- (b) **Fixes the target weakness:** raises PF in Y1 AND Y2 (the two years this is meant to repair),
+  ideally turning Y2 net-positive, without a sign flip elsewhere;
+- (c) **Preserves trend capture:** Y3 and Val stay net-positive and PF not materially worse (drop ≤ 0.03);
+- (d) No sign flip: turns NO H1-positive year (Y1/Y3/Val) net-negative;
+- (e) Beats H1 PF in a MAJORITY of Y1–Y4 AND avgR in a majority;
+- (f) Plateau (rule 5): the winning P's ±1-grid-step neighbors within ~15% PF and same direction;
+- (g) Trade-frequency cost quantified and judged against the $3,000 small-account need (reported as a
+  tradeoff regardless of verdict).
+Else REJECT (H1-as-is stands) or INSUFFICIENT. Test NOT touched (ground rule 5). Auditor gates NOT
+touched (rule 8). Spec bounds: no new persisted param proposed (analysis-only); a real M30-confirm rule
+would need a spec amendment for the new knob P before any config change (flagged, not done).
+
+---
+
+## EXP-013 2026-07-22 — H1 + H4 trend AGREEMENT FILTER (pure-additive; same "confluence filter" family)
+
+Status: PRE-REGISTERED, then RUN 2026-07-22 (see RESULTS block below). Analysis-only (same scope as
+EXP-012). New code: same harness `experiments/exp012_013_confluence_harness.py` (`--filter h4`).
+
+### 0. What this is (sibling of EXP-012, slower-TF check)
+
+Identical pure-additive gate concept as EXP-012, but the confirming timeframe is a HIGHER, slower one:
+a larger-picture trend-agreement check rather than M30's faster momentum. Same "H1 pipeline unchanged,
+only drop non-agreeing signals" mechanism (so EXP-010/011's tighter-stop whipsaw cannot recur).
+
+**Timeframe choice: H4 (NOT Daily) — justified, not a grid.** H4 is 4× H1 (a genuine higher-TF trend)
+yet not as trade-starving as Daily. On the ~1-year evaluation windows a Daily EMA changes direction
+only a handful of times and a price-vs-Daily-EMA gate would slash the already-modest ~256-trade/yr H1
+count hard — directly hostile to this project's binding $3,000 small-account trade-frequency constraint
+(project_small_account_philosophy). H4 gives a "bigger picture than H1" agreement check while keeping
+more of the frequency. Picking H4 over Daily is a pre-committed design call (ground rule 7), NOT a
+joint H4×Daily grid.
+
+**H4 data:** DERIVED from H1 by a byte-exact 4h OHLC resample (aligned to server hours 0/4/8/12/16/20)
+— no re-download needed, and because FILLS still use the H1 bars, the cost model / spread floor is
+entirely unaffected (H4 is used only to compute a trend-direction boolean). NO LOOKAHEAD: the H4 bar
+used at each H1 decision is the last H4 bar CLOSED at/before the H1 decision instant (H1 open+1h).
+
+### 1. Hypothesis / falsifiers
+
+**H1:** Requiring the last closed H4 bar's close to be on the same side of an H4 EMA(Q) as the H1
+signal direction (higher-TF trend agrees) screens out counter-higher-trend H1 entries — improving the
+weak chop/transition years (Y1/Y2) while preserving Y3/Val — without breaching the 100-trade floor.
+**Falsifiers:** same F1–F4 as EXP-012 (no Y1/Y2 repair; trend give-back on Y3/Val; trade starvation
+below floor or unacceptable frequency cut; regime luck / no plateau over Q).
+
+### 2. Baseline / 3. Sweep / 4. Acceptance
+
+Baseline = the SAME H1-as-is table as EXP-012 §2. Knob = H4 EMA period Q ∈ {10, 20, 30, 50} H4 bars
+(= 40h/80h/120h/200h ≈ 1.7d/3.3d/5d/8.3d trend lookback). 4 configs (EXP-013 family count = 4; the
+"confluence filter" family total across EXP-012+EXP-013 = 9, < 20). Splits + acceptance criteria
+(a)–(g) IDENTICAL to EXP-012 §4 (per-year robustness bar). Test reserved/UNSPENT — NOT touched without
+explicit user approval. Auditor gates NOT touched (rule 8). A real H4-agreement rule would need a spec
+amendment for the new knob Q before any config change (flagged, not done).
+
+---
+
+## EXP-012 + EXP-013 RESULTS (run 2026-07-22) — VERDICT: REJECT BOTH (H1-as-is stands)
+
+Analysis-only: `config/base.yaml`, `council/`, `backtest/engine.py`, `feed/`, `risk/`, `watchman/` NOT
+modified. Code: `experiments/exp012_013_confluence_harness.py` (signal_fn gate; production pure-functions
+reused verbatim) + `scratchpad/conf_driver.py` (resumable driver). Both NEW-family Test budgets remain
+UNSPENT (no candidate cleared Train+Val → Test never touched). Cost model ON throughout (comm $0 IC
+Markets Standard, slippage = bar's own spread, spread-floored CSVs). Equity $10k, all-24h RV, Watchman
+struct+time ON / be+trail OFF, tp 2.0, pivot 3 — the exact current-live H1 pipeline, UNCHANGED.
+
+### §A. Fidelity (`--filter none`) — PASSED
+Gate pass-through reproduces the EXP-010 §9 / RE-VERIFICATION P1 BOTH-OFF baseline to the cent:
+Y1 1.001/+20/277, Y2 0.967/−548/256, Y3 1.199/+2935/234, Val 1.101/+1557/262. The gate composes the
+stock council signal fn correctly; any per-year delta below is the FILTER, not a harness artifact.
+
+### §B. Per-year grid — PF / net $ / trades (bold = beats baseline PF that year)
+Baseline: **Y1 1.001/+20/277 | Y2 0.967/−548/256 | Y3 1.199/+2935/234 | Val 1.101/+1557/262**
+
+**EXP-012 M30 momentum (close vs M30 EMA(P)):**
+
+| P | Y1 | Y2 | Y3 | Val |
+|---|----|----|----|-----|
+| 6  | **1.093** / +1418 / 266 | 0.908 / −1288 / 236 | 1.191 / +2929 / 241 | 1.049 / +689 / 248 |
+| 10 | **1.045** / +653 / 264  | 0.921 / −1132 / 236 | 1.192 / +2699 / 229 | 1.068 / +989 / 251 |
+| 14 | **1.087** / +1277 / 263 | 0.909 / −1299 / 237 | **1.242** / +3415 / 229 | 1.060 / +872 / 252 |
+| 20 | **1.048** / +703 / 264  | 0.932 / −992 / 236  | 1.192 / +2681 / 228 | **1.123** / +1798 / 248 |
+| 30 | **1.055** / +821 / 265  | 0.965 / −530 / 244  | 1.131 / +1835 / 230 | **1.138** / +2011 / 247 |
+
+**EXP-013 H4 trend (H4 close vs H4 EMA(Q); H4 = byte-exact 4h resample of H1):**
+
+| Q | Y1 | Y2 | Y3 | Val |
+|---|----|----|----|-----|
+| 10 | **1.006** / +98 / 276  | 0.881 / −1814 / 247 | 1.138 / +2021 / 238 | **1.147** / +2150 / 246 |
+| 20 | 0.952 / −715 / 276     | 0.916 / −1341 / 250 | 1.153 / +2224 / 233 | **1.089** / +1248 / 246 |
+| 30 | 0.971 / −410 / 264     | **0.970** / −480 / 247 | 1.106 / +1575 / 234 | 1.044 / +576 / 241 |
+| 50 | 0.939 / −807 / 247     | **1.031** / +445 / 233 | 1.193 / +2605 / 217 | 1.044 / +557 / 225 |
+
+(All configs clear the ≥100-trade/year floor — criterion (a) PASS everywhere; trade counts are barely
+reduced, which is itself the core finding — see §C.)
+
+### §C. Acceptance-criteria scoring + VERDICT
+
+**Overarching finding — both filters are NEAR-COLLINEAR with the H1 signal, so they barely filter.**
+An H1 signal fires precisely because H1 momentum/trend points that way, and M30/H4 are highly correlated
+with H1 on direction — so "M30/H4 agrees with the H1 signal" is true almost whenever H1 fires. Loose
+settings remove almost nothing (M30: 277→263–266, ~5%; H4 Q=10: 277→276, ~1 trade). The small per-year
+PF wiggles at those settings are trade-set RESHUFFLE noise (max_positions=1), not screening. This is the
+mechanism reason the confluence idea does not deliver here.
+
+**EXP-012 (M30) — REJECT.**
+- (b) Repair BOTH weak years: **FAIL.** Y1 PF rises for every P (good), but Y2 is NEVER repaired — every
+  P leaves Y2 PF ≤ baseline 0.967 (0.908–0.965; best P=30 merely TIES, and only by removing ~13 losers
+  in a coin-flip reshuffle). The filter does not systematically screen Y2's losers.
+- (c) Preserve trend years: partial fail — P=6/10/14 drag Val >0.03 below baseline (1.049/1.068/1.060);
+  P=30 drags Y3 to 1.131 (−0.068). No single P holds BOTH Y3 and Val.
+- (e) Beat baseline PF in a MAJORITY of Y1–Y4: **FAIL** for every P (best, P=20, wins only Y1 & Val = 2/4;
+  avgR likewise 2/4). (f) Plateau: **FAIL** — as P rises, Y3 falls (1.242→1.131) while Val rises
+  (1.060→1.138): an opposing-tradeoff surface, not a plateau (rule 5). Regime-reshuffle (F4), no stable edge.
+- (g) Frequency: ~5% fewer trades — negligible, and buys nothing; no favorable frequency/edge tradeoff
+  for the $3,000 account (you neither gain edge nor meaningfully change count).
+
+**EXP-013 (H4) — REJECT.**
+- (d) No sign flip: **FAIL, decisively.** As soon as the H4 gate is strict enough to actually remove trades
+  (Q≥20), it turns the H1-POSITIVE Y1 (2021-22, +$20) NET-NEGATIVE: Q20 −$715, Q30 −$410, Q50 −$807. In the
+  2021-22 CHOP the H4 "trend" is itself whipsawing, so "counter-H4-trend" H1 entries are disproportionately
+  the chop-REVERSAL trades that go on to win — stripping them removes the wrong trades in exactly the regime
+  the filter was meant to fix. Same whipsaw-by-regime failure mode as EXP-010/011, arriving through a
+  different door (signal removal, not a tighter stop).
+- (b) Repair BOTH weak years: **FAIL.** Only Q=50 repairs Y2 (0.967→1.031) — and it does so precisely BY
+  flipping Y1 negative (0.939/−$807). No Q raises Y1 and Y2 together. (c)/(f): Q=10 drags Y3 (−0.061) and is
+  a ~1-trade no-op; the response is a Y1↔Y2 regime swap as Q rises (no plateau, F4).
+- (g) Frequency: strict Q cuts up to ~11% (Y1 277→247 at Q=50) but only by deleting profitable chop-reversal
+  trades — the worst possible frequency reduction for a small account (fewer trades AND worse Y1).
+
+**Multiple-testing (rule 7):** confluence family = 9 configs (5 M30 + 4 H4), < 20 → standard bar; moot, as
+nothing passes. **Plateau (rule 5): moot** — no passing region exists for either sibling.
+
+### §D. VERDICT — REJECT BOTH. Neither confluence filter is worth pursuing.
+Neither a fast M30 momentum-agreement gate nor a slower H4 trend-agreement gate fixes the 2021-22 (Y1)
+whipsaw the way the hypothesis hoped. Two robust reasons: (1) same-direction cross-TF agreement is
+near-collinear with the H1 signal itself, so loose settings are no-ops (remove ~1–5% of trades, change
+nothing but reshuffle noise); (2) the only setting strict enough to bite (H4 Q≥20) removes the WRONG trades
+— the chop-reversal H1 entries that carry Y1 — turning a positive year net-negative (the exact whipsaw-by-
+regime failure EXP-010/011 hit). No config repairs BOTH weak years (Y1 & Y2); improving one degrades the
+other (regime tradeoff, not edge — the reshuffling failure mode this log has now caught 7+ times). The
+trade-frequency tradeoff is unfavorable for the $3,000 small-account constraint either way: you either
+remove almost nothing (no benefit) or remove profitable trades (harm). The current H1-as-is pipeline stands.
+
+**Honest tradeoff note (ground rule 8, not buried):** the confluence idea's stated tension — "filter →
+fewer trades → worse for a small account that needs frequency" — turned out to be the LESSER problem. The
+real problem is the filter has no genuine edge to trade the frequency AWAY for: at the frequency cost small
+enough to tolerate (~5%) it does nothing, and at the frequency cost large enough to matter it harms Y1.
+
+**Test set (2025-07-21→2026-07-21) NOT touched** — both the EXP-012 and EXP-013 (confluence-filter family)
+one-touch Test budgets remain UNSPENT/pristine (rule 2; ground rule 5). `config/base.yaml` NOT modified
+(analysis-only, rule 10). Auditor gate thresholds NOT touched (rule 8). Harness:
+`experiments/exp012_013_confluence_harness.py` (committable, reusable for any future cross-TF gate).
