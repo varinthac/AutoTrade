@@ -19,6 +19,7 @@
 </div>
 {% else %}
 <div class="card">
+  <div class="table-scroll">
   <table>
     <thead>
       <tr>
@@ -47,11 +48,13 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </div>
 {% endif %}
 <h2>Closed trades</h2>
 {% if rows %}
 <div class="card">
+  <div class="table-scroll">
   <table>
     <thead>
       <tr>
@@ -86,6 +89,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   <div class="pagination">
     {% if has_prev %}<a href="{{ url_for('trades', page=page - 1) }}">&larr; Previous</a>{% endif %}
     <span>Page {{ page }} ({{ total_count }} trade{{ "s" if total_count != 1 else "" }} total)</span>
