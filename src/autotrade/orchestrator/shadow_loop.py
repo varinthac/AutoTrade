@@ -22,6 +22,18 @@ loop (a deliberate, documented Phase 7b simplification, not an oversight).
 `watchman_loop=None` (the default) skips Watchman entirely -- useful for
 tests/wiring that don't care about position management.
 
+**AutoTrading-toggle wiring.** If an injected `autotrading_watchdog` (a
+`watchman.autotrading_watchdog.AutoTradingWatchdog`) is given, `_on_iteration_end()`
+calls its `check()` once per polling iteration too -- same cadence as the
+Watchman cycle above, i.e. near-real-time (~`poll_interval_sec`), not once
+per H1 bar close. This module deliberately has zero direct `MetaTrader5`
+imports, so the actual `mt5.terminal_info().trade_allowed` read happens in
+`scripts/run_shadow_loop.py` instead, via the small injected
+`read_autotrading_state` callable -- `_on_iteration_end()` just calls that
+callable and feeds its result straight into `check()`. Both default to
+`None`, which together fully disable this feature (matching
+`watchman_loop=None`'s own opt-out convention).
+
 **Risk Voice is checked twice** (Appendix A §1.5's explicit re-check
 requirement): once right after a clean BUY/SELL Council decision (before
 Shield -- it is Council's own internal veto gate, per spec.md §2.2's data
@@ -121,6 +133,7 @@ from autotrade.risk.sizing import compute_lot_size
 from autotrade.shield.checkpoint import OpenPositionInfo, Shield
 from autotrade.store import journal
 from autotrade.watchman import position_metadata
+from autotrade.watchman.autotrading_watchdog import AutoTradingWatchdog
 from autotrade.watchman.loop import WatchmanLoop
 
 logger = logging.getLogger(__name__)
@@ -240,6 +253,8 @@ class ShadowLoop:
         watchman_loop: WatchmanLoop | None = None,
         position_metadata_path: Path | None = None,
         journal_db_path: Path | None = None,
+        autotrading_watchdog: AutoTradingWatchdog | None = None,
+        read_autotrading_state: Callable[[], bool | None] | None = None,
     ) -> None:
         self._adapter = adapter
         self._circuit_breaker = circuit_breaker
@@ -256,6 +271,8 @@ class ShadowLoop:
         self._watchman_loop = watchman_loop
         self._position_metadata_path = position_metadata_path
         self._journal_db_path = journal_db_path
+        self._autotrading_watchdog = autotrading_watchdog
+        self._read_autotrading_state = read_autotrading_state or (lambda: None)
         self._peak_equity: float | None = None
         self._live_start_equity: float | None = None
 
@@ -298,6 +315,8 @@ class ShadowLoop:
     def _on_iteration_end(self) -> None:
         if self._watchman_loop is not None:
             self._run_watchman_cycle()
+        if self._autotrading_watchdog is not None:
+            self._autotrading_watchdog.check(self._read_autotrading_state())
         self._check_stop_request()
 
     def _run_watchman_cycle(self) -> None:

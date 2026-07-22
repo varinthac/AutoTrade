@@ -46,6 +46,7 @@ from autotrade.orchestrator.shadow_loop import ShadowLoop, ShadowLoopConfig
 from autotrade.risk.circuit_breaker import DEFAULT_STATE_PATH, CircuitBreaker
 from autotrade.shield.checkpoint import Shield
 from autotrade.store.models import DEFAULT_LIVE_DB_PATH, DEFAULT_PAPER_DB_PATH
+from autotrade.watchman.autotrading_watchdog import AutoTradingWatchdog
 from autotrade.watchman.connectivity_watchdog import ConnectivityWatchdog, ConnectivityWatchdogConfig
 from autotrade.watchman.evaluate import WatchmanConfig
 from autotrade.watchman.loop import WatchmanLoop
@@ -91,6 +92,19 @@ def seed_history(symbol: str, timeframe: str, bars: int, symbol_map: dict[str, s
     df = pd.DataFrame(rates)
     df["time"] = pd.to_datetime(df["time"], unit="s")
     return df
+
+
+def _read_autotrading_state() -> bool | None:
+    """Reads the MT5 terminal's AutoTrading toggle fresh each poll cycle --
+    kept as a small standalone callable (rather than importing MetaTrader5
+    into `orchestrator/shadow_loop.py` directly) so that module can stay
+    MT5-import-free, matching its existing dependency-injection style. See
+    `watchman/autotrading_watchdog.py`'s module docstring for why this
+    exists. Must be called from inside an active `mt5_session()`."""
+    info = mt5.terminal_info()
+    if info is None:
+        return None
+    return info.trade_allowed
 
 
 def build_adapter(
@@ -378,6 +392,13 @@ def main() -> int:
                 symbol_map=symbol_map, state_path=DEFAULT_POSITION_METADATA_PATH,
                 journal_db_path=journal_db_path,
             )
+            # AutoTradingWatchdog has no elapsed-duration math of its own (unlike
+            # ConnectivityWatchdog) -- journal_clock is the only clock it needs,
+            # and it must be server time for the same reason as connectivity_watchdog
+            # above (store/journal.py's day-boundary bucketing). read_autotrading_state
+            # is the small MT5-touching callable ShadowLoop itself is deliberately
+            # kept free of (see orchestrator/shadow_loop.py's module docstring).
+            autotrading_watchdog = AutoTradingWatchdog(journal_clock=loop_clock, journal_db_path=journal_db_path)
 
             initial_history = {
                 symbol: seed_history(symbol, timeframe, args.seed_bars, symbol_map) for symbol in symbols
@@ -393,6 +414,7 @@ def main() -> int:
                 news_provider=news_provider, risk_voice_cfg=risk_voice_cfg,
                 watchman_loop=watchman_loop, position_metadata_path=DEFAULT_POSITION_METADATA_PATH,
                 journal_db_path=journal_db_path,
+                autotrading_watchdog=autotrading_watchdog, read_autotrading_state=_read_autotrading_state,
             )
             logger.info(
                 "Shadow loop starting: symbols=%s timeframe=%s adapter=%s mode=%s -- waiting for next bar close",

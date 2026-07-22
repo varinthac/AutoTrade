@@ -115,6 +115,24 @@ def test_seed_history_uses_broker_mapped_symbol_name(monkeypatch):
     assert captured["symbol"] == "XAUUSD.a"
 
 
+# --- _read_autotrading_state() ----------------------------------------------
+
+
+def test_read_autotrading_state_returns_none_when_terminal_info_returns_none(monkeypatch):
+    monkeypatch.setattr(mt5, "terminal_info", lambda: None)
+
+    assert run_shadow_loop._read_autotrading_state() is None
+
+
+def test_read_autotrading_state_returns_trade_allowed_field(monkeypatch):
+    class _FakeTerminalInfo:
+        trade_allowed = False
+
+    monkeypatch.setattr(mt5, "terminal_info", lambda: _FakeTerminalInfo())
+
+    assert run_shadow_loop._read_autotrading_state() is False
+
+
 # --- main() wiring ----------------------------------------------------------
 
 
@@ -240,6 +258,14 @@ def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(mon
     # `--mode paper` gates actually read, not the generic default DB.
     assert run_calls["init_kwargs"]["journal_db_path"] == run_shadow_loop.DEFAULT_PAPER_DB_PATH
     assert run_calls["init_kwargs"]["watchman_loop"]._journal_db_path == run_shadow_loop.DEFAULT_PAPER_DB_PATH
+    # AutoTradingWatchdog is actually constructed and threaded into ShadowLoop
+    # (not just trusted) -- same server-clock/journal_db_path wiring as
+    # ConnectivityWatchdog above, plus the small MT5-touching reader callable.
+    autotrading_watchdog = run_calls["init_kwargs"]["autotrading_watchdog"]
+    assert isinstance(autotrading_watchdog, run_shadow_loop.AutoTradingWatchdog)
+    assert autotrading_watchdog._journal_clock is run_calls["init_kwargs"]["clock"]
+    assert autotrading_watchdog._journal_db_path == run_shadow_loop.DEFAULT_PAPER_DB_PATH
+    assert run_calls["init_kwargs"]["read_autotrading_state"] is run_shadow_loop._read_autotrading_state
 
 
 def test_main_mode_live_routes_journal_writes_to_the_live_db(monkeypatch, tmp_path):

@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1085 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1099 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1085 (including all parametrized variants)
+- **Total Test Count**: 1099 (including all parametrized variants)
 - **Test Files**: ~55 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -53,8 +53,8 @@ This document provides a comprehensive list of all 1085 test cases in the AutoTr
 | | test_telegram.py | 22 |
 | | test_telegram_control.py | 46 |
 | **Notify Subtotal** | | **84** |
-| Orchestrator | test_shadow_loop.py | 44 |
-| **Orchestrator Subtotal** | | **44** |
+| Orchestrator | test_shadow_loop.py | 46 |
+| **Orchestrator Subtotal** | | **46** |
 | Risk | test_circuit_breaker.py | 32 |
 | | test_sizing.py | 20 |
 | **Risk Subtotal** | | **52** |
@@ -64,14 +64,15 @@ This document provides a comprehensive list of all 1085 test cases in the AutoTr
 | Store | test_journal.py | 17 |
 | | test_models.py | 3 |
 | **Store Subtotal** | | **20** |
-| Watchman | test_connectivity_watchdog.py | 10 |
+| Watchman | test_autotrading_watchdog.py | 10 |
+| | test_connectivity_watchdog.py | 10 |
 | | test_evaluate.py | 7 |
 | | test_exit_conditions.py | 19 |
 | | test_loop.py | 28 |
 | | test_news_protection.py | 10 |
 | | test_position_metadata.py | 11 |
 | | test_stop_logic.py | 38 |
-| **Watchman Subtotal** | | **123** |
+| **Watchman Subtotal** | | **133** |
 | Scripts & CLI | test_autotrade_control.py | 19 |
 | | test_clock.py | 1 |
 | | test_config.py | 26 |
@@ -85,13 +86,13 @@ This document provides a comprehensive list of all 1085 test cases in the AutoTr
 | | test_poller.py | 10 |
 | | test_run_auditor.py | 37 |
 | | test_run_backtest.py | 22 |
-| | test_run_shadow_loop.py | 29 |
+| | test_run_shadow_loop.py | 31 |
 | | test_run_telegram_control.py | 10 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **255** |
+| **Scripts & CLI Subtotal** | | **257** |
 | | | |
-| **GRAND TOTAL** | | **1085** |
+| **GRAND TOTAL** | | **1099** |
 
 ---
 
@@ -810,6 +811,8 @@ This document provides a comprehensive list of all 1085 test cases in the AutoTr
 - test_ticket_none_does_not_record_position_metadata
 - test_run_wires_watchman_cycle_as_on_iteration_end_hook_when_given
 - test_run_passes_non_none_on_iteration_end_even_without_watchman_loop
+- test_on_iteration_end_calls_injected_autotrading_watchdog_with_reader_result
+- test_on_iteration_end_does_not_raise_when_autotrading_watchdog_not_given
 - test_no_conviction_records_blocked_signal
 - test_risk_voice_veto_records_blocked_signal
 - test_shield_blocked_trade_records_blocked_signal
@@ -949,6 +952,19 @@ This document provides a comprehensive list of all 1085 test cases in the AutoTr
 ---
 
 ## Watchman — Trade exit management, news protection, stop-loss trailing
+
+### tests/unit/watchman/test_autotrading_watchdog.py
+
+- test_first_check_true_records_baseline_silently
+- test_first_check_false_notifies_and_records_anomaly
+- test_first_check_none_does_not_notify_or_record_and_stays_unset
+- test_true_to_false_transition_notifies_disabled_message
+- test_false_to_true_transition_notifies_reenabled_message
+- test_true_to_true_unchanged_does_not_notify_or_record
+- test_false_to_false_unchanged_does_not_notify_or_record_again
+- test_none_in_the_middle_of_a_sequence_does_not_reset_the_baseline
+- test_none_in_the_middle_does_not_reset_baseline_to_none_either
+- test_journal_timestamp_uses_the_injected_journal_clock
 
 ### tests/unit/watchman/test_connectivity_watchdog.py
 
@@ -1334,6 +1350,8 @@ This document provides a comprehensive list of all 1085 test cases in the AutoTr
 - test_seed_history_raises_when_copy_rates_returns_none
 - test_seed_history_raises_when_copy_rates_returns_empty
 - test_seed_history_uses_broker_mapped_symbol_name
+- test_read_autotrading_state_returns_none_when_terminal_info_returns_none
+- test_read_autotrading_state_returns_trade_allowed_field
 - test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols
 - test_main_mode_live_routes_journal_writes_to_the_live_db
 - test_main_mode_demo_adapter_also_gets_the_resolved_journal_db_path

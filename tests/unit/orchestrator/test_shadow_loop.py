@@ -1114,6 +1114,56 @@ def test_run_passes_non_none_on_iteration_end_even_without_watchman_loop(monkeyp
     assert captured_kwargs["on_iteration_end"] is not None
 
 
+def test_on_iteration_end_calls_injected_autotrading_watchdog_with_reader_result(tmp_path):
+    # Constructs ShadowLoop through its REAL __init__ (matching
+    # test_run_wires_watchman_cycle_as_on_iteration_end_hook_when_given's
+    # pattern) rather than poking private attributes directly -- that would
+    # only prove _on_iteration_end() uses self._autotrading_watchdog/
+    # self._read_autotrading_state IF they happen to be set, not that the
+    # constructor actually threads the autotrading_watchdog=/
+    # read_autotrading_state= kwargs into those attributes in the first
+    # place (a swapped-kwarg or dropped-assignment regression in __init__
+    # would still pass the old version of this test).
+    seed = _council_df().iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+
+    class SpyAutoTradingWatchdog:
+        def __init__(self):
+            self.check_calls: list[bool | None] = []
+
+        def check(self, trade_allowed):
+            self.check_calls.append(trade_allowed)
+
+    autotrading_watchdog = SpyAutoTradingWatchdog()
+    cfg = ShadowLoopConfig(risk_per_trade_pct=1.0)
+    loop = ShadowLoop(
+        adapter=adapter, circuit_breaker=breaker, shield=_default_shield(), cfg=cfg,
+        initial_history={"XAUUSD": seed}, resolve_symbol_spec=_fake_symbol_spec,
+        clock=FixedClock(BASE_TIME), news_provider=AllClearNewsProvider(),
+        risk_voice_cfg=_permissive_risk_voice_cfg(), borderline_log_path=tmp_path / "borderline.jsonl",
+        position_metadata_path=tmp_path / "position_metadata.json",
+        journal_db_path=tmp_path / "trade_journal.sqlite",
+        autotrading_watchdog=autotrading_watchdog, read_autotrading_state=lambda: False,
+    )
+
+    loop._on_iteration_end()
+
+    assert autotrading_watchdog.check_calls == [False]
+
+
+def test_on_iteration_end_does_not_raise_when_autotrading_watchdog_not_given(tmp_path):
+    # Default backward-compat path: autotrading_watchdog=None must never be
+    # touched/called, and _on_iteration_end() must still complete normally.
+    seed = _council_df().iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    assert loop._autotrading_watchdog is None
+    loop._on_iteration_end()  # must not raise
+
+
 # --- Phase 8a: blocked-signal recording (store/journal.py) ------------------
 
 
