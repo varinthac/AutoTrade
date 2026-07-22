@@ -36,6 +36,37 @@ treated as immediately terminal instead of retried. `modify_stop_loss`'s
 the first attempt secretly succeeded), so it's the one call site that opts
 into retrying ambiguous outcomes too, via `_send_with_retry`'s
 `is_idempotent` parameter.
+
+**`close_position`'s ambiguity is resolved by checking ground truth, not by
+blindly retrying.** Not retrying an ambiguous outcome avoids a double-close,
+but naively reporting it as a failure is also wrong if the broker actually
+executed the close and only the acknowledgment was lost -- a real incident
+this exists to fix: a TIMEOUT on a genuinely-successful close was reported as
+`execution_failed`, and the position sat mislabeled until periodic
+reconciliation caught up minutes later. So before `close_position` declares
+failure on a non-DONE outcome, `_resolve_ambiguous_close` re-queries the
+position directly: if it's now gone (full close) or reduced by exactly the
+requested amount (partial close), the close is treated as a genuine success
+whose acknowledgment was lost (logged at INFO, not as an anomaly/ERROR) --
+otherwise (still fully open, or the re-query itself fails) it falls back to
+the existing conservative failure reporting. `place_order`'s equivalent
+ambiguity is NOT resolved the same way -- a new position merely *existing*
+isn't proof it came from this specific request the way a close's target
+position's absence/reduction is a direct signal, so it keeps its existing
+"don't retry, report failure, let reconciliation catch it" behavior.
+
+**Distinguishing this system's own closes from genuine manual ones.** MT5
+tags a human closing via terminal/mobile/web as `DEAL_REASON_CLIENT`/
+`MOBILE`/`WEB`, but tags any script/EA/API call -- including this adapter's
+own `order_send()` -- as `DEAL_REASON_EXPERT`, the same as a human never
+touched it. `get_closed_trade_info` disambiguates an EXPERT-reasoned close
+using the closing deal's own `magic` number against `self._magic` (every
+request this adapter sends is tagged with it): a match means this system's
+own close (most likely the ack-loss scenario above reaching reconciliation
+instead of the normal explicit-close path), classified as
+`"reconciled_system_close"`; a mismatch means some OTHER script/EA touched
+the account, classified as `"unknown"` with a loud warning. Genuine
+`DEAL_REASON_CLIENT`/`MOBILE`/`WEB` deals stay `"manual"`.
 """
 from __future__ import annotations
 
@@ -101,22 +132,49 @@ _AMBIGUOUS_RETCODES = frozenset({mt5.TRADE_RETCODE_TIMEOUT, mt5.TRADE_RETCODE_CO
 # get_closed_trade_info() -- MT5's own DEAL_REASON for a closing deal,
 # mapped to execution.adapter.ClosedTradeInfo's exit_reason vocabulary.
 # DEAL_REASON_SL/DEAL_REASON_TP are the genuine broker-side hard-stop hits
-# this reconciliation path exists to catch. DEAL_REASON_CLIENT/MOBILE/WEB/
-# EXPERT all mean something OTHER than the broker's own SL/TP closed it
-# (a human via the terminal, or an API/EA call -- including this system's
-# own close_position(), though that path removes metadata immediately and so
-# should never actually reach reconciliation) -- bucketed as "manual".
-# Anything else (e.g. DEAL_REASON_SO, a stop-out/margin-call liquidation) is
-# deliberately NOT guessed into "stop_loss" -- it is a materially different,
-# rarer situation worth surfacing as "unknown" for manual investigation
-# rather than silently conflated with a normal SL hit.
+# this reconciliation path exists to catch. DEAL_REASON_CLIENT/MOBILE/WEB are
+# genuine human actions (terminal/mobile app/web terminal) -- bucketed as
+# "manual". DEAL_REASON_EXPERT means an API/EA/script closed it -- which is
+# EXACTLY what THIS adapter's own order_send() calls produce too (MT5 tags
+# script-driven closes the same as EA activity), so it is NOT bucketed with
+# "manual" -- see _classify_expert_closed_reason. Anything else (e.g.
+# DEAL_REASON_SO, a stop-out/margin-call liquidation) is deliberately NOT
+# guessed into "stop_loss" -- it is a materially different, rarer situation
+# worth surfacing as "unknown" for manual investigation rather than silently
+# conflated with a normal SL hit.
 _SL_TP_DEAL_REASONS: dict[int, Literal["stop_loss", "take_profit"]] = {
     mt5.DEAL_REASON_SL: "stop_loss",
     mt5.DEAL_REASON_TP: "take_profit",
 }
 _MANUAL_DEAL_REASONS = frozenset({
-    mt5.DEAL_REASON_CLIENT, mt5.DEAL_REASON_MOBILE, mt5.DEAL_REASON_WEB, mt5.DEAL_REASON_EXPERT,
+    mt5.DEAL_REASON_CLIENT, mt5.DEAL_REASON_MOBILE, mt5.DEAL_REASON_WEB,
 })
+
+
+def _classify_expert_closed_reason(
+    ticket: int, deal_magic: int, own_magic: int,
+) -> Literal["reconciled_system_close", "unknown"]:
+    """A closing deal with `DEAL_REASON_EXPERT` means an API/EA/script closed
+    the position -- MT5 does not distinguish "this adapter's own
+    `close_position()`" from any other script/EA on the account, so the
+    deal's own `magic` number is the only way to tell them apart (this
+    adapter tags every `order_send()` request it makes with `self._magic`,
+    see `place_order`/`modify_stop_loss`/`close_position`). A matching magic
+    means this system's own script closed it -- most likely a close whose
+    acknowledgment was lost (see `close_position`'s ambiguous-outcome
+    ground-truth check) reaching reconciliation instead of the normal
+    explicit-close path. A non-matching magic means some OTHER script/EA
+    touched this single-purpose trading account -- genuinely unexpected,
+    logged loudly rather than silently folded into "manual"."""
+    if deal_magic == own_magic:
+        return "reconciled_system_close"
+    logger.warning(
+        "get_closed_trade_info: position=%s closed by DEAL_REASON_EXPERT with magic=%s, "
+        "which does not match this adapter's own magic=%s -- some OTHER script/EA closed "
+        "this position, not this system. Classified as 'unknown', worth manual investigation.",
+        ticket, deal_magic, own_magic,
+    )
+    return "unknown"
 
 
 def _is_retryable_outcome(send_result, is_idempotent: bool) -> bool:
@@ -632,6 +690,10 @@ class ThrottledDemoAdapter(BrokerAdapter):
 
             send_result = self._send_with_retry(mt5_request, f"close_position(ticket={ticket})")
             if send_result is None or send_result.retcode not in _DONE_RETCODES:
+                confirmed = self._resolve_ambiguous_close(ticket, close_volume, position.volume)
+                if confirmed is not None:
+                    return confirmed
+
                 if send_result is None:
                     code, desc = mt5.last_error()
                     message = (
@@ -659,6 +721,109 @@ class ThrottledDemoAdapter(BrokerAdapter):
                 success=True, broker_ticket=ticket, filled_price=send_result.price,
                 filled_volume=send_result.volume, retcode=send_result.retcode, message=message,
             )
+
+    def _resolve_ambiguous_close(
+        self, ticket: int, close_volume: float, volume_at_request: float,
+    ) -> OrderResult | None:
+        """Ground-truth disambiguation for `close_position()`'s non-DONE
+        outcome (`_send_with_retry` returned `None`, a rejected retcode, or
+        an ambiguous TIMEOUT/CONNECTION) -- called BEFORE declaring failure.
+        A lost acknowledgment does not mean the close didn't happen: this
+        re-queries the position directly (NOT via `_get_position`, which
+        collapses a genuine query failure and a confirmed "position gone"
+        into the same `None` -- here the two must be told apart) to check
+        whether it actually went through anyway.
+
+        Returns a success `OrderResult` if ground truth confirms the
+        requested close (full or partial) actually happened. Returns `None`
+        (caller proceeds to its normal failure handling) in every other
+        case: the position is confirmed still open at its original volume
+        (the close genuinely did not happen), the re-query itself failed
+        (MT5 unreachable -- cannot tell, fail toward the conservative
+        report-failure behavior rather than guess), or the observed state
+        doesn't cleanly match what was requested (e.g. a partial close
+        requested but the whole position is gone -- don't guess at fill
+        numbers, surface it as a failure worth investigating instead)."""
+        positions = mt5.positions_get(ticket=ticket)
+        if positions is None:
+            code, desc = mt5.last_error()
+            logger.warning(
+                "close_position(ticket=%s): outcome was ambiguous/failed, and the ground-truth "
+                "re-query (positions_get) also failed ([%d] %s) -- cannot confirm whether the "
+                "close actually succeeded, falling back to reporting failure.",
+                ticket, code, desc,
+            )
+            return None
+
+        full_close_requested = abs(close_volume - volume_at_request) < 1e-9
+
+        if not positions:
+            if not full_close_requested:
+                logger.warning(
+                    "close_position(ticket=%s): a PARTIAL close (%.2f of %.2f lots) was "
+                    "requested but the position is now entirely gone -- more than intended "
+                    "may have closed (e.g. a broker-side SL/TP also fired); not guessing at "
+                    "fill numbers here, reporting the ambiguous outcome as a failure for "
+                    "investigation.", ticket, close_volume, volume_at_request,
+                )
+                return None
+            return self._confirmed_close_result(ticket, volume_at_request)
+
+        remaining_volume = positions[0].volume
+        if not full_close_requested and remaining_volume < volume_at_request - 1e-9:
+            actually_closed = volume_at_request - remaining_volume
+            if abs(actually_closed - close_volume) < 1e-9:
+                return self._confirmed_close_result(ticket, close_volume)
+            logger.warning(
+                "close_position(ticket=%s): outcome was ambiguous/failed, and the remaining "
+                "volume (%.2f) doesn't cleanly match the requested partial close (%.2f of "
+                "%.2f) -- not guessing, reporting failure for investigation.",
+                ticket, remaining_volume, close_volume, volume_at_request,
+            )
+            return None
+
+        if abs(remaining_volume - volume_at_request) < 1e-9:
+            logger.info(
+                "close_position(ticket=%s): outcome was ambiguous/failed but the position is "
+                "confirmed still open at its original volume -- the close genuinely did not "
+                "happen.", ticket,
+            )
+        else:
+            # full_close_requested=True but remaining_volume is neither
+            # volume_at_request (untouched) nor 0 (fully closed, handled by
+            # the `not positions` branch above) -- e.g. an IOC full-close
+            # order partially filled from thin liquidity. Not guessing this
+            # is success (the requested FULL close did not happen), but the
+            # log must not claim "original volume" when the volume actually
+            # changed -- that would mislead an incident investigation.
+            logger.warning(
+                "close_position(ticket=%s): a FULL close was requested but the position's "
+                "remaining volume (%.2f) is neither the original %.2f nor 0 -- a partial fill "
+                "occurred on a full-close request; not guessing, reporting failure for "
+                "investigation.", ticket, remaining_volume, volume_at_request,
+            )
+        return None
+
+    def _confirmed_close_result(self, ticket: int, closed_volume: float) -> OrderResult:
+        """Builds the success `OrderResult` for a close that
+        `_resolve_ambiguous_close` confirmed actually happened despite a
+        lost/ambiguous acknowledgment -- queries `get_closed_trade_info` for
+        the real fill price (ground truth from MT5's own deal history)
+        rather than guessing; falls back to `filled_price=None` if that
+        history hasn't caught up yet (still a genuine success -- the
+        position is confirmed gone/reduced either way)."""
+        info = self.get_closed_trade_info(ticket)
+        filled_price = info.close_price if info is not None else None
+        message = (
+            f"close_position(ticket={ticket}) outcome was ambiguous (TIMEOUT/rejected) but the "
+            f"position is confirmed no longer open at the requested volume -- treating as a "
+            f"successful close whose acknowledgment was lost"
+        )
+        logger.info(message)
+        return OrderResult(
+            success=True, broker_ticket=ticket, filled_price=filled_price,
+            filled_volume=closed_volume, retcode=None, message=message,
+        )
 
     def _get_position(self, ticket: int):
         positions = mt5.positions_get(ticket=ticket)
@@ -816,12 +981,14 @@ class ThrottledDemoAdapter(BrokerAdapter):
             if exit_reason is None:
                 if last_exit.reason in _MANUAL_DEAL_REASONS:
                     exit_reason = "manual"
+                elif last_exit.reason == mt5.DEAL_REASON_EXPERT:
+                    exit_reason = _classify_expert_closed_reason(ticket, last_exit.magic, self._magic)
                 else:
                     exit_reason = "unknown"
                     logger.warning(
                         "get_closed_trade_info: position=%s closed with DEAL_REASON=%s, not "
-                        "recognized as SL/TP/manual (e.g. a stop-out/margin-call liquidation) -- "
-                        "classified as 'unknown', worth manual investigation.",
+                        "recognized as SL/TP/manual/expert (e.g. a stop-out/margin-call "
+                        "liquidation) -- classified as 'unknown', worth manual investigation.",
                         ticket, last_exit.reason,
                     )
 

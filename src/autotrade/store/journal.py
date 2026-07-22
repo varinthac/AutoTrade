@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 
 ExitReason = Literal[
     "stop_loss", "take_profit", "structure_invalidation", "time_stop",
-    "news_protection", "abnormal_slippage", "manual", "unknown",
+    "news_protection", "abnormal_slippage", "manual", "reconciled_system_close", "unknown",
 ]
 BlockSource = Literal[
     "risk_voice", "shield", "borderline_no_conviction", "borderline_conflicting",

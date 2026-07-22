@@ -77,7 +77,12 @@ class TradeRecord(Base):
     exit_price: Mapped[float]
     exit_reason: Mapped[str]
     """One of: stop_loss / take_profit / structure_invalidation / time_stop /
-    news_protection / abnormal_slippage / manual / unknown."""
+    news_protection / abnormal_slippage / manual / reconciled_system_close /
+    unknown. `reconciled_system_close` is distinct from `manual`: MT5 tags
+    both a human closing via terminal/app AND this system's own script-driven
+    `order_send()` calls as `DEAL_REASON_EXPERT` -- `execution/demo_adapter.py`'s
+    `get_closed_trade_info` disambiguates the two via the closing deal's
+    `magic` number (see that function's docstring)."""
     lot_size: Mapped[float]
     gross_pnl: Mapped[float]
     cost: Mapped[float]

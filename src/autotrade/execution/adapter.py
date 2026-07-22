@@ -98,17 +98,21 @@ class ClosedTradeInfo:
 
     `exit_reason` is derived from the closing deal's own MT5 `reason` field
     (`DEAL_REASON_SL`/`DEAL_REASON_TP` for a genuine broker-side stop/target
-    hit; anything else -- client/mobile/web/expert-initiated, or a stop-out
-    margin call -- maps to `"manual"`/`"unknown"`, see
-    `execution/demo_adapter.py`'s `get_closed_trade_info` for the exact
-    mapping)."""
+    hit; client/mobile/web-initiated maps to `"manual"`; expert-initiated
+    (script/EA/API) maps to `"reconciled_system_close"` if it carries THIS
+    adapter's own `magic` number -- i.e. this system's own close, most likely
+    one whose acknowledgment was lost -- or to `"unknown"` (with a loud
+    warning) if it doesn't, since that means some OTHER script/EA touched the
+    account; a stop-out margin call or anything else unrecognized also maps
+    to `"unknown"` -- see `execution/demo_adapter.py`'s `get_closed_trade_info`
+    for the exact mapping)."""
 
     close_price: float
     close_time: datetime
     closed_volume: float
     gross_pnl: float
     cost: float
-    exit_reason: Literal["stop_loss", "take_profit", "manual", "unknown"]
+    exit_reason: Literal["stop_loss", "take_profit", "manual", "reconciled_system_close", "unknown"]
 
 
 class BrokerAdapter(ABC):

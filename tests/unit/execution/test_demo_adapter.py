@@ -1382,11 +1382,250 @@ def test_close_position_exhausts_retries_and_logs_execution_failed(monkeypatch, 
     assert any("execution_failed" in record.message for record in caplog.records)
 
 
+# --- close_position: ambiguous-outcome ground-truth resolution (real       --
+# --- incident fix -- a lost TIMEOUT acknowledgment must not be reported as --
+# --- a failure when the close actually succeeded)                          --
+
+
+def test_close_position_ambiguous_timeout_confirmed_gone_reports_success(monkeypatch, caplog):
+    # First (and only) order_send() attempt returns TIMEOUT (ambiguous, not
+    # retried for a non-idempotent close) -- but a follow-up positions_get()
+    # query confirms the position is genuinely gone: the close actually
+    # succeeded and only the acknowledgment was lost. Must report SUCCESS,
+    # not an execution_failed anomaly/ERROR.
+    _patch_mt5_boilerplate(monkeypatch)
+    positions_get_calls = []
+
+    def fake_positions_get(**kwargs):
+        positions_get_calls.append(kwargs)
+        if len(positions_get_calls) == 1:
+            return (
+                _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.2,
+                               type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+            )
+        return ()  # the ground-truth re-query: position is confirmed gone
+
+    monkeypatch.setattr(mt5, "positions_get", fake_positions_get)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout"),
+    )
+    deals = (
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_EXPERT, profit=25.0,
+                  price=2399.8, time=1_700_003_600, volume=0.2, magic=234_000),
+    )
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals)
+
+    adapter = _adapter()
+    with caplog.at_level(logging.INFO):
+        result = adapter.close_position(8)
+
+    assert result.success is True
+    assert result.broker_ticket == 8
+    assert result.filled_volume == pytest.approx(0.2)
+    assert result.filled_price == pytest.approx(2399.8)  # ground truth from history, not guessed
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("acknowledgment was lost" in r.message for r in caplog.records)
+
+
+def test_close_position_ambiguous_timeout_still_open_reports_failure(monkeypatch, caplog):
+    # Same ambiguous TIMEOUT outcome, but this time the follow-up
+    # positions_get() query confirms the position is STILL fully open at its
+    # original volume -- the close genuinely did not happen, must still
+    # report failure.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.2,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+        ) if kwargs.get("ticket") == 8 else (),
+    )
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout"),
+    )
+
+    adapter = _adapter()
+    with caplog.at_level(logging.ERROR):
+        result = adapter.close_position(8)
+
+    assert result.success is False
+    assert "close_position(ticket=8) failed" in result.message
+    assert any("execution_failed" in r.message for r in caplog.records)
+
+
+def test_close_position_ambiguous_timeout_partial_close_confirmed_reports_success(monkeypatch, caplog):
+    # A PARTIAL close (news protection's half-close) whose acknowledgment
+    # was lost -- the follow-up query shows the position still open but its
+    # volume reduced by exactly the requested partial amount, confirming the
+    # partial close did go through.
+    _patch_mt5_boilerplate(monkeypatch)
+    positions_get_calls = []
+
+    def fake_positions_get(**kwargs):
+        positions_get_calls.append(kwargs)
+        if len(positions_get_calls) == 1:
+            return (
+                _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.2,
+                               type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+            )
+        # ground-truth re-query: volume reduced from 0.2 to 0.1, exactly the
+        # requested partial close amount.
+        return (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.1,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+        )
+
+    monkeypatch.setattr(mt5, "positions_get", fake_positions_get)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout"),
+    )
+    deals = (
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_EXPERT, profit=12.0,
+                  price=2399.85, time=1_700_003_600, volume=0.1, magic=234_000),
+    )
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals)
+
+    adapter = _adapter()
+    with caplog.at_level(logging.INFO):
+        result = adapter.close_position(8, volume=0.1)
+
+    assert result.success is True
+    assert result.filled_volume == pytest.approx(0.1)
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+
+
+def test_close_position_ambiguous_timeout_partial_close_but_position_fully_gone_reports_failure(
+    monkeypatch, caplog,
+):
+    # A PARTIAL close (e.g. news protection's half-close) was requested, but
+    # the follow-up ground-truth query shows the WHOLE position gone -- more
+    # closed than intended (e.g. a broker-side SL/TP also fired in the same
+    # window). _resolve_ambiguous_close must NOT guess this is success just
+    # because "the position is gone" -- it must report failure/ambiguity for
+    # investigation, since silently declaring success here would hide a real
+    # over-close discrepancy.
+    _patch_mt5_boilerplate(monkeypatch)
+    positions_get_calls = []
+
+    def fake_positions_get(**kwargs):
+        positions_get_calls.append(kwargs)
+        if len(positions_get_calls) == 1:
+            return (
+                _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.2,
+                               type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+            )
+        # ground-truth re-query: the position is entirely gone, even though
+        # only a HALF close (0.1 of 0.2) was requested.
+        return ()
+
+    monkeypatch.setattr(mt5, "positions_get", fake_positions_get)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout"),
+    )
+
+    adapter = _adapter()
+    with caplog.at_level(logging.WARNING):
+        result = adapter.close_position(8, volume=0.1)
+
+    assert result.success is False
+    assert any(
+        "more than intended may have closed" in r.message for r in caplog.records
+    )
+
+
+def test_close_position_ambiguous_timeout_full_close_partially_filled_reports_failure_not_original_volume(
+    monkeypatch, caplog,
+):
+    # A FULL close was requested, but the ground-truth re-query shows the
+    # remaining volume is neither the original amount (untouched) nor zero
+    # (fully closed) -- e.g. an IOC full-close order partially filled from
+    # thin liquidity. Must still report failure (the requested FULL close
+    # did not happen) -- and, distinctly from the genuinely-untouched case,
+    # must NOT log that the position is at "its original volume" when the
+    # volume actually changed (a misleading log would confuse a real
+    # incident investigation).
+    _patch_mt5_boilerplate(monkeypatch)
+    positions_get_calls = []
+
+    def fake_positions_get(**kwargs):
+        positions_get_calls.append(kwargs)
+        if len(positions_get_calls) == 1:
+            # Initial lookup inside close_position() -- determines
+            # close_volume=0.2 (a FULL close, since volume=None below).
+            return (
+                _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.2,
+                               type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+            )
+        # Ground-truth re-query after the ambiguous outcome: a partial fill
+        # occurred (0.05 remaining) even though a FULL close was requested.
+        return (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.05,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+        )
+
+    monkeypatch.setattr(mt5, "positions_get", fake_positions_get)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout"),
+    )
+
+    adapter = _adapter()
+    with caplog.at_level(logging.WARNING):
+        result = adapter.close_position(8)  # full close: volume=None -> position.volume (0.2)
+
+    assert result.success is False
+    assert any("partial fill occurred on a full-close request" in r.message for r in caplog.records)
+    assert not any("original volume" in r.message for r in caplog.records)
+
+
+def test_close_position_ambiguous_ground_truth_requery_itself_fails_reports_failure(monkeypatch, caplog):
+    # The ground-truth re-query (positions_get) itself fails (e.g. MT5
+    # unreachable) -- must NOT guess success; fall back to the existing
+    # conservative report-failure behavior.
+    _patch_mt5_boilerplate(monkeypatch)
+    positions_get_calls = []
+
+    def fake_positions_get(**kwargs):
+        positions_get_calls.append(kwargs)
+        if len(positions_get_calls) == 1:
+            return (
+                _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.2,
+                               type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+            )
+        return None  # the ground-truth re-query itself fails
+
+    monkeypatch.setattr(mt5, "positions_get", fake_positions_get)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout"),
+    )
+    monkeypatch.setattr(mt5, "last_error", lambda: (6, "no connection"))
+
+    adapter = _adapter()
+    with caplog.at_level(logging.WARNING):
+        result = adapter.close_position(8)
+
+    assert result.success is False
+    assert any("ground-truth re-query" in r.message for r in caplog.records)
+
+
 # --- get_closed_trade_info() (Phase 8a reconciliation) ----------------------
 
 
 class _FakeDeal:
-    def __init__(self, entry, reason, profit=0.0, commission=0.0, swap=0.0, price=0.0, time=0, volume=0.0):
+    def __init__(
+        self, entry, reason, profit=0.0, commission=0.0, swap=0.0, price=0.0, time=0, volume=0.0, magic=0,
+    ):
         self.entry = entry
         self.reason = reason
         self.profit = profit
@@ -1395,6 +1634,7 @@ class _FakeDeal:
         self.price = price
         self.time = time
         self.volume = volume
+        self.magic = magic
 
 
 def test_get_closed_trade_info_sl_hit_maps_to_stop_loss(monkeypatch):
@@ -1431,10 +1671,50 @@ def test_get_closed_trade_info_tp_hit_maps_to_take_profit(monkeypatch):
     assert info.exit_reason == "take_profit"
 
 
-def test_get_closed_trade_info_expert_closed_maps_to_manual(monkeypatch):
+def test_get_closed_trade_info_expert_closed_matching_magic_maps_to_reconciled_system_close(monkeypatch):
+    # DEAL_REASON_EXPERT with a magic number matching THIS adapter's own --
+    # this system's own order_send() closed it (most likely an ack-loss
+    # close reaching reconciliation instead of the normal explicit-close
+    # path), not a genuine human/manual action.
     _patch_mt5_boilerplate(monkeypatch)
+    adapter = _adapter(magic=234_000)
     deals = (
         _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_EXPERT, profit=10.0, price=2401.0,
+                  time=1_700_003_600, volume=0.1, magic=234_000),
+    )
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals)
+
+    info = adapter.get_closed_trade_info(8)
+
+    assert info.exit_reason == "reconciled_system_close"
+
+
+def test_get_closed_trade_info_expert_closed_non_matching_magic_maps_to_unknown(monkeypatch, caplog):
+    # DEAL_REASON_EXPERT with a magic number that does NOT match this
+    # adapter's own -- some OTHER script/EA touched this account, genuinely
+    # unexpected on a single-purpose trading account, so this must be
+    # 'unknown' (not 'manual') with a loud warning.
+    _patch_mt5_boilerplate(monkeypatch)
+    adapter = _adapter(magic=234_000)
+    deals = (
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_EXPERT, profit=10.0, price=2401.0,
+                  time=1_700_003_600, volume=0.1, magic=999_999),
+    )
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals)
+
+    with caplog.at_level(logging.WARNING):
+        info = adapter.get_closed_trade_info(8)
+
+    assert info.exit_reason == "unknown"
+    assert any("does not match this adapter's own magic" in r.message for r in caplog.records)
+
+
+def test_get_closed_trade_info_client_reason_still_maps_to_manual(monkeypatch):
+    # Regression/backward-compat: genuine CLIENT/MOBILE/WEB deals must stay
+    # 'manual', unaffected by the new EXPERT/magic disambiguation.
+    _patch_mt5_boilerplate(monkeypatch)
+    deals = (
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_CLIENT, profit=10.0, price=2401.0,
                   time=1_700_003_600, volume=0.1),
     )
     monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals)

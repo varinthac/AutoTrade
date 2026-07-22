@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1111 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1121 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1111 (including all parametrized variants)
+- **Total Test Count**: 1121 (including all parametrized variants)
 - **Test Files**: ~55 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -37,11 +37,11 @@ This document provides a comprehensive list of all 1111 test cases in the AutoTr
 | | test_scoring.py | 25 |
 | | test_trivial_signal.py | 6 |
 | **Council Subtotal** | | **155** |
-| Dashboard | test_app.py | 45 |
-| **Dashboard Subtotal** | | **45** |
-| Execution | test_demo_adapter.py | 65 |
+| Dashboard | test_app.py | 47 |
+| **Dashboard Subtotal** | | **47** |
+| Execution | test_demo_adapter.py | 73 |
 | | test_noop_adapter.py | 8 |
-| **Execution Subtotal** | | **73** |
+| **Execution Subtotal** | | **81** |
 | Features | test_indicators.py | 10 |
 | | test_levels.py | 13 |
 | | test_swing.py | 15 |
@@ -92,7 +92,7 @@ This document provides a comprehensive list of all 1111 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **257** |
 | | | |
-| **GRAND TOTAL** | | **1111** |
+| **GRAND TOTAL** | | **1121** |
 
 ---
 
@@ -468,6 +468,7 @@ This document provides a comprehensive list of all 1111 test cases in the AutoTr
 
 - test_trades_empty_state
 - test_trades_shows_seeded_trade_field_values
+- test_trades_shows_seeded_trade_cost_value
 - test_trades_newest_first_ordering
 - test_trades_and_daily_show_server_time_banner
 - test_current_server_time_displayed_when_available
@@ -508,6 +509,7 @@ This document provides a comprehensive list of all 1111 test cases in the AutoTr
 - test_default_daily_date_picks_latest_exit_time
 - test_default_daily_date_none_when_no_trades
 - test_trades_to_export_rows_matches_to_trade_row_field_values
+- test_to_trade_row_carries_cost_field_from_trade_record
 - test_trades_to_export_rows_empty_list
 - test_trades_to_export_rows_escapes_formula_injection_prefixes
 - test_trades_to_export_rows_does_not_touch_safe_string_values
@@ -573,9 +575,17 @@ This document provides a comprehensive list of all 1111 test cases in the AutoTr
 - test_close_position_requested_volume_exceeds_open_volume_returns_failure
 - test_close_position_ticket_not_found_returns_failure
 - test_close_position_exhausts_retries_and_logs_execution_failed
+- test_close_position_ambiguous_timeout_confirmed_gone_reports_success
+- test_close_position_ambiguous_timeout_still_open_reports_failure
+- test_close_position_ambiguous_timeout_partial_close_confirmed_reports_success
+- test_close_position_ambiguous_timeout_partial_close_but_position_fully_gone_reports_failure
+- test_close_position_ambiguous_timeout_full_close_partially_filled_reports_failure_not_original_volume
+- test_close_position_ambiguous_ground_truth_requery_itself_fails_reports_failure
 - test_get_closed_trade_info_sl_hit_maps_to_stop_loss
 - test_get_closed_trade_info_tp_hit_maps_to_take_profit
-- test_get_closed_trade_info_expert_closed_maps_to_manual
+- test_get_closed_trade_info_expert_closed_matching_magic_maps_to_reconciled_system_close
+- test_get_closed_trade_info_expert_closed_non_matching_magic_maps_to_unknown
+- test_get_closed_trade_info_client_reason_still_maps_to_manual
 - test_get_closed_trade_info_stop_out_maps_to_unknown_and_logs_warning
 - test_get_closed_trade_info_aggregates_gross_pnl_and_cost_across_all_deals
 - test_get_closed_trade_info_no_deals_in_history_returns_none
