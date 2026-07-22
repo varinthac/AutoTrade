@@ -61,6 +61,14 @@ def test_trades_shows_seeded_trade_field_values(db_path):
     assert "2026-07-19 14:30" in body
 
 
+def test_trades_shows_seeded_trade_cost_value(db_path):
+    _record_trade(db_path, cost=4.5, broker_ticket=1)
+    client = create_app(db_path=db_path).test_client()
+    body = client.get("/trades").get_data(as_text=True)
+
+    assert "4.5" in body
+
+
 def test_trades_newest_first_ordering(db_path):
     _record_trade(
         db_path, symbol="EURUSD", exit_time=datetime(2026, 7, 19, 10, 0), broker_ticket=1,
@@ -360,6 +368,7 @@ def test_trades_export_returns_valid_xlsx_with_seeded_trade_values(db_path, tmp_
     assert rows[0]["direction"] == "SELL"
     assert rows[0]["net_pnl"] == -12.5
     assert rows[0]["exit_reason"] == "stop_loss"
+    assert rows[0]["cost"] == 2.0
 
 
 def test_trades_export_respects_date_range_filter(db_path, tmp_path):
@@ -603,6 +612,16 @@ def test_trades_to_export_rows_matches_to_trade_row_field_values(db_path):
     assert eurusd_row["net_pnl"] == -12.5
     assert eurusd_row["exit_reason"] == "stop_loss"
     assert eurusd_row["exit_time"] == "2026-07-19 14:30"
+    assert eurusd_row["cost"] == 2.0
+
+
+def test_to_trade_row_carries_cost_field_from_trade_record(db_path):
+    _record_trade(db_path, cost=4.5, broker_ticket=1)
+    all_trades = journal.get_trades_in_range(views.EPOCH, views.FAR_FUTURE, db_path=db_path)
+
+    row = views.to_trade_row(all_trades[0])
+
+    assert row.cost == 4.5
 
 
 def test_trades_to_export_rows_empty_list():

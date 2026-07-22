@@ -35,6 +35,7 @@ class TradeRow:
     entry_price: float
     exit_price: float
     lot_size: float
+    cost: float
     net_pnl: float
     r_multiple: float
     exit_reason: str
@@ -55,6 +56,7 @@ def to_trade_row(trade: TradeRecord) -> TradeRow:
         entry_price=trade.entry_price,
         exit_price=trade.exit_price,
         lot_size=trade.lot_size,
+        cost=trade.cost,
         net_pnl=trade.net_pnl,
         r_multiple=trade.r_multiple,
         exit_reason=trade.exit_reason,

@@ -62,6 +62,7 @@
         <th>Entry price</th>
         <th>Exit price</th>
         <th>Lot size</th>
+        <th>Cost</th>
         <th>Net P&amp;L</th>
         <th>R multiple</th>
         <th>Exit reason</th>
@@ -77,6 +78,7 @@
         <td>{{ row.entry_price }}</td>
         <td>{{ row.exit_price }}</td>
         <td>{{ row.lot_size }}</td>
+        <td class="{{ 'pnl-negative' if row.cost > 0 else '' }}">{{ row.cost }}</td>
         <td class="{{ 'pnl-positive' if row.net_pnl > 0 else ('pnl-negative' if row.net_pnl < 0 else '') }}">{{ row.net_pnl }}</td>
         <td class="{{ 'pnl-positive' if row.r_multiple > 0 else ('pnl-negative' if row.r_multiple < 0 else '') }}">{{ row.r_multiple }}</td>
         <td>{{ row.exit_reason }}</td>
