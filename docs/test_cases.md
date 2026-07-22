@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1121 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1129 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1121 (including all parametrized variants)
+- **Total Test Count**: 1129 (including all parametrized variants)
 - **Test Files**: ~55 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -39,9 +39,9 @@ This document provides a comprehensive list of all 1121 test cases in the AutoTr
 | **Council Subtotal** | | **155** |
 | Dashboard | test_app.py | 47 |
 | **Dashboard Subtotal** | | **47** |
-| Execution | test_demo_adapter.py | 73 |
+| Execution | test_demo_adapter.py | 81 |
 | | test_noop_adapter.py | 8 |
-| **Execution Subtotal** | | **81** |
+| **Execution Subtotal** | | **89** |
 | Features | test_indicators.py | 10 |
 | | test_levels.py | 13 |
 | | test_swing.py | 15 |
@@ -92,7 +92,7 @@ This document provides a comprehensive list of all 1121 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **257** |
 | | | |
-| **GRAND TOTAL** | | **1121** |
+| **GRAND TOTAL** | | **1129** |
 
 ---
 
@@ -581,6 +581,14 @@ This document provides a comprehensive list of all 1121 test cases in the AutoTr
 - test_close_position_ambiguous_timeout_partial_close_but_position_fully_gone_reports_failure
 - test_close_position_ambiguous_timeout_full_close_partially_filled_reports_failure_not_original_volume
 - test_close_position_ambiguous_ground_truth_requery_itself_fails_reports_failure
+- test_place_order_ambiguous_timeout_confirmed_position_found_reports_success
+- test_place_order_ambiguous_timeout_tz_aware_clock_matches_without_crashing
+- test_place_order_ambiguous_timeout_no_matching_position_reports_failure
+- test_place_order_ambiguous_timeout_multiple_matches_reports_failure_conservatively
+- test_place_order_clean_structural_rejection_does_not_trigger_ambiguous_requery
+- test_place_order_ambiguous_timeout_requery_itself_fails_reports_failure
+- test_place_order_ambiguous_timeout_partial_fill_volume_matches_reports_success_with_actual_volume
+- test_place_order_ambiguous_timeout_second_call_does_not_reattribute_same_ticket
 - test_get_closed_trade_info_sl_hit_maps_to_stop_loss
 - test_get_closed_trade_info_tp_hit_maps_to_take_profit
 - test_get_closed_trade_info_expert_closed_matching_magic_maps_to_reconciled_system_close

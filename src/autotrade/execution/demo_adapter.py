@@ -49,11 +49,36 @@ position directly: if it's now gone (full close) or reduced by exactly the
 requested amount (partial close), the close is treated as a genuine success
 whose acknowledgment was lost (logged at INFO, not as an anomaly/ERROR) --
 otherwise (still fully open, or the re-query itself fails) it falls back to
-the existing conservative failure reporting. `place_order`'s equivalent
-ambiguity is NOT resolved the same way -- a new position merely *existing*
-isn't proof it came from this specific request the way a close's target
-position's absence/reduction is a direct signal, so it keeps its existing
-"don't retry, report failure, let reconciliation catch it" behavior.
+the existing conservative failure reporting.
+
+**`place_order`'s equivalent ambiguity is resolved similarly, but is a
+strictly harder disambiguation problem.** Unlike `close_position` (which has
+a known ticket to re-query directly -- its target position's absence/
+reduction is a direct signal), `place_order` has no ticket yet: a brand-new
+position merely *existing* is much weaker proof it came from THIS specific
+request. `_resolve_ambiguous_place` only runs when `_is_ambiguous_outcome`
+says the outcome is genuinely ambiguous (TIMEOUT/CONNECTION/`order_send()`
+returning `None`) -- never for a clean structural rejection (e.g.
+`TRADE_RETCODE_TRADE_DISABLED`, `INVALID_STOPS`) where the broker has already
+told us definitively that no order was placed. It then re-queries every open
+position on the request's symbol and keeps only those matching this
+adapter's own `magic`, the requested direction, a volume no larger than
+requested (a genuine partial fill counts too), and opened within a small
+clock-skew buffer either side of "now". Exactly one match is treated as a
+genuine success whose acknowledgment was lost -- routed back through the
+SAME fill-reconciliation/abnormal-slippage logic a normal `order_send()`
+success goes through, not returned early -- same protection as the close-side
+fix. Zero matches means the order genuinely failed (unchanged behavior). More
+than one match means there is no ticket to anchor on and no safe way to guess
+which position is "ours" (e.g. a stray manual trade or a genuine concurrent
+duplicate signal sharing the same symbol/magic/direction/volume) -- this
+deliberately prefers a false failure (a real fill reported as REJECTED,
+caught by the next Watchman reconciliation cycle) over a false success
+(crediting the wrong ticket with this request's entry-time risk context). A
+ticket already attributed by an earlier `_resolve_ambiguous_place` call on
+this same adapter instance is never matched again, so two ambiguous timeouts
+close together in time (e.g. a retried signal) cannot double-book the same
+real position as two logical fills.
 
 **Distinguishing this system's own closes from genuine manual ones.** MT5
 tags a human closing via terminal/mobile/web as `DEAL_REASON_CLIENT`/
@@ -72,7 +97,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Literal
 
 import MetaTrader5 as mt5
@@ -128,6 +153,14 @@ _TERMINAL_RETCODES = frozenset({
 # Ambiguous: we don't know whether the broker actually executed the order --
 # only safe to retry for an idempotent action (see module docstring).
 _AMBIGUOUS_RETCODES = frozenset({mt5.TRADE_RETCODE_TIMEOUT, mt5.TRADE_RETCODE_CONNECTION})
+
+# `_resolve_ambiguous_place`'s re-query window tolerance: this adapter's own
+# `self._clock.now()` read (captured right before `_send_with_retry`) and the
+# broker's own recorded position-open time are two independent clock samples
+# -- a few seconds apart even when there is no real ambiguity at all (network
+# latency, MT5's per-second time resolution). Too large a buffer would risk
+# matching a genuinely unrelated position opened shortly before this request.
+_AMBIGUOUS_PLACE_TIME_BUFFER_SEC = 5.0
 
 # get_closed_trade_info() -- MT5's own DEAL_REASON for a closing deal,
 # mapped to execution.adapter.ClosedTradeInfo's exit_reason vocabulary.
@@ -194,6 +227,61 @@ def _is_retryable_outcome(send_result, is_idempotent: bool) -> bool:
     return False
 
 
+def _is_ambiguous_outcome(send_result) -> bool:
+    """Same ambiguous category `_is_retryable_outcome` uses for its
+    idempotent-only retry decision (`send_result is None`, or a retcode in
+    `_AMBIGUOUS_RETCODES`) -- reused here, standalone, so `place_order`'s
+    ground-truth re-query (`_resolve_ambiguous_place`) is gated on the exact
+    same categorization rather than a separately-invented one. Deliberately
+    excludes `_ALWAYS_RETRYABLE_RETCODES` (REQUOTE/REJECT) and every
+    structurally-terminal retcode: those mean the broker has already told us
+    definitively that no order was placed, so re-querying for a stray
+    matching position could only add false-success risk for zero benefit."""
+    if send_result is None:
+        return True
+    return send_result.retcode in _AMBIGUOUS_RETCODES
+
+
+def _describe_ambiguous_outcome(send_result) -> str:
+    """Human-readable description of whichever specific condition
+    `_is_ambiguous_outcome` actually matched (`order_send()` returning
+    `None`, or a TIMEOUT/CONNECTION retcode) -- used in
+    `_confirmed_place_send_result`'s log message so it accurately reflects
+    the real trigger instead of a hardcoded guess."""
+    if send_result is None:
+        return "order_send() returned None"
+    return _KNOWN_REJECT_REASONS.get(send_result.retcode, f"retcode={send_result.retcode}")
+
+
+def _as_naive_utc(value: datetime) -> datetime:
+    """Normalizes a clock read to the naive-datetime convention
+    `common/mt5_time.py` establishes for every MT5-derived timestamp this
+    module compares against (`opened_at` in `_resolve_ambiguous_place`,
+    `get_closed_trade_info`'s `close_time`). `RealClock.now()`
+    (common/clock.py) returns a TZ-AWARE UTC datetime -- comparing it
+    directly against a naive MT5-derived datetime raises `TypeError: can't
+    compare offset-naive and offset-aware datetimes`. An already-naive input
+    (e.g. a test's naive FakeClock) passes through unchanged."""
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+class _ConfirmedFillResult:
+    """Synthesizes the shape of a raw MT5 `order_send()` result from a
+    position `_resolve_ambiguous_place` confirmed via ground-truth re-query,
+    so `_send_order`'s normal success-path logic (fill reconciliation,
+    abnormal-slippage check, partial-fill detection) runs on it unmodified
+    instead of being bypassed by an early return."""
+
+    def __init__(self, order: int, price: float, volume: float, retcode: int) -> None:
+        self.order = order
+        self.price = price
+        self.volume = volume
+        self.retcode = retcode
+        self.comment = ""
+
+
 def _clamp_to_stops_level(
     direction: Literal["BUY", "SELL"], current_price: float, requested_sl: float,
     stops_level: int, point: float,
@@ -246,6 +334,15 @@ class ThrottledDemoAdapter(BrokerAdapter):
         self._min_rr_after_slippage = min_rr_after_slippage
         self._journal_db_path = journal_db_path
         self._last_placed_at: datetime | None = None
+        # Tickets already attributed to a place_order() call via
+        # `_resolve_ambiguous_place`'s ground-truth re-query -- once a ticket
+        # is confirmed here, a LATER ambiguous-place call on this same
+        # adapter instance must never attribute it again (e.g. a retried/
+        # duplicate signal whose own ambiguous timeout would otherwise match
+        # the same already-attributed position a second time and double-book
+        # one real fill as two). Self-contained to this adapter instance --
+        # deliberately not shared with watchman/position_metadata.py.
+        self._confirmed_place_tickets: set[int] = set()
 
     def _record_anomaly(self, event_type: str, details: str) -> None:
         journal.record_anomaly_event(
@@ -364,7 +461,18 @@ class ThrottledDemoAdapter(BrokerAdapter):
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
 
+            request_sent_at = _as_naive_utc(self._clock.now())
             send_result = self._send_with_retry(mt5_request, f"place_order({request.symbol} {request.direction})")
+
+            if _is_ambiguous_outcome(send_result):
+                confirmed = self._resolve_ambiguous_place(request, spec, order_type, request_sent_at, send_result)
+                if confirmed is not None:
+                    # Rejoin the normal success flow below (fill
+                    # reconciliation, abnormal-slippage check) instead of
+                    # short-circuiting past it -- an ambiguous-timeout
+                    # confirmation is exactly the scenario (high latency/
+                    # volatility) where that protection is most needed.
+                    send_result = confirmed
 
             if send_result is None:
                 code, desc = mt5.last_error()
@@ -528,6 +636,129 @@ class ThrottledDemoAdapter(BrokerAdapter):
                 self._sleep_fn(self._retry_delay_sec)
 
         return send_result
+
+    def _resolve_ambiguous_place(
+        self, request: TradeRequest, spec: SymbolSpec, order_type: int, request_sent_at: datetime,
+        send_result,
+    ) -> _ConfirmedFillResult | None:
+        """Ground-truth disambiguation for `place_order`'s ambiguous outcome
+        (`_is_ambiguous_outcome` -- TIMEOUT/CONNECTION/`order_send()`
+        returning `None`), called BEFORE `_send_order` declares failure.
+
+        Unlike `close_position`'s `_resolve_ambiguous_close` (which re-queries
+        a KNOWN ticket -- its target position's disappearance/reduction is
+        direct proof), `place_order` has no ticket to check yet: a brand-new
+        position merely *existing* is much weaker evidence that it came from
+        THIS specific request. This re-queries every open position on
+        `request.symbol` and keeps only those that match this adapter's own
+        `magic`, the requested direction, a volume no larger than requested
+        (a genuine partial fill still counts -- see `_send_order`'s own
+        `partial_fill` handling on the normal path), were opened within
+        `_AMBIGUOUS_PLACE_TIME_BUFFER_SEC`'s clock-skew tolerance of
+        `request_sent_at` and this re-query's own `self._clock.now()`, and
+        have not already been attributed to an earlier ambiguous-place call
+        on this adapter instance (`self._confirmed_place_tickets` -- without
+        this, two ambiguous timeouts close together in time, e.g. a retried
+        signal, could both match the SAME one real position and double-book
+        it as two logical fills).
+
+        Returns a synthesized `_ConfirmedFillResult` (the same shape as a raw
+        `mt5.order_send()` result) ONLY if exactly one position matches -- an
+        unambiguous "this is ours" -- so the caller (`_send_order`) can rejoin
+        its normal success flow (fill reconciliation, abnormal-slippage check)
+        on it, rather than short-circuiting past that protection. Returns
+        `None` (caller proceeds to its normal failure handling) if zero
+        positions match (the order genuinely did not go through), the
+        re-query itself fails (cannot tell either way, same fail-toward-
+        failure discipline as `_resolve_ambiguous_close`), or MORE THAN ONE
+        position matches: with no ticket to anchor on, two or more equally-
+        plausible candidates (e.g. a stray manual trade, or a genuine
+        concurrent duplicate signal, sharing this request's symbol/magic/
+        direction/volume within the window) make it impossible to safely
+        attribute any ONE of them to this request -- guessing wrongly here
+        would misattribute a real position's entry-time risk context
+        (Watchman metadata, throttle state) to the wrong ticket, so this
+        deliberately prefers a false failure (a real fill reported as
+        REJECTED, caught by the next Watchman reconciliation cycle) over a
+        false success (the wrong ticket credited as this request's fill)."""
+        positions = mt5.positions_get(symbol=spec.broker_name)
+        if positions is None:
+            code, desc = mt5.last_error()
+            logger.warning(
+                "place_order(%s %s): outcome was ambiguous, and the ground-truth re-query "
+                "(positions_get) also failed ([%d] %s) -- cannot confirm whether the order "
+                "actually went through, falling back to reporting failure.",
+                request.symbol, request.direction, code, desc,
+            )
+            return None
+
+        requery_time = _as_naive_utc(self._clock.now())
+        earliest_valid_time = request_sent_at - timedelta(seconds=_AMBIGUOUS_PLACE_TIME_BUFFER_SEC)
+        latest_valid_time = requery_time + timedelta(seconds=_AMBIGUOUS_PLACE_TIME_BUFFER_SEC)
+        expected_position_type = (
+            mt5.POSITION_TYPE_BUY if order_type == mt5.ORDER_TYPE_BUY else mt5.POSITION_TYPE_SELL
+        )
+        matches = []
+        for pos in positions:
+            if pos.ticket in self._confirmed_place_tickets:
+                continue
+            if pos.magic != self._magic or pos.type != expected_position_type:
+                continue
+            if pos.volume > request.lot_size + 1e-9:
+                continue
+            opened_at = datetime.fromtimestamp(pos.time, tz=timezone.utc).replace(tzinfo=None)
+            if opened_at < earliest_valid_time or opened_at > latest_valid_time:
+                continue
+            matches.append(pos)
+
+        if not matches:
+            logger.info(
+                "place_order(%s %s): outcome was ambiguous but no matching new position was "
+                "found -- the order genuinely did not go through.", request.symbol, request.direction,
+            )
+            return None
+
+        if len(matches) > 1:
+            logger.error(
+                "place_order(%s %s): outcome was ambiguous, and %d positions match "
+                "magic=%s/direction/volume<=%.2f opened at/after %s -- cannot safely attribute "
+                "any single one to this request, not guessing, reporting failure for "
+                "investigation. candidate tickets=%s",
+                request.symbol, request.direction, len(matches), self._magic, request.lot_size,
+                request_sent_at, [pos.ticket for pos in matches],
+            )
+            return None
+
+        matched_position = matches[0]
+        self._confirmed_place_tickets.add(matched_position.ticket)
+        return self._confirmed_place_send_result(matched_position, request, send_result)
+
+    def _confirmed_place_send_result(
+        self, position, request: TradeRequest, send_result,
+    ) -> _ConfirmedFillResult:
+        """Builds the synthesized `_ConfirmedFillResult` for a place that
+        `_resolve_ambiguous_place` confirmed actually happened despite a
+        lost/ambiguous acknowledgment -- mirrors `_confirmed_close_result`'s
+        structure. Uses the broker's own recorded `price_open`/`volume`
+        (ground truth) as the real fill, not the originally-requested entry
+        price/lot_size -- `retcode` is set to `DONE`/`DONE_PARTIAL` (matching
+        whether the matched volume is the full requested lot_size or a
+        partial fill) so `_send_order`'s normal success-path logic treats it
+        exactly as it would a genuine `order_send()` success."""
+        retcode = (
+            mt5.TRADE_RETCODE_DONE if abs(position.volume - request.lot_size) <= 1e-9
+            else mt5.TRADE_RETCODE_DONE_PARTIAL
+        )
+        message = (
+            f"place_order({request.symbol} {request.direction}) outcome was ambiguous "
+            f"({_describe_ambiguous_outcome(send_result)}) but a matching new position "
+            f"(ticket={position.ticket}) is confirmed open on the broker -- treating as a "
+            f"successful fill whose acknowledgment was lost"
+        )
+        logger.info(message)
+        return _ConfirmedFillResult(
+            order=position.ticket, price=position.price_open, volume=position.volume, retcode=retcode,
+        )
 
     def _reconcile_fill(
         self, request: TradeRequest, send_result, point: float, current_atr: float | None,

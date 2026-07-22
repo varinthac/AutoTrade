@@ -42,7 +42,10 @@ class _FakeSymbolInfo:
 
 
 class _FakePosition:
-    def __init__(self, symbol, sl, price_current, volume, type_, ticket=1, tp=0.0):
+    def __init__(
+        self, symbol, sl, price_current, volume, type_, ticket=1, tp=0.0,
+        magic=234_000, time=0, price_open=None,
+    ):
         self.symbol = symbol
         self.sl = sl
         self.price_current = price_current
@@ -50,6 +53,13 @@ class _FakePosition:
         self.type = type_
         self.ticket = ticket
         self.tp = tp
+        # magic/time/price_open (Phase 7b `place_order` ambiguous-outcome
+        # ground-truth re-query, `_resolve_ambiguous_place`) -- defaulted so
+        # every pre-existing `_FakePosition(...)` construction (none of which
+        # reference these fields) keeps working unmodified.
+        self.magic = magic
+        self.time = time
+        self.price_open = price_current if price_open is None else price_open
 
 
 class _FakeTick:
@@ -1617,6 +1627,283 @@ def test_close_position_ambiguous_ground_truth_requery_itself_fails_reports_fail
 
     assert result.success is False
     assert any("ground-truth re-query" in r.message for r in caplog.records)
+
+
+# --- place_order: ambiguous-outcome ground-truth resolution (harder than   --
+# --- close_position's -- no known ticket to re-query, only symbol/magic/   --
+# --- direction/volume/time-window matching against every open position)    --
+
+
+def test_place_order_ambiguous_timeout_confirmed_position_found_reports_success(monkeypatch, caplog):
+    # order_send() times out (ambiguous, not retried for a non-idempotent
+    # place) -- but a follow-up positions_get() query finds exactly one new
+    # position matching this request's symbol/magic/direction/volume, opened
+    # at/after the request was sent: the order actually went through and only
+    # the acknowledgment was lost. Must report SUCCESS, not execution_failed.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout"),
+    )
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.1, volume=0.1,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=99, price_open=2400.1, time=1_784_455_200),
+        ) if kwargs.get("symbol") == "XAUUSD" else (),
+    )
+
+    # TZ-aware, matching RealClock's real return shape (common/clock.py) --
+    # matches pos.time=1_784_455_200 (10:00:00 UTC).
+    clock = FakeClock(datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc))
+    adapter = _adapter(clock=clock)
+    with caplog.at_level(logging.INFO):
+        result = adapter.place_order(_request(entry=2400.0, lot_size=0.1))
+
+    assert result.success is True
+    assert result.broker_ticket == 99
+    assert result.filled_price == pytest.approx(2400.1)
+    assert result.filled_volume == pytest.approx(0.1)
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("acknowledgment was lost" in r.message for r in caplog.records)
+
+
+def test_place_order_ambiguous_timeout_tz_aware_clock_matches_without_crashing(monkeypatch, caplog):
+    # Regression test (code-reviewer finding): RealClock.now() (common/
+    # clock.py) returns a TZ-AWARE UTC datetime, but the matched position's
+    # `opened_at` is derived (common/mt5_time.py's convention) as a NAIVE
+    # datetime. Before the fix, comparing the two raised
+    # `TypeError: can't compare offset-naive and offset-aware datetimes` --
+    # which would fire on every genuine match in production (exactly the
+    # case this whole ambiguous-place fix exists to catch), and since
+    # orchestrator/shadow_loop.py's _process() wraps this in a broad
+    # `except Exception`, the crash would be silently swallowed, recreating
+    # the original incident as an unhandled crash instead of a false
+    # failure. This test uses a TZ-aware FakeClock (mirroring RealClock's
+    # actual behavior) end-to-end through place_order() to prove the
+    # comparison no longer raises and still correctly reports success.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout"),
+    )
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.1, volume=0.1,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=99, price_open=2400.1, time=1_784_455_200),
+        ) if kwargs.get("symbol") == "XAUUSD" else (),
+    )
+
+    clock = FakeClock(datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc))
+    adapter = _adapter(clock=clock)
+    result = adapter.place_order(_request(entry=2400.0, lot_size=0.1))
+
+    assert result.success is True
+    assert result.broker_ticket == 99
+
+
+def test_place_order_ambiguous_timeout_no_matching_position_reports_failure(monkeypatch, caplog):
+    # Same ambiguous TIMEOUT outcome, but this time the follow-up
+    # positions_get() query finds nothing matching -- the order genuinely did
+    # not go through, unchanged failure-reporting behavior.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout"),
+    )
+    monkeypatch.setattr(mt5, "positions_get", lambda **kwargs: ())
+
+    clock = FakeClock(datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc))
+    adapter = _adapter(clock=clock)
+    with caplog.at_level(logging.ERROR):
+        result = adapter.place_order(_request())
+
+    assert result.success is False
+    assert result.broker_ticket is None
+    assert "order_send rejected" in result.message
+    assert any("execution_failed" in r.message for r in caplog.records)
+
+
+def test_place_order_ambiguous_timeout_multiple_matches_reports_failure_conservatively(monkeypatch, caplog):
+    # Two positions both match symbol/magic/direction/volume within the
+    # window -- with no ticket to anchor on (unlike close_position's known
+    # target), guessing which one is "ours" risks misattributing a real
+    # position's entry-time risk context to the wrong ticket. Must NOT guess:
+    # report failure, same conservative discipline as
+    # _resolve_ambiguous_close's own multi-match-unsafe branches.
+    # ticket=102 opened 2s after the request (well within the match window's
+    # +/-buffer either side of "now") -- close enough to still be a
+    # plausible candidate, unlike an unrealistic opened-in-the-future gap.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout"),
+    )
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.1, volume=0.1,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=101, price_open=2400.1, time=1_784_455_200),
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.2, volume=0.1,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=102, price_open=2400.2, time=1_784_455_202),
+        ) if kwargs.get("symbol") == "XAUUSD" else (),
+    )
+
+    clock = FakeClock(datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc))
+    adapter = _adapter(clock=clock)
+    with caplog.at_level(logging.ERROR):
+        result = adapter.place_order(_request())
+
+    assert result.success is False
+    assert result.broker_ticket is None
+    assert any("cannot safely attribute" in r.message for r in caplog.records)
+
+
+def test_place_order_clean_structural_rejection_does_not_trigger_ambiguous_requery(monkeypatch):
+    # AutoTrading-disabled is a clean structural rejection -- the broker has
+    # already told us definitively that no order was placed, so
+    # _resolve_ambiguous_place must never even be attempted for it
+    # (positions_get() must not be called at all -- unlike a genuinely
+    # ambiguous TIMEOUT/CONNECTION outcome).
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(
+            retcode=mt5.TRADE_RETCODE_CLIENT_DISABLES_AT, comment="AutoTrading disabled by client",
+        ),
+    )
+
+    def boom(**kwargs):
+        pytest.fail("positions_get() must not be called for a clean structural rejection")
+
+    monkeypatch.setattr(mt5, "positions_get", boom)
+
+    adapter = _adapter()
+    result = adapter.place_order(_request())
+
+    assert result.success is False
+    assert result.broker_ticket is None
+
+
+def test_place_order_ambiguous_timeout_requery_itself_fails_reports_failure(monkeypatch, caplog):
+    # Mirrors test_close_position_ambiguous_ground_truth_requery_itself_fails_
+    # reports_failure: the ground-truth re-query (positions_get) itself fails
+    # (e.g. MT5 unreachable right after the ambiguous order_send()) -- cannot
+    # confirm either way, so this must NOT guess success; it falls back to
+    # the existing conservative report-failure behavior, same as a genuine
+    # no-match.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout"),
+    )
+    monkeypatch.setattr(mt5, "positions_get", lambda **kwargs: None)
+    monkeypatch.setattr(mt5, "last_error", lambda: (6, "no connection"))
+
+    clock = FakeClock(datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc))
+    adapter = _adapter(clock=clock)
+    with caplog.at_level(logging.WARNING):
+        result = adapter.place_order(_request())
+
+    assert result.success is False
+    assert result.broker_ticket is None
+    assert any("ground-truth re-query" in r.message for r in caplog.records)
+
+
+def test_place_order_ambiguous_timeout_partial_fill_volume_matches_reports_success_with_actual_volume(
+    monkeypatch, caplog,
+):
+    # Fixed (was: reported as a no-match/failure): the re-query finds a
+    # genuinely new position on this symbol/magic/direction opened right
+    # after the request, whose volume (0.05) is a PARTIAL fill of the
+    # requested lot_size (0.1) -- exactly what `_send_order`'s own
+    # `partial_fill` handling on the normal (non-ambiguous) path already
+    # treats as a real success at a smaller volume. Rejecting this match
+    # would reintroduce a narrower version of the exact bug this whole fix
+    # targets, so `_resolve_ambiguous_place` must accept it as a match and
+    # report success at the ACTUAL matched volume, not the requested one.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout"),
+    )
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.1, volume=0.05,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=99, price_open=2400.1, time=1_784_455_200),
+        ) if kwargs.get("symbol") == "XAUUSD" else (),
+    )
+
+    clock = FakeClock(datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc))
+    adapter = _adapter(clock=clock)
+    with caplog.at_level(logging.INFO):
+        result = adapter.place_order(_request(lot_size=0.1))
+
+    assert result.success is True
+    assert result.broker_ticket == 99
+    assert result.filled_volume == pytest.approx(0.05)
+    assert result.partial_fill is True
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("acknowledgment was lost" in r.message for r in caplog.records)
+
+
+def test_place_order_ambiguous_timeout_second_call_does_not_reattribute_same_ticket(monkeypatch, caplog):
+    # Fixed (was: documented as a known gap -- both calls wrongly succeeded
+    # against the same ticket). A first ambiguous-timeout call correctly
+    # resolves against a real new position (ticket=99). A second,
+    # independent ambiguous-timeout call for the SAME symbol/magic/
+    # direction/volume happens shortly after (e.g. a retried/duplicate
+    # signal) while still inside _AMBIGUOUS_PLACE_TIME_BUFFER_SEC's window
+    # relative to ticket 99's open time -- only ONE real broker position
+    # ever exists. The second call's re-query still finds that same
+    # position, but must NOT re-attribute a ticket already confirmed by an
+    # earlier call: it falls through to the original ambiguous-timeout
+    # failure result instead, avoiding double-booking one real fill as two
+    # logical trades in Watchman/position_metadata.
+    #
+    # min_seconds_between_trades=0 here to isolate _resolve_ambiguous_place's
+    # own matching logic from the *separate* min_seconds_between_trades
+    # cooldown (default 300s, see __init__), which is not what this test is
+    # about.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout"),
+    )
+    # Only ONE real broker position ever exists throughout both calls.
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.1, volume=0.1,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=99, price_open=2400.1, time=1_784_455_200),
+        ) if kwargs.get("symbol") == "XAUUSD" else (),
+    )
+
+    clock = FakeClock(datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc))
+    adapter = _adapter(clock=clock, min_seconds_between_trades=0.0)
+    first = adapter.place_order(_request(lot_size=0.1))
+    clock.advance(2)  # well within the 5s buffer -- ticket 99 would still match if not for the fix
+    with caplog.at_level(logging.INFO):
+        second = adapter.place_order(_request(lot_size=0.1))
+
+    assert first.success is True
+    assert first.broker_ticket == 99
+    # Fixed: the second, independent call does NOT re-attribute the already-
+    # confirmed ticket -- it falls through to the ordinary ambiguous-timeout
+    # failure instead of reporting a second success against ticket 99.
+    assert second.success is False
+    assert second.broker_ticket is None
+    assert any("no matching new position was found" in r.message for r in caplog.records)
 
 
 # --- get_closed_trade_info() (Phase 8a reconciliation) ----------------------
