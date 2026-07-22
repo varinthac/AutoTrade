@@ -680,6 +680,7 @@
       <li><b>ไม้ค้าง (Time Stop)</b> — ไม้ที่เปิดมานานเกินไปแล้วยังไม่ไปทางไหนชัดเจน (กำไร/ขาดทุนน้อยมาก) → ปิดทิ้ง ไม่ปล่อยให้เงินจมอยู่เฉยๆ</li>
       <li><b>ป้องกันข่าว (News Protection)</b> — ถ้าข่าวสำคัญใกล้เข้ามาและไม้นี้มีกำไรอยู่แล้ว → ปิดครึ่งหนึ่งเก็บกำไรไว้ก่อน กันข่าวทำราคาผันผวนจนพลิกกลับ</li>
       <li><b>ดูแลปุ่ม AutoTrading ของ MT5 (AutoTrading Toggle Monitor)</b> <em style="color: var(--text-muted);">[ใหม่ 22 ก.ค. 2026]</em> — ระบบเฝ้าดูปุ่ม &ldquo;AutoTrading&rdquo;/&ldquo;Algo Trading&rdquo; ในเมนู Tools &gt; Options &gt; Expert Advisors ของตัว MT5 — ถ้ามีใครกดเปิด/ปิดปุ่มนี้ ระบบจะส่ง Telegram alert ทันที ยกเลิก entries ใหม่ และแจ้งเมื่อปุ่มถูกเปิดกลับแล้ว (เกิดจากเหตุการณ์จริง 21 ก.ค. 2026: ปุ่มถูกปิดโดยไม่ตั้งใจ ทำให้ MT5 ปฏิเสธทุก order ด้วย retcode 10027 แต่ไม่มีใคร­รู้นาน)</li>
+      <li><b>ยืนยันการปิดตำแหน่งแบบทันที (Close Position Reconciliation)</b> <em style="color: var(--text-muted);">[แก้ไข 22 ก.ค. 2026]</em> — เมื่อระบบพยายามปิดตำแหน่ง หากสูญเสีย network acknowledgment ช่วงสั้นๆ ตัวเดิมจะถือว่าปิด​ไม่สำเร็จ ส่ง alert ซ้ำๆ จนกว่า periodic safety-check จะตรวจพบว่าปิดได้จริงแล้ว (หลาย cycles ต่อมา) — ตอนนี้แก้ไขให้ re-query broker state ทันที ตรวจสอบ 3 สิ่ง: (1) ปิดของระบบเรา? (2) ปิดโดย manual/EA อื่น? (3) ยังเปิดอยู่หรือไม่ — ระบบตอนนี้แยกแยะ "ปิดโดยระบบของเรา" ให้เป็น <code>reconciled_system_close</code> แทนการแบ่ง generic "manual" ปัญหาจึง resolve ใน seconds แทนที่จะ alarm หลายรอบ</li>
     </ul>
 
     <h3>เงื่อนไข/Threshold ปัจจุบัน</h3>
@@ -873,20 +874,15 @@
 
     <div class="history-item">
       <div class="history-head">
-        <span class="pill pending">ลงทะเบียนไว้ ยังไม่รัน</span>
-        <span class="history-title">H1→M30 hybrid: ให้ H1 ตัดสินใจ แต่เข้าไม้ด้วยสัญญาณ M30</span>
+        <span class="pill rejected">ถูกปฏิเสธ</span>
+        <span class="history-title">H1→M30 hybrid: ให้ H1 ตัดสินใจ แต่เข้าไม้ด้วยสัญญาณ M30 pullback-then-resume</span>
       </div>
       <dl class="history-grid">
-        <dt>อ้างอิง</dt><dd>EXP-010 (pre-registered, 22 ก.ค. 2026)</dd>
-        <dt>สมมติฐาน</dt><dd>ใช้สัญญาณ H1 Council แต่จับเวลาเข้าไม้ด้วย M30 pullback-then-resume trigger + M30-structure stop → ได้ entry ที่ดีกว่า stop ที่แคบกว่า lot ที่ใหญ่กว่า ใช้สิ่งที่เก็บเกี่ยวได้ → น้อยสัญญาณที่ถูกทิ้งเพราะ lot ขั้นต่ำ</dd>
-        <dt>สิ่งที่บล็อกคำงาน</dt><dd>
-          <ul style="margin: 0; padding-left: 1.5rem;">
-            <li><strong>(a) Spread=0 data fix</strong> — <b>✅ เคลียร์แล้ว 22 ก.ค. 2026</b> (floor เฉพาะแถวที่เป็น 0: XAUUSD → 5 pts ทุก TF; commit <code>5be62c8</code> โค้ด download floor ให้อัตโนมัติแล้ว)</li>
-            <li><strong style="color: var(--pending-fg);">(b) PENDING:</strong> Re-baseline H1/M30 ด้วยข้อมูลที่แก้แล้ว + commission 0 (baseline figures ใน pre-registration เป็นค่าก่อนแก้ cost — ล้าสมัยแล้ว)</li>
-            <li><strong style="color: var(--pending-fg);">(c) PENDING:</strong> Two-TF bridge harness (backtest engine ตอนนี้ support H1 single-TF เท่านั้น)</li>
-          </ul>
-        </dd>
-        <dt>สถานะ</dt><dd>🔄 <b>PRE-REGISTERED, NOT RUN</b> — (a) เคลียร์แล้ว (b) และ (c) ยังค้าง</dd>
+        <dt>อ้างอิง</dt><dd>EXP-010 (run 22 ก.ค. 2026; REJECTED)</dd>
+        <dt>สมมติฐาน</dt><dd>ใช้สัญญาณ H1 Council แต่จับเวลาเข้าไม้ด้วย M30 pullback-then-resume trigger + M30-structure stop → ได้ entry ที่ดีกว่า stop ที่แคบกว่า lot ที่ใหญ่กว่า → น้อยสัญญาณที่ถูกทิ้งเพราะ lot ขั้นต่ำบน $3k account</dd>
+        <dt>ผลลัพธ์</dt><dd><b>❌ REJECTED</b> — Tighter M30 stop ถูก whipsaw ในช่วง choppy 2021-22 (Y1): ทุกตัวแปรที่ทดสอบ (12 cells) ล้มเหลว Y1 criterion — baseline Y1 positive (PF 1.001 / +$20) แต่ hybrid Y1 ทั้งหมด negative; Y1 best case 0.943 / −$1,018. ด้วย M30 stop แคบเกินไป ระบบปิด positions ก่อนเวลาใน choppy market (F2 whipsaw × F5 regime failure)</dd>
+        <dt>ตัวเลขสำคัญ</dt><dd>Fresh baseline (floored data, comm $0): Y1 1.001/+20, Y2 0.967/−548, Y3 1.199/+2935, Val 1.101/+1557. Best hybrid cell (N8·p2): Y1 0.943/−$1,018 — fails on regime/whipsaw; also gives back trend-capture gains ใน Y3 (hybrid 0.89–1.03 vs baseline 1.199)</dd>
+        <dt>สถานะ</dt><dd>❌ <b>REJECTED 22 ก.ค. 2026</b> — H1-as-is entry stands; config unchanged; Test budget unspent</dd>
       </dl>
     </div>
 

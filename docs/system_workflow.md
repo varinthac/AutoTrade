@@ -188,6 +188,7 @@ lot_size = risk_amount / (stop_distance × point_value)
 - **Time stop** — ไม้​ที่​​เปิด​เกิน​ 48 ชั่วโมง​แล้ว​ อยู่​ในช่วง​ dead-trade (±0.3R กำไร/ขาดทุน) → ปิด (ไม่ค้นไม่ยุ่ง)
 - **News protection** — ข่าว​มา​ใน​ 30 นาที​ แล้ว​ไม้​กำไร​ ≥ 0.5R → ปิด​ครึ่ง​ + ย้าย​ SL​ break-even
 - **AutoTrading toggle monitor** *(ใหม่ 2026-07-22)* — ระบบ​เฝ้าดู​ปุ่ม "AutoTrading"/"Algo Trading" ของ MT5 terminal เอง (Tool > Options > Expert Advisors) — ถ้ามี​ใคร​กดปิด​หรือ​เปิด​ปุ่ม​นี้​ ระบบ​จะ​ส่ง​ Telegram alert ทันที ​พร้อม​ยกเลิก​ entries ใหม่​จนกว่า​จะ​เปิด​กลับ ​— สาเหตุ​มา​จาก​เหตุการณ์​จริง (2026-07-21): ปุ่ม​ถูก​ปิด​โดย​ไม่ตั้งใจ​ แล้ว​ทุก​ order ถูก MT5 ปฏิเสธ​ด้วย retcode 10027 ​แต่​ไม่มี​ใคร​รู้​นาน ​จนกว่า​โปรแกรม​จะ​มี alert ตามด​
+- **Close-position reconciliation** *(ปรับปรุง 2026-07-22)* — เมื่อระบบพยายามปิดตำแหน่งแล้วได้ Network ACK-loss (ขาด​ acknowledgment​ จาก​ broker​ เพราะ​ connection​ สั้น​ๆ​) ตัวเดิมจะ​อ้างว่าปิด​ไม่​สำเร็จ​ แล้ว​ส่ง​ alert ซ้ำๆ​ จนกว่า​ periodic safety-check​ จะ​ตรวจจับ​ว่าปิด​ได้​แล้ว​จริงๆ​ (หลาย​ cycles​ ต่อ​มา) — ตอนนี้​แก้ไขแล้ว​ ระบบ​ตรวจสอบ​ broker state​ ทันที​ แต่ check​ ว่า​ปิด​ของ​ระบบ​เราเอง​ (แทน​ closed​ โดย​ manual/EA​ อื่น)​ ให้​เอา​ ด้วย​ `exit_reason=reconciled_system_close` (distinct​ จาก​ `manual`) — ปัญหา​ resolved​ ในไม่กี่​ seconds​ แทน​ที่จะ​ alarm​ หลายรอบ
 
 ### เงื่อนไข/Threshold ปัจจุบัน
 
@@ -298,13 +299,11 @@ lot_size = risk_amount / (stop_distance × point_value)
    - **⚠️ Important:** ตัวเลข probe ข้างบนรันก่อน 2026-07-22 ทั้ง spread floor fix และ commission $0 correction — สัญญาณของคณ ประเมินผลและแนวทาง (lower-TF collapse) ยังคงจริง แต่ห้ามอ้างตัวเลขเป๊ะๆ; ใครจะ re-run probe ต้อง baseline ใหม่บน floored data + commission 0 (ดู ADDENDUM ใน experiments_log.md)
    - **สถานะ:** ✅ **H1 CONFIRMED** as primary signal timeframe; lower TFs rejected; M5 rejected outright
 
-8. **H1→M30 hybrid entry timing** — EXP-010 pre-registered but blocked
-   - **ทดสอบ:** (NOT YET RUN) Keep H1 Council bias/veto, but enter on M30 pullback-then-resume trigger with M30-structure stop → tighter stop, better entry price, fewer sub-min-lot skips on $3k account
-   - **Prerequisites blocking:** 
-     - (a) ~~spread-zero data fix~~ ✅ เคลียร์แล้ว 2026-07-22 (spread floor applied on-disk + permanent in code)
-     - **(b) PENDING:** re-baseline H1/M30 ด้วยข้อมูลที่แก้แล้ว + commission $0 (ตัวเลข baseline ใน pre-registration เป็นค่าก่อนแก้ cost — baseline figures stale)
-     - **(c) PENDING:** two-TF bridge harness ยังไม่ได้สร้าง (จำเป็นเพราะ backtest engine ตอนนี้ support H1 single-TF ไม่ support dual-TF replay)
-   - **สถานะ:** 🔄 **PRE-REGISTERED, NOT RUN** — block จน (b) & (c) clear; cost model fixes ใน (a) แล้ว
+8. **H1→M30 hybrid entry timing** — EXP-010 RUN, REJECTED
+   - **ทดสอบ:** Keep H1 Council bias/veto, but enter on M30 pullback-then-resume trigger with M30-structure stop → ทำให้ stop แคบกว่า, entry ราคาดีกว่า, ลดสัญญาณที่ถูกทิ้งเพราะ lot ขั้นต่ำบน $3k account
+   - **ผลลัพธ์:** ❌ **REJECTED** — Tighter M30 stop ถูก whipsaw ในช่วง choppy 2021-22 (Y1): ทุกตัวแปรที่ทดสอบ (12 cells) ล้มเหลว Y1 criterion — baseline Y1 positive (PF 1.001 / +$20) แต่ hybrid Y1 ทั้งหมด negative; Y1 best case 0.943 / −$1,018. ด้วย M30 stop แคบเกินไป ระบบปิด positions ก่อนเวลาใน choppy market (F2 whipsaw × F5 regime failure) และยังให้ back ของ trend-capture gains ใน 2023-24 (Y3 hybrid 0.89–1.03 vs baseline 1.199)
+   - **ตัวเลขที่ run:** Fresh baseline (floored data, comm $0): Y1 1.001/+20 (277 tr), Y2 0.967/−548 (256 tr), Y3 1.199/+2935 (234 tr), Val 1.101/+1557 (262 tr). Best hybrid cell (N8·p2): Y1 0.943/−$1,018 (313 tr) — fails on regime/whipsaw
+   - **สถานะ:** ❌ **REJECTED 2026-07-22** — H1-as-is entry stands; config unchanged; Test budget unspent
 
 ### 🔄 INFRASTRUCTURE READY, AWAITING REAL-WORLD VERIFICATION
 
@@ -440,4 +439,4 @@ auditor:
 
 **Document Date:** 2026-07-22  
 **Config Version:** `config/base.yaml` (post-EXP-003 session-gate change, post-EXP-008 Watchman breakeven/trail adoption, min-lot-risk-cap-pct: 1.5 adopted, Standard account cost model)  
-**Last Major Change:** EXP-008 ADOPTED 2026-07-22 (`watchman.breakeven_enabled`/`trail_enabled: false`, live restarted); min-lot fallback adopted (cfo.min_lot_risk_cap_pct: 1.5); Account type confirmed **Standard** (ZERO commission); Timeframe probe H1-confirmed (M30/M15/M5 rejected); EXP-010 pre-registered (H1→M30 hybrid entry timing — spread fix เคลียร์แล้ว รอ re-baseline + harness)
+**Last Major Change:** EXP-010 REJECTED 2026-07-22 (H1→M30 hybrid entry timing — whipsaw + regime failure); Watchman close-position reconciliation fix (reconciled_system_close exit reason); EXP-008 ADOPTED 2026-07-22 (`watchman.breakeven_enabled`/`trail_enabled: false`, live restarted); min-lot fallback adopted (cfo.min_lot_risk_cap_pct: 1.5); Account type confirmed **Standard** (ZERO commission); Timeframe probe H1-confirmed (M30/M15/M5 rejected)
