@@ -2561,3 +2561,177 @@ this was read-only). Auditor gates untouched (rule 8). Test budget UNSPENT/NA. p
 under `src/`/`tests/` was touched, so the suite is unaffected — last recorded 1059 passed stands; deliberately
 not re-run to avoid adding CPU load to an already-contended measurement). Harness reused:
 `experiments/sizing_smallacct_harness.py`; durable results: `scratchpad/sizing_comm0_results.jsonl` (7 cells).
+
+---
+
+## EXP-011 2026-07-22 — M30 / M15 as the PRIMARY decision timeframe with an INDEPENDENTLY-TUNED param set (NEW family)
+
+Status: **REJECT — no independently-tuned lower-TF-primary config clears the per-year robustness bar; H1
+stays the sole primary timeframe.** Analysis-only: `config/base.yaml`, `council/`, `backtest/engine.py`,
+`feed/`, `risk/`, `watchman/` NOT modified. New code lives only in `experiments/exp011_native_tf_harness.py`.
+Test one-touch budget for this NEW family: **UNSPENT** (no candidate survived Train → Test never touched).
+
+### 0. What this is / NEW family / why the TF-probe, EXP-005/007 and EXP-010 do NOT already answer it
+
+User question (verbatim intent): could M30 **or** M15 run as the **PRIMARY** decision timeframe — Council
+scoring, Risk Voice, Shield, CFO, Watchman all native on M30/M15 bars, NOT H1 — with an **ENTIRELY,
+INDEPENDENTLY-TUNED** parameter set (not the H1-tuned `config/base.yaml` reused on faster bars) — and thereby
+(a) get in/out faster than H1, (b) while staying "acceptably" profitable, as a **parallel/independent** second
+strategy alongside the H1 system (user: "อิสระต่อกันกับที่เราใช้อยู่อีกชุด"), NOT necessarily beating H1.
+
+This is a genuinely NEW family, distinct from all prior lower-TF work — stated explicitly so no reader thinks
+those rejections already close it:
+- **TF-probe NOTE (2026-07-22):** ran M30/M15/M5 as PRIMARY but with the **SAME H1-tuned thresholds/ATR-mults/
+  pivot/time-stop** — a known mismatched comparison (fast bars, slow-TF-tuned knobs). EXP-011 removes exactly
+  that mismatch by re-tuning the faster TF on its own terms. THIS is the "fresh independent tuning" follow-up
+  the TF-probe did NOT run.
+- **EXP-005 (M15) / EXP-007 (M30):** lower-TF structure as a FILTER/CONDITION on the SAME H1 entry (does M15/M30
+  pre-entry structure discriminate H1 outcomes). Different mechanism (H1 still decides); rejected on
+  cross-split sign-flips.
+- **EXP-010 (H1→M30 hybrid):** H1 Council keeps ALL decisions, M30 used ONLY for entry timing/stop placement.
+  Different mechanism (H1 still the brain); rejected on whipsaw/regime (F2/F5). EXP-011 instead makes the
+  faster TF the BRAIN — every voice scores natively on M30/M15 bars.
+
+### 1. Hypothesis (falsifiable, pre-registered)
+
+**H1:** With an independently-tuned parameter set, an M30-primary (and/or M15-primary) Council system enters
+and exits FASTER than H1 (lower median holding time, higher trade frequency) AND stays profitable per-year at a
+bar comparable to what H1 must clear — specifically net-positive (PF ≥ 1.0) in a majority of the four
+Train+Val years, with NO catastrophic (PF < 0.9 / large net-loss) year, so it is viable as an independent
+parallel strategy.
+
+**Null / falsifiers (any one ⇒ REJECT that timeframe):**
+- (F1) Cost/R erosion: the 5-pt spread floor is a larger fraction of R as stops tighten on faster bars
+  (TF-probe finding #3) — the faster TF may be structurally net-negative regardless of thresholds.
+- (F2) No latent entry edge: the native lower-TF Council signal has PF_ex5 < 1.0 (loses even excluding top-5
+  winners) and independent tuning of the highest-leverage knobs (selectivity, stop width) cannot lift it to a
+  per-year-robust positive.
+- (F3) Regime luck, not edge: any PF > 1.0 shows up in DIFFERENT years across TFs/configs (reshuffling), i.e.
+  it is not a stable structural edge — the exact failure mode this log has caught 5+ times.
+- (F4) Y1-2021-22 (choppy regime) fails: M30 covers the full 2021-22 regime (mandatory hard test); a candidate
+  net-negative there is regime-fragile. (M15 CANNOT test Y1 at all — data starts 2022-04-28 — so any M15
+  result is inherently LESS regime-tested, per EXP-005's coverage caveat.)
+- (F5) Drawdown blowout: DD balloons far past H1's ~10–15% (TF-probe DD staircase 11%→54%), making it
+  un-tradeable at the $3,000 constraint even if PF were ≥ 1.0.
+
+### 2. Mechanism / what IS and ISN'T independently tunable (verified by reading engine + council + indicators)
+
+`backtest.engine.run_backtest` is timeframe-agnostic: it consumes a bar DataFrame and runs Bull/Bear scoring,
+Decision Matrix, order construction, sizing, (opt) Risk Voice + Watchman NATIVELY on whatever bars are fed. So
+feeding the floored `XAUUSD_M30.csv` / `XAUUSD_M15.csv` runs the whole Council natively on that TF. Knobs:
+- **Config-exposable (swept via `BacktestConfig`, no source edit — this is what "independent tuning" covers
+  here):** `sl_buffer_atr`, `sl_min_atr`, `sl_max_atr` (ATR-stop mults — the cost/R + whipsaw lever),
+  `tp_r_multiple`, `pivot_bars` (swing lookback), `bull/bear/conflict` thresholds (selectivity), Risk-Voice
+  session/spread, Watchman `time_stop_hours`/`dead_trade_r_band` (hours = wall-clock, TF-agnostic). Per rule 3
+  I tune the SMALLEST high-leverage subset sequentially, NOT a joint grid.
+- **NOT config-exposable (module constants — would need a monkeypatch/code change, OUT of scope, FLAGGED):**
+  EMA 20/50/200 trend backbone, RSI 14, MACD 12/26/9 (`council/scoring.py`), and the 480-bar (=20d H1)
+  `rolling_average` (`features/indicators.py`). On M30 these span HALF the wall-clock of H1 (EMA200 = 100h not
+  200h). Leaving them native = a legitimate "M30 reacts faster to the same indicator definitions" reading;
+  rescaling them (e.g. EMA 40/100/400 on M30) is a deeper separate follow-up — see §7. This is the honest
+  boundary of what "independent tuning" reached in this pass.
+
+### 3. Sweep design (sequential/nested per rule 3 — NOT a joint grid) + method
+
+Primary sweep run with **Watchman OFF + Risk Voice OFF (SL/TP-only, EXP-002 methodology)** — the cleanest
+isolation of the native entry/stop edge and the fastest (Watchman ON is O(n²) on ~2–4× the bars). Rationale:
+if the native lower-TF ENTRY signal has no latent edge, adding Watchman/Risk-Voice cannot manufacture one (a
+prior this log has established repeatedly). Cost model ON throughout: comm $0 (IC Markets Standard, corrected),
+slippage = bar's own spread, spread baked into fill; spread-floored CSVs (0 zero-spread bars verified). Equity
+$10k, risk 1.0%, per-year windows Y1–Y4 (Y5=Test reserved). Sequence, highest-leverage first:
+- **Stage A — Council selectivity** (the signal-quality lever): bull=bear ∈ {70(H1 default), 80}, conflict
+  scaled (55→60). If raising selectivity does not rescue per-year PF, the entry has no latent edge.
+- **Stage B — stop width** (the cost/R + whipsaw lever): `sl_min_atr` 0.8 → 1.6 at baseline thresholds.
+- (Stages C tp/pivot + Watchman/Risk-Voice ON confirmation would run ONLY if A or B produced a per-year-robust
+  positive candidate — none did, so they were correctly NOT run, mirroring EXP-010's 10b-not-triggered logic.)
+
+Multiple-testing (rule 7): M30 family = 3 configs (thr70, thr80, sl_min1.6); M15 family = 1 baseline. Well
+under 20. Since nothing cleared Train, no winner was carried to Validation-as-selection or to Test.
+
+### 4. Acceptance criteria (pre-registered). ADOPT-CANDIDATE a lower-TF-primary config as a viable independent
+parallel strategy iff ALL: (a) trades ≥ 100 in every year Y1–Y4; (b) "faster": median hold materially below
+H1's ~16.5h AND/OR higher trade frequency; (c) "acceptable profit": PF ≥ 1.0 in a MAJORITY of Y1–Y4 with NO
+catastrophic year (no PF < 0.9 / large net loss), AND PF_ex5 ≥ 1.0 in a majority (a real edge, not top-5-
+winner-carried); (d) NOT regime-luck: the positive years are stable, not flipping across TF/config (F3);
+(e) Y1-2021-22 not net-negative for M30 (F4); (f) DD not wildly above H1 (F5); (g) plateau on any winning knob
+(rule 5); (h) Test touched ONCE only for a single Train+Val survivor. Else REJECT. Auditor gates NOT touched
+(rule 8); spec bounds respected (sl_max ≤ 2.5, thresholds/pivot/tp all `[adjustable]`).
+
+### 5. Baseline to compare against — H1-as-is (current live config, honest costs, from the RE-VERIFICATION entry)
+
+H1-primary, Watchman OFF, tp 2.0, comm $0, floored data (RE-VERIFICATION P2 row tp=2.0): Y1 **1.029/+368**,
+Y2 0.983/−238, Y3 **1.225/+3145**, Y4 **1.095/+1390** — POSITIVE in 3/4 years, worst year only −$238, median
+hold ~16.5h. This is the "profitable in a majority of years, no catastrophic year" bar the lower TF must reach
+to be an "acceptable" parallel strategy.
+
+### 6. Results — native lower-TF-primary, per-year PF / net $ / trades / DD% / PF_ex5 / median-hold
+
+Harness `experiments/exp011_native_tf_harness.py` (committable). Y4 = Validation; Y1–Y3 = Train.
+
+**M30-primary (full Train+Val coverage incl. the hard 2021-22 regime):**
+
+| config | Y1 2021-22 | Y2 2022-23 | Y3 2023-24 | Y4/Val 2024-25 | hold | yrs PF≥1.0 |
+|--------|-----------|-----------|-----------|----------------|------|-----------|
+| **A0 thr70 (H1 default)** | 0.812 / −3549 / 357 / DD37 / ex5 0.765 | 0.920 / −1902 / 401 / DD28 / ex5 0.879 | 0.948 / −1302 / 381 / DD34 / ex5 0.902 | 1.061 / +1705 / 421 / DD16 / ex5 1.019 | 5.5–8h | **1/4** |
+| A1 thr80 (more selective) | 0.836 / −2788 / 318 / DD34 / ex5 0.783 | 0.863 / −3010 / 372 / DD38 / ex5 0.818 | 1.007 / +159 / 350 / DD22 / ex5 0.959 | 1.069 / +1895 / 389 / DD13 / ex5 1.024 | 5.8–8.5h | 2/4 |
+| B1 sl_min1.6 (wider stops) | 0.773 / −4023 / 341 / DD41 / ex5 0.722 | 0.936 / −1417 / 356 / DD23 / ex5 0.892 | 0.943 / −1355 / 367 / DD33 / ex5 0.896 | 1.047 / +1209 / 398 / DD13 / ex5 1.005 | 8–10h | 1/4 |
+
+**M15-primary (baseline thr70; CANNOT test Y1 — M15 data starts 2022-04-28):**
+
+| config | Y3 2023-24 | Y4/Val 2024-25 | hold |
+|--------|-----------|----------------|------|
+| M15 thr70 | 1.055 / +2937 / 675 / DD31 / ex5 1.028 | **0.971 / −1209 / 730 / DD34 / ex5 0.947** | 3.5–3.8h |
+
+### 7. Acceptance scoring + VERDICT — REJECT (both M30 and M15)
+
+- **(b) "Faster": PASS (the one thing that works).** Median hold M30 5.5–8h, M15 3.5–3.8h vs H1 ~16.5h; trade
+  frequency ~2× (M30) to ~3× (M15) H1's. The turnover motivation is genuinely achievable — but on a losing
+  system it is worthless.
+- **(c) "Acceptable profit": FAIL, decisively.** M30 baseline is net-NEGATIVE in 3/4 years (only the favorable
+  2024-25 positive); **PF_ex5 < 1.0 in every Train year (0.77/0.88/0.90)** and avgR NEGATIVE in Y1/Y2/Y3 — the
+  native M30 entry LOSES even excluding its top-5 winners, at ~30–33% win rate against a 2R target. H1 by
+  contrast is positive in 3/4 years. This is the opposite of "acceptable."
+- **(F2) Independent tuning does NOT rescue it — the crux of the whole question.** Raising selectivity
+  (thr80): nudged Y1 (0.812→0.836) and Y3 (0.948→1.007 breakeven) but HURT Y2 (0.920→0.863/−$3010); still
+  net-negative in 2/4 years, positive years barely >1.0, PF_ex5 still <1.0 all three Train years — pure
+  regime-reshuffling, no stable lift. Widening stops (sl_min1.6): made it WORSE overall (Y1 0.812→0.773/
+  −$4023, Y4 1.061→1.047) AND lengthened holds to 8–10h, eroding the very speed advantage that motivated M30.
+  Both of the two highest-leverage independent knobs fail — the deficit is a structural entry-quality/cost-per-R
+  gap, not a threshold-calibration artifact.
+- **(F3/d) Regime-luck confirmed:** M30's only positive year is Y4; M15's only positive of {Y3,Y4} is Y3 and
+  its Y4 is NEGATIVE (0.971) — the positive year FLIPS between the two timeframes. Any PF>1.0 is which-regime-
+  you-landed-in, not edge. Same failure mode caught in EXP-002/004/005/006/007/010.
+- **(F4/e) Y1-2021-22: FAIL for every M30 config** (best 0.836, deeply net-negative −$2,788; worst −$4,023) vs
+  H1's +$368. The tighter/faster M30 gets whipsawed in chop exactly as EXP-010 found for the hybrid.
+- **(F5/f) DD blowout: FAIL.** M30 DD 22–41%, M15 DD 31–34% per year — vs H1's ~10–15%. Un-tradeable at $3,000
+  even before the profit problem (and circuit breakers, unmodeled here, would have halted well before these).
+- **(a) Trade floor: PASS** (all ≥ 100/yr) — the one criterion faster bars clear trivially. **(g) plateau:
+  moot** — no passing region exists.
+- **M15 is strictly the weaker candidate:** finer bars → higher cost/R (TF-probe #3), it cannot test the hard
+  Y1 regime at all (data gap), and its covered years already fail (Y4 net-negative, DD 34%). Nothing about M15
+  is more promising than M30, which itself failed.
+
+**VERDICT — REJECT. A fresh, independently-tuned M30-or-M15-PRIMARY system is NOT worth pursuing as a
+parallel/independent alternative to the current H1 system.** The user's fair critique of the TF-probe (it
+reused H1 thresholds) is answered directly: re-tuning the two highest-leverage knobs the faster TF genuinely
+scales (selectivity + stop width) on its own terms does NOT change the conclusion — the native lower-TF entry
+signal has no latent edge (PF_ex5 < 1.0, negative avgR in the hard regimes), the faster turnover is real but
+sits on a structurally losing base, drawdowns are 2–3× H1's, and the occasional profitable year is regime luck
+that flips between M30 and M15. This is the same monotone-staircase collapse the TF-probe saw, now confirmed to
+survive independent threshold/stop tuning — so it is not a mis-tuning artifact. "Faster" is achievable; "good
+enough to trade" is not.
+
+**Honest scope caveat (what this pass did NOT tune):** the Council's indicator PERIODS (EMA 20/50/200, RSI 14,
+MACD 12/26/9, 480-bar rolling avg) stayed H1-native (module constants; rescaling them needs a code change, out
+of the analysis-only mandate). It is conceivable — though NOT evidenced and against a very strong prior — that
+a full wall-clock rescale of the trend backbone (e.g. EMA 40/100/400 on M30) plus a from-scratch re-tune could
+behave differently. But that is a much larger, code-changing, high-overfit-risk research program (effectively
+designing a new strategy, not tuning the existing one), and the entry-quality deficit shown here (loses ex-top-5
+in every hard year, DD 2–3× H1) argues strongly against it paying off. If the user wants to pursue it, it needs
+its own spec/design track and pre-registration — not a parameter sweep.
+
+**Test set (2025-07-21→2026-07-21) NOT touched** — no candidate cleared Train, so both the M30-primary and
+M15-primary families' one-touch Test budgets remain UNSPENT/pristine (rule 2). `config/base.yaml` NOT modified
+(analysis-only, rule 10). Auditor gate thresholds NOT touched (rule 8). Harness:
+`experiments/exp011_native_tf_harness.py` (committable, reusable for any future native-TF sweep); raw run
+outputs are session-local background-task logs.
