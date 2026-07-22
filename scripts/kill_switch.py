@@ -35,6 +35,12 @@ logger = logging.getLogger(__name__)
 DEVIATION_POINTS = 20
 MAGIC = 999_999
 
+# Duplicated (deliberately, not imported) from execution/demo_adapter.py's
+# `_AMBIGUOUS_RETCODES` -- this module must stay independent of execution/
+# per the module docstring, but needs the same "might have actually
+# succeeded, don't assume failure" classification for order_send() outcomes.
+_AMBIGUOUS_RETCODES = frozenset({mt5.TRADE_RETCODE_TIMEOUT, mt5.TRADE_RETCODE_CONNECTION})
+
 
 @dataclass(frozen=True)
 class CloseResult:
@@ -90,9 +96,12 @@ def _close_position(position) -> CloseResult:
     send_result = mt5.order_send(request)
     if send_result is None:
         code, desc = mt5.last_error()
-        message = f"order_send() returned None: [{code}] {desc}"
-        logger.error("FAILED to close ticket=%s symbol=%s: %s", position.ticket, position.symbol, message)
-        return CloseResult(position.ticket, position.symbol, position.volume, False, message)
+        ambiguous_reason = f"order_send() returned None: [{code}] {desc}"
+        return _resolve_ambiguous_close(position, ambiguous_reason)
+
+    if send_result.retcode in _AMBIGUOUS_RETCODES:
+        ambiguous_reason = f"order_send ambiguous: retcode={send_result.retcode} comment={send_result.comment!r}"
+        return _resolve_ambiguous_close(position, ambiguous_reason)
 
     if send_result.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_DONE_PARTIAL):
         message = f"order_send rejected: retcode={send_result.retcode} comment={send_result.comment!r}"
@@ -102,6 +111,50 @@ def _close_position(position) -> CloseResult:
     message = f"closed volume={send_result.volume} at price={send_result.price}"
     logger.info("CLOSED ticket=%s symbol=%s: %s", position.ticket, position.symbol, message)
     return CloseResult(position.ticket, position.symbol, position.volume, True, message)
+
+
+def _resolve_ambiguous_close(position, ambiguous_reason: str) -> CloseResult:
+    """Ground-truth re-check for an ambiguous order_send() outcome
+    (`order_send()` returned `None`, or retcode is TIMEOUT/CONNECTION) --
+    a lost client-side acknowledgment does not mean the close didn't
+    actually happen on the broker side. Re-queries the position directly
+    via positions_get(ticket=...) rather than assuming failure, biasing
+    toward "don't guess, stay conservative" exactly like
+    execution/demo_adapter.py's `_resolve_ambiguous_close`."""
+    positions = mt5.positions_get(ticket=position.ticket)
+    if positions is None:
+        code, desc = mt5.last_error()
+        message = (
+            f"{ambiguous_reason}; ground-truth re-query also failed ([{code}] {desc}) -- "
+            "cannot confirm whether the close actually succeeded, reporting failure."
+        )
+        logger.error("FAILED to close ticket=%s symbol=%s: %s", position.ticket, position.symbol, message)
+        return CloseResult(position.ticket, position.symbol, position.volume, False, message)
+
+    if not positions:
+        message = (
+            f"{ambiguous_reason}; ground-truth re-query confirms the position is no longer "
+            "open -- the close actually succeeded despite the ambiguous order_send outcome."
+        )
+        logger.info("CLOSED ticket=%s symbol=%s: %s", position.ticket, position.symbol, message)
+        return CloseResult(position.ticket, position.symbol, position.volume, True, message)
+
+    remaining_volume = positions[0].volume
+    if abs(remaining_volume - position.volume) < 1e-9:
+        message = (
+            f"{ambiguous_reason}; ground-truth re-query confirms the position is still open "
+            f"at its original volume ({remaining_volume}) -- the close genuinely did not happen."
+        )
+        logger.error("FAILED to close ticket=%s symbol=%s: %s", position.ticket, position.symbol, message)
+        return CloseResult(position.ticket, position.symbol, position.volume, False, message)
+
+    message = (
+        f"{ambiguous_reason}; ground-truth re-query shows a PARTIAL close: {remaining_volume} of "
+        f"{position.volume} lots remain open -- not confirmed fully closed, reporting failure "
+        "for manual review."
+    )
+    logger.error("FAILED to close ticket=%s symbol=%s: %s", position.ticket, position.symbol, message)
+    return CloseResult(position.ticket, position.symbol, position.volume, False, message)
 
 
 def do_activate(reason: str) -> int:

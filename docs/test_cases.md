@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1129 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1133 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1129 (including all parametrized variants)
+- **Total Test Count**: 1133 (including all parametrized variants)
 - **Test Files**: ~55 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -79,7 +79,7 @@ This document provides a comprehensive list of all 1129 test cases in the AutoTr
 | | test_historical_download.py | 14 |
 | | test_historical_gaps.py | 4 |
 | | test_kill_switch_flag.py | 9 |
-| | test_kill_switch_script.py | 25 |
+| | test_kill_switch_script.py | 29 |
 | | test_mt5_connection.py | 10 |
 | | test_mt5_time.py | 4 |
 | | test_pid_file.py | 19 |
@@ -90,9 +90,9 @@ This document provides a comprehensive list of all 1129 test cases in the AutoTr
 | | test_run_telegram_control.py | 10 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **257** |
+| **Scripts & CLI Subtotal** | | **261** |
 | | | |
-| **GRAND TOTAL** | | **1129** |
+| **GRAND TOTAL** | | **1133** |
 
 ---
 
@@ -1227,8 +1227,12 @@ This document provides a comprehensive list of all 1129 test cases in the AutoTr
 - test_close_all_open_positions_returns_empty_list_when_none_open
 - test_close_all_open_positions_raises_when_positions_get_fails
 - test_close_all_open_positions_closes_buy_with_sell_and_vice_versa
-- test_close_all_open_positions_reports_order_send_none_as_failure
+- test_close_all_open_positions_reports_order_send_none_as_success_when_requery_confirms_gone
+- test_close_all_open_positions_reports_order_send_none_as_failure_when_requery_confirms_still_open
+- test_close_all_open_positions_reports_partial_close_as_failure_with_remaining_volume
+- test_close_all_open_positions_reports_ambiguous_retcode_failure_when_requery_itself_fails
 - test_close_all_open_positions_reports_rejected_retcode_as_failure
+- test_close_all_open_positions_does_not_requery_on_clean_structural_rejection
 - test_close_all_open_positions_reports_missing_tick_as_failure
 - test_do_activate_rejects_empty_reason
 - test_do_activate_writes_flag_before_closing_even_if_close_fails

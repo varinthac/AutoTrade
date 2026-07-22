@@ -437,6 +437,6 @@ auditor:
 
 ---
 
-**Document Date:** 2026-07-22  
+**Document Date:** 2026-07-23  
 **Config Version:** `config/base.yaml` (post-EXP-003 session-gate change, post-EXP-008 Watchman breakeven/trail adoption, min-lot-risk-cap-pct: 1.5 adopted, Standard account cost model)  
-**Last Major Change:** EXP-010 REJECTED 2026-07-22 (H1→M30 hybrid entry timing — whipsaw + regime failure); Watchman close-position reconciliation fix (reconciled_system_close exit reason); EXP-008 ADOPTED 2026-07-22 (`watchman.breakeven_enabled`/`trail_enabled: false`, live restarted); min-lot fallback adopted (cfo.min_lot_risk_cap_pct: 1.5); Account type confirmed **Standard** (ZERO commission); Timeframe probe H1-confirmed (M30/M15/M5 rejected)
+**Last Major Change:** `place_order()` hardened against the same ack-loss ambiguity as `close_position()` 2026-07-22 (commit `ee6a97f`) — an order-open that times out is now re-confirmed against MT5's real state instead of assumed failed; EXP-010 REJECTED 2026-07-22 (H1→M30 hybrid entry timing — whipsaw + regime failure); Watchman close-position reconciliation fix (reconciled_system_close exit reason); EXP-008 ADOPTED 2026-07-22 (`watchman.breakeven_enabled`/`trail_enabled: false`, live restarted); min-lot fallback adopted (cfo.min_lot_risk_cap_pct: 1.5); Account type confirmed **Standard** (ZERO commission); Timeframe probe H1-confirmed (M30/M15/M5 rejected)

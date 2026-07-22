@@ -100,8 +100,41 @@ def test_close_all_open_positions_closes_buy_with_sell_and_vice_versa(monkeypatc
     assert captured_requests[1]["position"] == 2
 
 
-def test_close_all_open_positions_reports_order_send_none_as_failure(monkeypatch):
-    monkeypatch.setattr(mt5, "positions_get", lambda: (_FakePosition(1, "XAUUSD", 0.1, mt5.POSITION_TYPE_BUY),))
+def test_close_all_open_positions_reports_order_send_none_as_success_when_requery_confirms_gone(monkeypatch):
+    # order_send() returning None is ambiguous (ack lost, not necessarily a
+    # failed close): the ground-truth re-query shows the position is gone,
+    # so this must be reported as success, not a false failure alarm.
+    call_count = {"n": 0}
+
+    def fake_positions_get(ticket=None):
+        if ticket is None:
+            call_count["n"] += 1
+            return (_FakePosition(1, "XAUUSD", 0.1, mt5.POSITION_TYPE_BUY),)
+        return ()
+
+    monkeypatch.setattr(mt5, "positions_get", fake_positions_get)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda symbol: _FakeTick())
+    monkeypatch.setattr(mt5, "order_send", lambda request: None)
+    monkeypatch.setattr(mt5, "last_error", lambda: (2, "no connection to trade server"))
+
+    results = kill_switch.close_all_open_positions()
+
+    assert len(results) == 1
+    assert results[0].success is True
+    assert "returned None" in results[0].message
+    assert "ground-truth re-query confirms" in results[0].message
+
+
+def test_close_all_open_positions_reports_order_send_none_as_failure_when_requery_confirms_still_open(monkeypatch):
+    # Same ambiguous order_send() == None outcome, but this time the
+    # re-query confirms the position is still open at its original volume
+    # -- the close genuinely did not happen, so failure is correct here.
+    def fake_positions_get(ticket=None):
+        if ticket is None:
+            return (_FakePosition(1, "XAUUSD", 0.1, mt5.POSITION_TYPE_BUY),)
+        return (_FakePosition(1, "XAUUSD", 0.1, mt5.POSITION_TYPE_BUY),)
+
+    monkeypatch.setattr(mt5, "positions_get", fake_positions_get)
     monkeypatch.setattr(mt5, "symbol_info_tick", lambda symbol: _FakeTick())
     monkeypatch.setattr(mt5, "order_send", lambda request: None)
     monkeypatch.setattr(mt5, "last_error", lambda: (2, "no connection to trade server"))
@@ -111,6 +144,54 @@ def test_close_all_open_positions_reports_order_send_none_as_failure(monkeypatch
     assert len(results) == 1
     assert results[0].success is False
     assert "returned None" in results[0].message
+    assert "still open at its original volume" in results[0].message
+
+
+def test_close_all_open_positions_reports_partial_close_as_failure_with_remaining_volume(monkeypatch):
+    # Ambiguous outcome, and the re-query shows the position still open but
+    # at a smaller volume than before -- a partial close happened despite
+    # the ambiguous ack. Must not guess this is fully resolved: report
+    # failure (so "MANUAL INTERVENTION REQUIRED" still fires), but the
+    # message must clearly state the partial close and remaining volume.
+    def fake_positions_get(ticket=None):
+        if ticket is None:
+            return (_FakePosition(1, "XAUUSD", 0.5, mt5.POSITION_TYPE_BUY),)
+        return (_FakePosition(1, "XAUUSD", 0.2, mt5.POSITION_TYPE_BUY),)
+
+    monkeypatch.setattr(mt5, "positions_get", fake_positions_get)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda symbol: _FakeTick())
+    monkeypatch.setattr(mt5, "order_send", lambda request: None)
+    monkeypatch.setattr(mt5, "last_error", lambda: (2, "no connection to trade server"))
+
+    results = kill_switch.close_all_open_positions()
+
+    assert len(results) == 1
+    assert results[0].success is False
+    assert "PARTIAL close" in results[0].message
+    assert "0.2" in results[0].message
+
+
+def test_close_all_open_positions_reports_ambiguous_retcode_failure_when_requery_itself_fails(monkeypatch):
+    # The ambiguous outcome (here: TIMEOUT retcode) triggers a re-query, but
+    # the re-query itself fails (positions_get returns None due to a real
+    # MT5 error) -- must not claim anything was confirmed, stay
+    # conservative and report failure.
+    def fake_positions_get(ticket=None):
+        if ticket is None:
+            return (_FakePosition(1, "XAUUSD", 0.1, mt5.POSITION_TYPE_BUY),)
+        return None
+
+    monkeypatch.setattr(mt5, "positions_get", fake_positions_get)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda symbol: _FakeTick())
+    monkeypatch.setattr(mt5, "order_send", lambda request: _FakeSendResult(mt5.TRADE_RETCODE_TIMEOUT))
+    monkeypatch.setattr(mt5, "last_error", lambda: (4, "no connection to trade server"))
+
+    results = kill_switch.close_all_open_positions()
+
+    assert len(results) == 1
+    assert results[0].success is False
+    assert "re-query also failed" in results[0].message
+    assert "cannot confirm" in results[0].message
 
 
 def test_close_all_open_positions_reports_rejected_retcode_as_failure(monkeypatch):
@@ -122,6 +203,30 @@ def test_close_all_open_positions_reports_rejected_retcode_as_failure(monkeypatc
 
     assert results[0].success is False
     assert "rejected" in results[0].message
+
+
+def test_close_all_open_positions_does_not_requery_on_clean_structural_rejection(monkeypatch):
+    # TRADE_RETCODE_REJECT is not in the ambiguous set -- it's a definite,
+    # clean failure. Re-querying would be wasted work and could
+    # theoretically introduce a false-positive risk, so positions_get()
+    # must be called exactly once (the initial listing call), never a
+    # second time with a ticket= for re-confirmation.
+    calls = []
+
+    def fake_positions_get(ticket=None):
+        calls.append(ticket)
+        if ticket is None:
+            return (_FakePosition(1, "XAUUSD", 0.1, mt5.POSITION_TYPE_SELL),)
+        return ()
+
+    monkeypatch.setattr(mt5, "positions_get", fake_positions_get)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda symbol: _FakeTick())
+    monkeypatch.setattr(mt5, "order_send", lambda request: _FakeSendResult(mt5.TRADE_RETCODE_REJECT))
+
+    results = kill_switch.close_all_open_positions()
+
+    assert results[0].success is False
+    assert calls == [None]
 
 
 def test_close_all_open_positions_reports_missing_tick_as_failure(monkeypatch):
@@ -146,7 +251,10 @@ def test_do_activate_rejects_empty_reason(flag_path):
 def test_do_activate_writes_flag_before_closing_even_if_close_fails(flag_path, monkeypatch):
     monkeypatch.setattr(kill_switch, "load_mt5_credentials", lambda: CREDS)
     monkeypatch.setattr(kill_switch, "mt5_session", _fake_session)
-    monkeypatch.setattr(mt5, "positions_get", lambda: (_FakePosition(1, "XAUUSD", 0.1, mt5.POSITION_TYPE_BUY),))
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda ticket=None: (_FakePosition(1, "XAUUSD", 0.1, mt5.POSITION_TYPE_BUY),),
+    )
     monkeypatch.setattr(mt5, "symbol_info_tick", lambda symbol: _FakeTick())
     monkeypatch.setattr(mt5, "order_send", lambda request: None)
     monkeypatch.setattr(mt5, "last_error", lambda: (2, "no connection"))
@@ -163,7 +271,10 @@ def test_do_activate_notifies_manual_intervention_required_when_a_close_fails(fl
     # switch was activated.
     monkeypatch.setattr(kill_switch, "load_mt5_credentials", lambda: CREDS)
     monkeypatch.setattr(kill_switch, "mt5_session", _fake_session)
-    monkeypatch.setattr(mt5, "positions_get", lambda: (_FakePosition(42, "XAUUSD", 0.1, mt5.POSITION_TYPE_BUY),))
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda ticket=None: (_FakePosition(42, "XAUUSD", 0.1, mt5.POSITION_TYPE_BUY),),
+    )
     monkeypatch.setattr(mt5, "symbol_info_tick", lambda symbol: _FakeTick())
     monkeypatch.setattr(mt5, "order_send", lambda request: None)
     monkeypatch.setattr(mt5, "last_error", lambda: (2, "no connection"))
