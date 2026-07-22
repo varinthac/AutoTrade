@@ -2971,3 +2971,214 @@ enough to tolerate (~5%) it does nothing, and at the frequency cost large enough
 one-touch Test budgets remain UNSPENT/pristine (rule 2; ground rule 5). `config/base.yaml` NOT modified
 (analysis-only, rule 10). Auditor gate thresholds NOT touched (rule 8). Harness:
 `experiments/exp012_013_confluence_harness.py` (committable, reusable for any future cross-TF gate).
+
+---
+
+## EXP-014 2026-07-23 — EURUSD as a NEW independent instrument: timeframe selection (H1/M30/H4) + fresh independent tuning (NEW family, first non-XAUUSD)
+
+Status: PRE-REGISTERED, then RUN (see RESULTS block below). Analysis-only: `config/base.yaml`,
+`council/`, `backtest/engine.py`, `feed/`, `risk/`, `watchman/` NOT modified. EURUSD is COMMENTED
+OUT in `config/base.yaml` symbols (Phase-9 note: forex majors lost OOS with XAUUSD thresholds) —
+this experiment does NOT re-enable it; EURUSD is NOT going live from this exploration regardless of
+outcome (ground rule 6). New code lives only in `experiments/exp014_eurusd_tf_harness.py` (a EURUSD
+SymbolSpec twin of `exp011_native_tf_harness.py`). Test one-touch budget for this NEW family:
+**reserved / NOT to be touched without explicit user approval** (ground rule 5 — Train/Val only).
+
+### 0. What this is / NEW family / why prior EXPs do NOT answer it
+
+User question: if EURUSD were traded by the SAME rule-based architecture (Council/RiskVoice/Shield/
+CFO/Watchman), (1) which timeframe suits it best, and (2) with a FRESHLY, INDEPENDENTLY tuned param
+set (NOT reusing XAUUSD's H1-tuned `config/base.yaml`) — prioritizing FASTER entry/exit than the
+current live XAUUSD-H1 approach AND good profitability, as a genuinely NEW, independent parallel
+trading track. This mirrors EXP-011's structure (M30/M15-vs-H1 for XAUUSD, REJECTED) but for an
+ENTIRELY NEW INSTRUMENT — so it has its own multiple-testing budget and its own UNSPENT one-touch
+Test allowance. Distinct from every prior EXP: EXP-001..013 are ALL XAUUSD. The only prior EURUSD
+touch is the Phase-9 OOS backtest (EURUSD H1 PF 0.84, net-negative) — but that reused XAUUSD's exact
+thresholds AND the wrong commission ($7 Raw-Spread, since corrected to $0 Standard) AND only a
+~730-day window; it is precisely the mismatched-config artifact this experiment is designed to correct
+for, exactly as the ORIGINAL XAUUSD TF-probe was corrected by EXP-011.
+
+### 1. Data acquisition (fresh, this experiment)
+
+The pre-existing `data/historical/EURUSD_H1.csv` covered ONLY 2024-07-22 → 2026-07-21 (~730 days,
+the config default) — i.e. only Y4/Y5, NO Train years. Re-downloaded fresh via chunked
+`copy_rates_range` (90-day backward windows to beat MT5's per-request depth cap) for H1, M30
+(mt5.TIMEFRAME_M30 directly — M30 is absent from feed/poller.TIMEFRAME_MAP, so unsupported by the
+stock CLI, same as EXP-005 noted), and H4. Coverage now 2021-07-01 → 2026-07-22 for all three, matching
+the log's per-year splits. Spread-zero floor (EURUSD=10 points, per SPREAD_ZERO_FLOOR_POINTS) applied on
+download; **0 zero-spread bars verified** in all three files (H1 31,492 bars / M30 62,978 / H4 7,876).
+EURUSD SymbolSpec pulled LIVE from MT5 (IC Markets Standard demo): digits=5, point=1e-05, tick_size=1e-05,
+tick_value=1.0, contract_size=100,000 -> **point_value = 100,000 $/price-unit/lot (XAUUSD's is 100)** —
+hardcoded correctly in the harness, NOT inherited from Gold. Data files gitignored (`data/historical/*`).
+
+### 2. Mechanism / what IS and ISN'T independently tunable (identical boundary to EXP-011 §2)
+
+`backtest.engine.run_backtest` is timeframe- AND symbol-agnostic (consumes a bar DataFrame + a
+SymbolSpec). Config-exposable knobs swept via `BacktestConfig` (this is what "independent tuning"
+covers): `sl_buffer/min/max_atr`, `tp_r_multiple`, `pivot_bars`, `bull/bear/conflict` thresholds,
+Risk-Voice session/spread, Watchman `time_stop_hours`/`dead_trade_r_band`. NOT config-exposable (module
+constants — would need a code change, OUT of scope, FLAGGED): EMA 20/50/200 backbone, RSI 14, MACD
+12/26/9, 480-bar rolling avg. Same honest boundary as EXP-011: the Council's indicator PERIODS stay
+native; on M30 they span half the wall-clock of H1. Rescaling them = a separate, code-changing,
+new-strategy-design track, not a parameter sweep.
+
+### 3. Method / sweep design (sequential, NOT joint — rule 3)
+
+Primary sweep = **Watchman OFF + Risk Voice OFF (SL/TP-only, EXP-002/011 methodology)** — the cleanest
+isolation of the native entry/stop edge; if the native EURUSD entry signal has no latent edge, adding
+Watchman/RV cannot manufacture one (a prior this log has established repeatedly). Cost model ON: comm $0
+(IC Markets Standard), slippage = bar's own spread (min-1-spread), spread baked into fill; spread-floored
+CSVs. Equity $10k, risk 1.0% (matches EXP-011; sizing-confound-free — the $3,000 small-account
+constraint is checked SEPARATELY via trade frequency, not by shrinking equity). Per-year Y1–Y4 (Y5=Test
+reserved). Two stages, highest-leverage first, and ONLY on whichever TF(s) the first pass shows latent
+signal:
+- **Step 1 — timeframe probe (first pass):** run H1, M30, H4 with the CURRENT XAUUSD-tuned config
+  (thr 70/70/55, sl 0.2/0.8/2.5, tp 2.0, pivot 3). Reasoning for reusing XAUUSD's thresholds here (my
+  call, stated per ground rule 1): a cheap mismatch diagnostic BEFORE spending tuning effort — it reveals
+  (a) whether any TF has latent signal at all and (b) how badly Gold's thresholds mismatch a forex major,
+  exactly as the original XAUUSD TF-probe did before EXP-011 re-tuned. Fresh tuning follows only for a TF
+  that shows promise.
+- **Step 2 — fresh independent tuning** (the two highest-leverage knobs EXP-011 used, sequential):
+  Stage A Council selectivity (bull=bear 70->80, conflict scaled), Stage B stop width (sl_min 0.8->1.6),
+  on the most-promising TF(s). Stage C (tp/pivot) + Watchman/RV-ON confirmation run ONLY if A or B yield a
+  per-year-robust positive (mirrors EXP-010/011's "10b-not-triggered" gating).
+
+Multiple-testing (rule 7): NEW EURUSD family. Step-1 probe = 3 configs; Step-2 tuning ~2–4 per promising
+TF. Target family size < 20; exact count tallied in the results block. No winner carried to Val-as-selection
+or Test unless it clears Train.
+
+### 4. Hypothesis + falsifiers (pre-registered, mirrors EXP-011)
+
+**H1:** With an independently-tuned param set, some EURUSD timeframe (candidate: M30 or H1) enters/exits
+FASTER than XAUUSD-H1 (median hold materially below ~16.5h and/or higher trade frequency) AND stays
+profitable per-year at a bar comparable to what the live H1 system clears — net-positive (PF ≥ 1.0) in a
+MAJORITY of Y1–Y4 with NO catastrophic (PF < 0.9 / large net-loss) year — so it is viable as a NEW
+independent parallel track.
+
+**Null / falsifiers (any one ⇒ REJECT that timeframe):**
+- (F1) Cost/R erosion: EURUSD's spread floor (10 pts) is a larger fraction of R as stops tighten on
+  faster bars — a TF may be structurally net-negative regardless of thresholds.
+- (F2) No latent entry edge: the native EURUSD Council signal has PF_ex5 < 1.0 (loses even excluding
+  top-5 winners) and tuning the two highest-leverage knobs cannot lift it to per-year-robust positive.
+- (F3) Regime luck, not edge: any PF > 1.0 shows up in DIFFERENT years across TFs/configs (reshuffling)
+  — the failure mode this log has caught 7+ times (EXP-002/004/005/006/007/010/011/012/013).
+- (F4) Y1-2021-22 (choppy regime) fails: a candidate net-negative in Y1 is regime-fragile (the whipsaw
+  year that broke the XAUUSD hybrid/primary attempts).
+- (F5) Drawdown blowout: DD far past H1's ~10–15%, un-tradeable at the $3,000 constraint even if PF ≥ 1.0.
+
+### 5. Acceptance criteria (pre-registered)
+
+ADOPT-CANDIDATE a EURUSD-TF config as a viable independent parallel track iff ALL: (a) trades ≥ 100 in
+every year Y1–Y4; (b) "faster": median hold materially below XAUUSD-H1's ~16.5h AND/OR higher trade
+frequency; (c) "acceptable profit": PF ≥ 1.0 in a MAJORITY of Y1–Y4 with NO catastrophic year (no PF <
+0.9 / large net loss), AND PF_ex5 ≥ 1.0 in a majority (real edge, not top-5-carried); (d) NOT regime-luck
+(positive years stable, not flipping across TF/config — F3); (e) Y1 not net-negative (F4); (f) DD not
+wildly above H1's ~10–15% (F5); (g) plateau on any winning knob (rule 5); (h) Test touched ONCE only, for
+a single Train+Val survivor, and only with explicit user approval (ground rule 5). Else REJECT or
+INSUFFICIENT. Auditor gates NOT touched (rule 8); spec bounds respected (sl_max ≤ 2.5; thresholds/pivot/tp
+all `[adjustable]`). EURUSD stays commented-out in config regardless (ground rule 6).
+
+### 6. Baseline for the "faster + good profit" comparison (structure only, not a direct profit contest)
+
+Current live XAUUSD-H1 (the standard EURUSD must reach the same ACCEPTANCE STRUCTURE against, not beat on
+raw $): positive in 3/4 Train+Val years, worst year small, median hold ~16.5h, DD ~10–15%. EURUSD is a
+different instrument/edge, so this is a viability bar (per-year PF ≥ 1.0 majority, no catastrophic year,
+tradeable DD, faster turnover), NOT a head-to-head $ comparison.
+
+### 7. RESULTS (run 2026-07-23) — VERDICT: REJECT (EURUSD not viable at any tested timeframe)
+
+Harness `experiments/exp014_eurusd_tf_harness.py`; driver `scratchpad/probe_driver.py` (resumable JSONL).
+Watchman OFF + Risk Voice OFF (SL/TP-only), cost model ON (comm $0, slippage = bar's own spread,
+spread-floored EURUSD CSVs), equity $10k, risk 1.0%, per-year Y1–Y4. Test (Y5) NOT touched — this NEW
+family's one-touch budget remains UNSPENT/pristine (ground rule 5, rule 2). Family multiple-testing count =
+**7 configs** (3-TF probe + 4 tuning), < 20.
+
+#### 7.1 Step-1 timeframe probe — current XAUUSD config (thr 70/70/55, sl 0.2/0.8/2.5, tp 2.0, piv 3)
+PF / net $ / trades / DD% / pf_ex5 / median-hold; bold = PF ≥ 1.0 that year.
+
+| TF  | Y1 2021-22 | Y2 2022-23 | Y3 2023-24 | Y4/Val 2024-25 | hold | yrs PF≥1.0 |
+|-----|-----------|-----------|-----------|----------------|------|-----------|
+| H1  | 0.819 / −2573 / 236 / DD36 / ex5 0.751 | 0.942 / −804 / 218 / DD19 / ex5 0.872 | 0.773 / −3077 / 202 / DD38 / ex5 0.699 | 0.786 / −2681 / 198 / DD34 / ex5 0.711 | 9–15h | **0/4** |
+| M30 | 0.623 / −6057 / 340 / DD61 / ex5 0.571 | 0.776 / −3989 / 324 / DD46 / ex5 0.727 | 0.605 / −6422 / 346 / DD66 / ex5 0.554 | 0.751 / −4871 / 383 / DD52 / ex5 0.711 | 5.5–8h | **0/4** |
+| H4  | 0.653 / −1198 / 51 / DD14 / ex5 0.390 | 0.842 / −591 / 59 / DD10 / ex5 0.596 | 0.962 / −155 / 62 / DD12 / ex5 0.723 | **1.042** / +147 / 54 / DD8 / ex5 0.759 | 36–100h | 1/4 |
+
+The XAUUSD thresholds are badly mismatched on EURUSD — WORSE than the original XAUUSD TF-probe's mismatch
+(where XAUUSD-H1 was ~PF 1.0). Every EURUSD-H1/M30 year is net-NEGATIVE; M30 (the user's "faster" target)
+is CATASTROPHIC (PF 0.60–0.78, DD 46–66% — a full F5 blowout). H4 has the least-bad PF and the only
+tradeable DD (8–14%), BUT clears only ~51–62 trades/year (FAILS the ≥100 floor, criterion (a)) and its
+median hold 36–100h is SLOWER than XAUUSD-H1 (16.5h) — it fails "faster" (criterion (b)) structurally.
+
+#### 7.2 Step-2 fresh independent tuning — the two highest-leverage knobs on the faster/tradeable TFs (H1, M30)
+Sequential (rule 3), one knob off the base each: Stage A selectivity (thr 80/80/60), Stage B stop width
+(sl_min 0.8→1.6). (H4 not tuned: more selectivity worsens its already-sub-100 count and it is structurally
+slower than H1 — neither the trade-floor nor the "faster" failure is a tunable-threshold artifact.)
+
+| config | Y1 | Y2 | Y3 | Y4/Val | hold | yrs PF≥1.0 |
+|--------|----|----|----|--------|------|-----------|
+| H1 thr80  | 0.818 / −1726 / 145 / DD27 / ex5 0.712 | 0.948 / −507 / 157 / DD18 / ex5 0.853 | 0.795 / −1966 / 145 / DD28 / ex5 0.697 | 0.914 / −827 / 143 / DD19 / ex5 0.811 | 14–16h | **0/4** |
+| H1 sl_min1.6 | 0.825 / −2169 / 203 / DD37 / ex5 0.744 | 0.946 / −727 / 209 / DD19 / ex5 0.872 | 0.749 / −3084 / 186 / DD38 / ex5 0.669 | 0.833 / −2075 / 188 / DD28 / ex5 0.756 | 12–16h | **0/4** |
+| M30 thr80 | 0.674 / −4674 / 243 / DD48 / ex5 0.608 | 0.736 / −3452 / 228 / DD40 / ex5 0.671 | 0.759 / −3301 / 219 / DD37 / ex5 0.693 | 0.625 / −5415 / 271 / DD58 / ex5 0.567 | 7–10h | **0/4** |
+| M30 sl_min1.6 | 0.629 / −5673 / 315 / DD59 / ex5 0.573 | 0.783 / −3799 / 308 / DD43 / ex5 0.732 | 0.640 / −5817 / 319 / DD60 / ex5 0.587 | 0.808 / −3789 / 348 / DD40 / ex5 0.766 | 7.5–10.5h | **0/4** |
+
+#### 7.3 Acceptance-criteria scoring + falsifiers
+
+- **(F2) NO latent entry edge — the decisive, universal finding.** `pf_ex5 < 1.0` in EVERY config, EVERY
+  year, EVERY timeframe (H1 0.67–0.87, M30 0.55–0.77, H4 0.39–0.76). The native EURUSD Council entry LOSES
+  even excluding its top-5 winners, at a ~28–35% win rate against a 2R target (break-even needs ~33%+). This
+  is not a threshold-calibration miss — it is the absence of a structural edge.
+- **(c) "Acceptable profit": FAIL, decisively.** H1 and M30 are 0/4 years PF ≥ 1.0 — net-NEGATIVE in ALL
+  four years for every config. H4 reaches PF ≥ 1.0 in only 1/4 (Y4, +$147) and fails the trade floor. No
+  EURUSD config is net-positive in a MAJORITY of years. XAUUSD-H1 by contrast is positive in 3/4.
+- **(F2/independent tuning does NOT rescue it — the crux of the whole question, answered as in EXP-011.)**
+  Raising selectivity (thr80) on H1 only shrank the losses (Y4 0.786→0.914) and LENGTHENED holds to 16h
+  (killing the "faster" advantage) while staying 0/4 net-negative; on M30 it reshuffled the worst year (Y1
+  0.623→0.674 but Y4 0.751→0.625) — no stable lift, still 0/4. Widening stops (sl_min1.6) was neutral-to-worse
+  on both and did NOT tame the DD. Both highest-leverage independent knobs fail: the deficit is a structural
+  entry-quality/cost-per-R gap, not a mis-tuning artifact.
+- **(F1) Cost/R erosion CONTRIBUTES.** EURUSD's 10-pt spread floor → ~2-pip modeled round-trip cost is a
+  large fraction of a tight forex ATR stop (H1 ATR ≈ 10–15 pips; the 0.8·ATR min stop ≈ 8–12 pips), a heavier
+  drag than on XAUUSD — consistent with the depressed ~30% win rate. It compounds on faster bars (M30 worst).
+- **(F3) Regime luck, not edge.** The lone positive cell (H4 Y4) does not reproduce on any other TF/config;
+  M30_thr80's best year flips from Y4 (base) to Y3 — pure reshuffle. Same failure mode caught 7+ times in
+  this log (EXP-002/004/005/006/007/010/011/012/013).
+- **(F4) Y1-2021-22 chop: FAIL every config** (H1 ≈0.82 / −$1.7–2.6k; M30 0.62–0.67 / −$4.7–6.1k). The
+  whipsaw regime that broke every XAUUSD lower-TF/hybrid attempt breaks EURUSD even harder.
+- **(F5) DD blowout: FAIL** for M30 (36–66%) and marginal-to-fail for H1 (18–38%) vs H1's ~10–15% target —
+  un-tradeable at the $3,000 constraint (`project_small_account_philosophy`); circuit breakers (unmodeled
+  here) would have halted these long before year-end.
+- **(a) Trade floor:** H1/M30 pass on count; **H4 FAILS (< 100/yr)**. **(b) "Faster":** achievable only on the
+  LOSING TFs (H1 base 9–15h, M30 5.5–8h); the only PF-respectable TF (H4) is SLOWER than XAUUSD-H1 — the
+  speed goal and any hint of profit point in opposite directions. **(d/g) regime-stability / plateau: moot** —
+  no passing region exists.
+
+**Multiple-testing (rule 7):** EURUSD family = 7 configs (< 20). Moot — nothing passes; there is no
+favorable result to over-credit.
+
+#### 7.4 VERDICT — REJECT. EURUSD is NOT viable as a new independent trading track at any tested timeframe.
+
+The core question — "could a freshly, independently tuned EURUSD system be faster in/out than XAUUSD-H1 AND
+good on profit?" — answers cleanly NO. The failure is deeper than EXP-011's XAUUSD-M30/M15 rejection: XAUUSD
+at least has a genuine H1 edge (positive 3/4 years); EURUSD has NO latent edge on ANY timeframe with this
+Council rule set (pf_ex5 < 1.0 universally, net-negative in every H1/M30 year, ~30% win rate against 2R).
+"Faster" is trivially achievable (M30 5.5–8h, H1 9–15h vs 16.5h) but sits on a structurally losing base with
+2–4× the drawdown; the only timeframe with a respectable profit factor (H4) is SLOWER than XAUUSD-H1 AND too
+sparse to clear the trade floor. Independent tuning of the two highest-leverage knobs (selectivity, stop
+width) does not change the conclusion — confirming the deficit is structural, not a mis-tuning artifact.
+This directly corroborates the Phase-9 finding (EURUSD/GBPUSD/USDJPY lost OOS with the Council logic) and
+shows it survives fresh per-timeframe tuning and the correct $0 commission — the Appendix-A thresholds/rules
+do not generalize to a forex major; they encode an edge specific to Gold's volatility/trend character.
+
+**Honest scope caveat (what this pass did NOT tune, same boundary as EXP-011):** the Council's indicator
+PERIODS (EMA 20/50/200, RSI 14, MACD 12/26/9, 480-bar rolling avg) stayed native (module constants;
+rescaling needs a code change, out of the analysis-only mandate). It is conceivable — though NOT evidenced
+and against a very strong prior (pf_ex5 < 1.0 in every single cell) — that a full indicator-period rescale
+plus a from-scratch redesign could behave differently. But that is effectively designing a NEW strategy for
+a mean-reverting/range-bound instrument, not tuning the existing Gold-tuned one; it needs its own spec/design
+track and pre-registration, not a parameter sweep. Recommendation: do NOT pursue EURUSD as a parallel track
+under the current Council rule set. If FX is desired, it is a strategy-design project, not a tuning project.
+
+**Test set (2025-07-21→2026-07-21) NOT touched** — no candidate cleared Train, so the EURUSD family's
+one-touch Test budget remains UNSPENT/pristine (rule 2; ground rule 5). `config/base.yaml` NOT modified;
+EURUSD stays commented-out in symbols (ground rule 6). Auditor gate thresholds NOT touched (rule 8).
+Harness `experiments/exp014_eurusd_tf_harness.py` (committable; EURUSD SymbolSpec twin of exp011's,
+reusable for any future FX native-TF sweep).
