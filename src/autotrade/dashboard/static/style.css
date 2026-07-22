@@ -81,7 +81,7 @@ header p strong {
 }
 
 main {
-  max-width: 1100px;
+  max-width: min(1600px, 96vw);
   margin: 0 auto;
   padding: 1.5rem;
 }
