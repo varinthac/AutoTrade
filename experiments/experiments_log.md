@@ -2211,3 +2211,135 @@ The existing on-disk `data/historical/*.csv` files (already manually floored per
 NOT need to be re-touched or re-downloaded because of this change — this fix only prevents the bug
 from being reintroduced on FUTURE downloads/re-downloads. `data/historical/*.csv` UNCHANGED by this
 pass (verified: only the scratch-directory copy was written to during the live sanity check above).
+
+---
+
+## RE-VERIFICATION 2026-07-22 — EXP-008 / EXP-002+009 / EXP-003 re-run after TWO cost-model corrections
+
+Status: DONE. P1 (EXP-008, LIVE config): **ADOPTED-DECISION STANDS — strengthened.** P2 (EXP-002/009
+tp): **REJECT STANDS — keep tp 2.0.** P3 (EXP-003 session): **all-24h STANDS — strengthened.**
+Analysis/report-only mandate: `config/base.yaml`, `src/`, `tests/` NOT modified. NOT a new parameter
+selection — this re-verifies THREE already-decided questions against corrected costs. One LIVE-relevant
+side-finding needs the user's attention (P1 §Gate note). Appended after re-reading the log END (another
+session was concurrently appending the `feed/historical.py` floor NOTE above; no collision).
+
+### 0. What changed vs every prior EXP (both errors now fixed)
+1. **Spread zero-value floor** (NOTE above): `spread==0` bars (XAUUSD H1 ~50% overall; 90% in 2021-22,
+   ~30% in the 2025-26 Test year) floored to 5 pts on disk → prior backtests understated cost, worst on
+   the OLD (Train) years. Verified this session: `XAUUSD_H1.csv` now has 0 zero-spread bars, mode 5.
+2. **Commission corrected to $0** (commit eaa59c5): account is IC Markets **Standard** (cost in spread,
+   commission_per_lot=0), NOT Raw $7/lot as every prior EXP assumed. All re-runs use `--commission 0.0`,
+   consciously chosen. Removing phantom $7/lot helps HIGH-turnover (low-TP, all-24h) configs relatively
+   more; the spread floor hurts the zero-heavy OLD years more. The two pull in opposite directions.
+
+Harness: `experiments/exp_reverify_costfix_harness.py` (committable, NEW) — builds `WatchmanConfig` with
+ALL SEVEN fields INCLUDING `breakeven_enabled`/`trail_enabled`, exactly like `scripts/run_backtest.py`
+main() (NOT exp009's `_build_watchman_cfgs`, which omits the two flags and silently defaults True/True —
+the documented TF-probe gotcha). P2's Watchman-OFF arm reused the fidelity-validated
+`exp009_tp_pivot_harness.py --watchman off`. Equity $10,000, pivot 3, cost model ON throughout (spread
+baked into fill + min-1-spread slippage + commission 0). WINDOWS: Train per-year y1 2021-22 / y2 2022-23
+/ y3 2023-24, val=y4 2024-07-21→2025-07-21, test 2025-07-21→2026-07-21.
+
+---
+### P1 — EXP-008 re-verification (Watchman be/trail BOTH-OFF vs BOTH-ON), Risk-Voice ON, all-24h, tp 2.0
+**This RE-TOUCHES the same Test window EXP-008 already spent, with corrected data — a re-verification of
+an already-spent touch, NOT a new selection.** No parameter is being chosen; both configs are fixed and
+pre-decided. Structure-invalidation + time-stop are always on (BOTH-OFF = current LIVE `config/base.yaml`
+= EXP-008 "Struct+Time"; BOTH-ON = pre-EXP-008 live = "AllDefaults").
+
+| Year | BOTH-OFF (LIVE) PF / net / tr | BOTH-ON (AllDefaults) PF / net / tr | winner |
+|------|------------------------------|-------------------------------------|--------|
+| Y1 2021-22 (Train) | 1.001 / +21 / 277  | 0.938 / −886 / 300  | OFF (PF & net) |
+| Y2 2022-23 (Train) | 0.967 / −548 / 256 | 0.885 / −1786 / 285 | OFF (PF & net) |
+| Y3 2023-24 (Train) | 1.199 / +2935 / 234| 1.133 / +2058 / 275 | OFF (PF & net) |
+| Y4 2024-25 (Val)   | 1.101 / +1557 / 262| 1.016 / +225 / 292  | OFF (PF & net) |
+| Y5 2025-26 (Test)  | **1.268 / +3357 / 243** | 1.161 / +2037 / 278 | OFF (PF & net) |
+
+**VERDICT P1 — ADOPTED false/false DECISION STANDS, and is STRENGTHENED.** BOTH-OFF beats BOTH-ON on
+BOTH PF and net in ALL 5 years — no exception, no sign flip. Per-year sign stability (the mandate's
+`max_positions=1` reshuffle concern) is clean: OFF is net-positive Y1/Y3/Val/Test, negative only Y2; ON
+is negative in Y1 AND Y2. The be/trail-cut decision is more robust under honest costs, not less
+(removing phantom commission does not rescue the be/trail-ON config; it stays uniformly worse). The
+mechanism is unchanged from EXP-008: breakeven(1.0)/trail(1.5) engage below the 2R TP and cut winners.
+
+**GATE NOTE — LIVE-RELEVANT, needs user attention (rule 8: reported, gate NOT touched).** EXP-008's
+headline claim was that cutting be/trail moved the strategy from FAILING (PF 1.215) to PASSING (PF 1.304)
+the Backtest→Paper Gate-1 `PF≥1.3` floor on the Test year. Under corrected costs that ABSOLUTE claim NO
+LONGER HOLDS: the LIVE config's Test PF is now **1.268 < 1.3** (was 1.304 under phantom comm $7 +
+unfloored spreads). The RELATIVE decision is unaffected (OFF 1.268 ≫ ON 1.161), and the other Gate-1
+sub-criteria still pass (trades 243 ≥ 200, DD 9.2% ≤ 15%, PF_ex5 1.167 ≥ 1.0) — but the strategy as it
+stands does **not** currently clear the promotion PF gate on honest costs. The Auditor gate is UNCHANGED
+and must NOT be relaxed to make it pass (rule 8); the strategy must earn PF≥1.3, or stay in backtest.
+(Net$ is much higher than EXP-008's — $3357 vs $1508 — because comm $0 + compounding; PF, not net, is the
+gate metric, and PF fell.)
+
+---
+### P2 — EXP-002/009 tp_r_multiple re-check, Watchman OFF + Risk-Voice OFF (exact EXP-002 rejection basis)
+Re-runs the EXACT condition whose rejection is under re-verification (EXP-002 = Watchman OFF, Risk Voice
+OFF; the cleanest TP-isolation). Train per-year + Val ONLY. Test NOT touched.
+
+| tp   | Y1 2021-22 PF/net | Y2 2022-23 PF/net | Y3 2023-24 PF/net | Val 2024-25 PF/net | yrs PF≥1.0 |
+|------|-------------------|-------------------|-------------------|--------------------|-----------|
+| 1.5  | 1.042 / +575      | 0.914 / −1343     | 1.160 / +2877     | 0.986 / −211       | 2 (Y1,Y3) |
+| 1.75 | 1.039 / +505      | 0.894 / −1607     | 1.183 / +2929     | 0.974 / −400       | 2 (Y1,Y3) |
+| **2.0\*** | 1.029 / +368 | 0.983 / −238      | 1.225 / +3145     | 1.095 / +1390      | **3 (Y1,Y3,Val)** |
+| 2.25 | **0.805 / −2152** | 1.039 / +513      | 1.318 / +3755     | 1.125 / +1586      | 3 (not Y1) |
+| 2.5  | **0.848 / −1694** | 1.134 / +1887     | 1.301 / +4080     | 1.106 / +1248      | 3 (not Y1) |
+
+**VERDICT P2 — REJECT change; tp=2.0 STANDS.** Both prior rejection directions survive the cost
+correction, and the mandate's specific worry (that the Y1 rejection of 2.25/2.5 was a 90%-zero-spread
+2021-22 artifact) is DISPROVEN — under honest cost 2.25/2.5 fail Y1 *harder* than before (2.25 Y1 PF
+0.833→**0.805**, net −934→**−2152**; 2.5 Y1 0.866→0.848). Lowering TP (1.5/1.75) still goes net-negative
+in Val AND Y2 (unchanged). tp=2.0 is no longer *strictly* PF≥1.0 every year — Y2 now dips to 0.983
+(−$238) where it was 1.001 (+$5), because the spread floor adds real cost to the zero-heavy 2022-23 bars
+— but 2.0 still has the **smallest worst-year loss of any value** (−$238, vs 2.25's −$2152 / 2.5's
+−$1694 / 1.5's −$1343 / 1.75's −$1607) and 3 positive years. No candidate clears the per-year robustness
+bar to DISPLACE 2.0. Aggregate would favor 2.5/2.25 (huge Y3 +$4080/+$3755) but that is exactly the
+Y1-choppy-regime bet EXP-002 caught, now more expensive — the per-year bar is decisive (rule 5). **tp
+family Test budget NOT spent** (no candidate adopted; consistent with EXP-002/009 which never spent it).
+Scope note: this re-verifies the EXP-002 Watchman-OFF basis; live now runs Struct+Time, but EXP-009 §8.2
+already showed tp does not rescue anything under Watchman churn and P1 confirms the exit layer is fixed —
+a full Struct+Time tp re-sweep is a separate low-priority follow-up, not needed to uphold "keep 2.0".
+
+---
+### P3 — EXP-003 session-gate sanity check: all-24h [0,24) vs [14,18), under LIVE Watchman (be/trail OFF)
+all-24h side reuses P1's BOTH-OFF rows (that IS the live all-24h config); [14,18) re-run under identical
+Watchman/RiskVoice, comm 0. Train per-year + Val. No Test re-touch (session family's Test consumed by
+EXP-003; this is a Train+Val confirmation pass).
+
+| Year | all-24h [0,24) PF/net/tr | [14,18) PF/net/tr | winner |
+|------|--------------------------|-------------------|--------|
+| Y1 2021-22 | 1.001 / +21 / 277   | **0.896 / −1214 / 197** | all-24h (Y1 sign flip) |
+| Y2 2022-23 | 0.967 / −548 / 256  | 0.992 / −90 / 190       | [14,18) marg. (both net-neg) |
+| Y3 2023-24 | 1.199 / +2935 / 234 | 1.113 / +1375 / 192     | all-24h |
+| Y4 Val 24-25 | 1.101 / +1557 / 262 | 1.054 / +495 / 167    | all-24h |
+| **Aggregate** | **+3964 / 1029 tr** | +566 / 746 tr        | all-24h (~7×) |
+
+**VERDICT P3 — all-24h STANDS, STRENGTHENED.** all-24h wins PF in 3/4 years and net in 3/4 (only Y2, a
+net-negative break-even year, marginally favors the filter). As in EXP-003 the filter TURNS Y1 POSITIVE
+INTO A LOSS — and the flip is now LARGER (+$21 → −$1214, vs EXP-003's +$297 → −$518) because comm $0
+rewards the higher-trade-count 24h side and the spread floor did not reverse the ranking. The decision to
+remove the `[14,18)` gate only strengthens under corrected costs, exactly as the mandate predicted. No
+config change (already live all-24h); Test NOT re-touched.
+
+---
+### Out-of-scope items (documented, deliberately NOT re-run)
+- **EXP-005 / EXP-007 (lower-TF feature rejection): cost-INSENSITIVE, no re-run.** Their verdict rests on
+  cross-split SIGN-AGREEMENT of per-feature winner-vs-loser discrimination; a uniform cost applied to
+  BOTH arms of every bucket cannot manufacture discrimination or flip a sign-flip (7/8 & 8/8 features
+  failed) — the finding is structurally immune to the cost corrections.
+- **TF probe:** already handled by the "ADDENDUM 2026-07-22" entry (verdict cost-robust; exact figures
+  stale — do not quote). No action.
+- **EXP-010 (H1→M30 hybrid):** PRE-REGISTERED/NOT RUN; it re-baselines itself on floored data + chosen
+  commission as its own first step. Untouched.
+- **min-lot fallback (owned by another session):** its Stage-1 tables (`sizing_smallacct_harness.py`)
+  were run with `--commission-per-lot 7.0` on the (now-superseded) cost assumption — those tables should
+  be REFRESHED at comm $0 by that workstream BEFORE any Stage-2 `min_lot_risk_cap_pct` adoption decision.
+
+### Test-budget accounting
+- P1: re-touched the Watchman family's already-CONSUMED Test window (EXP-008 spent it) — a re-verification
+  of a spent touch with corrected data, NOT a new selection; spends no fresh budget.
+- P2: tp family Test budget UNSPENT/preserved (no candidate adopted).
+- P3: session family Test remains CONSUMED (EXP-003); no re-touch here.
+`config/base.yaml`, `src/`, `tests/` UNCHANGED. Auditor promotion-gate thresholds NOT touched (rule 8) —
+the P1 Gate note REPORTS a threshold shortfall, it does not relax the gate.
