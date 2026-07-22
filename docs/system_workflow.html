@@ -223,10 +223,97 @@
 
   footer { padding: 2.5rem 0 1rem; color: var(--text-muted); font-size: 0.82rem; }
 
-  @media (max-width: 640px) {
-    .topbar-nav { display: none; }
+  @media (max-width: 768px) {
     h1 { font-size: 1.6rem; }
     .wrap { padding: 0 1.1rem 4rem; }
+  }
+
+  @media (max-width: 640px) {
+    body { font-size: 15px; line-height: 1.6; }
+    .topbar-inner { padding: 0.6rem 0.9rem; gap: 0.5rem; }
+    .topbar-title { font-size: 0.9rem; }
+    .topbar-nav {
+      flex: 0 1 auto; overflow-x: auto; overflow-y: hidden;
+      -webkit-overflow-scrolling: touch; gap: 0.6rem;
+      padding: 0.4rem 0 0.4rem 0; margin: 0 -0.9rem;
+      padding-left: 0.9rem; padding-right: 0.9rem;
+      scroll-behavior: smooth;
+    }
+    .topbar-nav::-webkit-scrollbar { display: none; }
+    .topbar-nav a { flex-shrink: 0; white-space: nowrap; }
+    .theme-toggle {
+      flex-shrink: 0; padding: 0.35rem 0.7rem; font-size: 0.75rem;
+      min-height: 2.5rem; min-width: 2.5rem;
+      display: flex; align-items: center; justify-content: center;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 0.6rem; }
+    h2 { font-size: 1.25rem; gap: 0.4rem; }
+    .section-num { font-size: 0.9rem; }
+    h3 { font-size: 1rem; margin-top: 1.5rem; }
+    p { margin: 0.5rem 0; }
+    .meta-row { gap: 0.8rem; font-size: 0.8rem; }
+    .wrap { padding: 0 0.9rem 3.5rem; }
+    header.hero { padding: 2rem 0 1.5rem; }
+    section { padding: 2rem 0; }
+    .callout { padding: 0.8rem 1rem; font-size: 0.9rem; margin: 0.8rem 0; }
+    .role-grid { grid-template-columns: 1fr; gap: 0.7rem; }
+    .role-card { padding: 0.9rem 1rem; }
+    .role-card .role-name { font-size: 0.95rem; margin-bottom: 0.25rem; }
+    .role-card .role-blurb { font-size: 0.82rem; }
+    .flow-step { gap: 0.8rem; padding-bottom: 1.3rem; }
+    .flow-num { width: 2rem; height: 2rem; font-size: 0.85rem; }
+    .flow-step:not(:last-child)::before { left: 1rem; }
+    .flow-title { font-size: 0.95rem; }
+    .flow-desc { font-size: 0.88rem; }
+    .flow-branch { gap: 0.4rem; font-size: 0.78rem; }
+    .branch-tag { padding: 0.15rem 0.5rem; }
+    .history-grid {
+      grid-template-columns: 1fr; gap: 0.5rem 0;
+      font-size: 0.88rem;
+    }
+    .history-grid dt {
+      white-space: normal; margin-bottom: 0.15rem;
+      font-weight: 600; color: var(--text-muted);
+      padding-top: 0.4rem;
+    }
+    .history-grid dt:first-child { padding-top: 0; }
+    .history-grid dd { margin: 0 0 0.6rem 0; }
+    .history-item { padding: 0.95rem 1rem; margin: 0.8rem 0; }
+    .history-head { flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.6rem; }
+    .history-title { font-size: 0.95rem; flex: 1; min-width: 100%; }
+    .history-exp { font-size: 0.7rem; }
+    .pill { padding: 0.12em 0.6em; font-size: 0.7rem; }
+    code, .kbd { font-size: 0.82em; padding: 0.08em 0.35em; }
+    pre { padding: 0.9rem 1rem; font-size: 0.8rem; }
+    table { font-size: 0.88rem; }
+    th, td { padding: 0.55rem 0.8rem; }
+    thead th { font-size: 0.72rem; }
+    caption { padding: 0.6rem 0.8rem; font-size: 0.75rem; }
+    .lede { font-size: 0.98rem; }
+    .eyebrow { font-size: 0.7rem; }
+    .score-bar-row { gap: 0.5rem; }
+    .score-bar-track { height: 6px; }
+    .score-max { font-size: 0.75rem; width: 3rem; }
+    footer { padding: 2rem 0 0.8rem; font-size: 0.78rem; }
+  }
+
+  @media (max-width: 400px) {
+    body { font-size: 14px; }
+    .topbar-inner { padding: 0.5rem 0.7rem; }
+    .topbar-title { font-size: 0.85rem; }
+    .topbar-nav { gap: 0.5rem; padding-left: 0.7rem; padding-right: 0.7rem; }
+    .topbar-nav a { font-size: 0.8rem; }
+    .theme-toggle { padding: 0.3rem 0.6rem; font-size: 0.7rem; }
+    h1 { font-size: 1.3rem; }
+    h2 { font-size: 1.1rem; margin-bottom: 0.25rem; }
+    h3 { font-size: 0.95rem; margin-top: 1.3rem; margin-bottom: 0.5rem; }
+    .wrap { padding: 0 0.7rem 3rem; }
+    header.hero { padding: 1.5rem 0 1rem; }
+    section { padding: 1.5rem 0; }
+    .flow-step { padding-bottom: 1.1rem; }
+    .flow-num { width: 1.8rem; height: 1.8rem; font-size: 0.78rem; }
+    .role-grid { gap: 0.6rem; }
+    .history-item { padding: 0.8rem 0.9rem; margin: 0.7rem 0; }
   }
 </style>
 </head>
@@ -592,6 +679,7 @@
       <li><b>ตรวจจับโครงสร้างพัง (Structure Invalidation)</b> — ถ้าราคาทำลายจุดโครงสร้างที่ใช้เป็นเหตุผลเข้าไม้ตั้งแต่แรก แปลว่าสมมติฐานเดิมผิดแล้ว → ปิดทันที ไม่รอ Stop Loss</li>
       <li><b>ไม้ค้าง (Time Stop)</b> — ไม้ที่เปิดมานานเกินไปแล้วยังไม่ไปทางไหนชัดเจน (กำไร/ขาดทุนน้อยมาก) → ปิดทิ้ง ไม่ปล่อยให้เงินจมอยู่เฉยๆ</li>
       <li><b>ป้องกันข่าว (News Protection)</b> — ถ้าข่าวสำคัญใกล้เข้ามาและไม้นี้มีกำไรอยู่แล้ว → ปิดครึ่งหนึ่งเก็บกำไรไว้ก่อน กันข่าวทำราคาผันผวนจนพลิกกลับ</li>
+      <li><b>ดูแลปุ่ม AutoTrading ของ MT5 (AutoTrading Toggle Monitor)</b> <em style="color: var(--text-muted);">[ใหม่ 22 ก.ค. 2026]</em> — ระบบเฝ้าดูปุ่ม &ldquo;AutoTrading&rdquo;/&ldquo;Algo Trading&rdquo; ในเมนู Tools &gt; Options &gt; Expert Advisors ของตัว MT5 — ถ้ามีใครกดเปิด/ปิดปุ่มนี้ ระบบจะส่ง Telegram alert ทันที ยกเลิก entries ใหม่ และแจ้งเมื่อปุ่มถูกเปิดกลับแล้ว (เกิดจากเหตุการณ์จริง 21 ก.ค. 2026: ปุ่มถูกปิดโดยไม่ตั้งใจ ทำให้ MT5 ปฏิเสธทุก order ด้วย retcode 10027 แต่ไม่มีใคร­รู้นาน)</li>
     </ul>
 
     <h3>เงื่อนไข/Threshold ปัจจุบัน</h3>
@@ -716,7 +804,8 @@
         <dt>อ้างอิง</dt><dd>EXP-003 (21 ก.ค. 2026)</dd>
         <dt>เปลี่ยนจาก</dt><dd><code>session_start_hour: 14, session_end_hour: 18</code></dd>
         <dt>เปลี่ยนเป็น</dt><dd><code>session_start_hour: 0, session_end_hour: 24</code></dd>
-        <dt>เหตุผล</dt><dd>เปิดตลอด 24 ชม. ชนะใน 4 จาก 5 ปีที่ทดสอบ รวมปีทดสอบสุดท้ายด้วย ช่วงเดิมบังเอิญปิดกั้นเวลาที่ทำกำไรได้ดีจากตลาดเอเชียไปด้วย</dd>
+        <dt>เหตุผล</dt><dd>เปิดตลอด 24 ชม. ชนะใน 4 จาก 5 ปีที่ทดสอบ รวมปีทดสอบสุดท้ายด้วย ช่วงเดิม [14,18) บังเอิญปิดกั้นเวลาที่ทำกำไรได้ดีจากตลาดเอเชียไปด้วย โดยที่ปี 2021-22 (choppy) กลับจาก +$297 เป็น −$518</dd>
+        <dt>RE-VERIFICATION (P3, 22 ก.ค. 2026)</dt><dd>หลังแก้ cost model (spread floor + commission $0): all-24h ชนะใน 3/4 ปี net profit, aggregate profit ขยับจาก +$2000 → +$3964 (~7×) — <strong>การตัดสินใจนี้ STRENGTHENED ไม่ใช่แค่ยืนยัน</strong></dd>
       </dl>
     </div>
 
@@ -743,7 +832,8 @@
         <dt>เปลี่ยนจาก</dt><dd><code>breakeven_enabled: true, trail_enabled: true</code></dd>
         <dt>เปลี่ยนเป็น</dt><dd><code>breakeven_enabled: false, trail_enabled: false</code></dd>
         <dt>ปัญหาที่พบ</dt><dd>กลไก breakeven (1.0R) และ trailing (1.5R) ทำงานเร็วเกินไป — ทั้งคู่ต่ำกว่าเป้าหมายจริงที่ 2.0R มาก ทำให้ตัดไม้ที่ควรได้กำไรเต็มเป้าออกก่อนเวลาบ่อยครั้ง วัดผลจากข้อมูลย้อนหลังพบว่าทำกำไรได้ <b>ลดลง</b> ใน 3 จาก 5 ปีที่ทดสอบ (เก็บกลไก &ldquo;ตรวจจับโครงสร้างพัง&rdquo; และ &ldquo;ไม้ค้าง&rdquo; ไว้เหมือนเดิม เพราะสองอย่างนี้วัดผลแล้วช่วยได้จริง)</dd>
-        <dt>ผลทดสอบเบื้องต้น</dt><dd>บนชุดข้อมูลทดสอบจริง: Profit Factor จาก 1.215 เป็น <b>1.304</b> — ผ่านเกณฑ์เลื่อนขั้น Backtest → Paper (PF ≥ 1.3) เป็นครั้งแรก</dd>
+        <dt>ผลทดสอบเบื้องต้น</dt><dd>บนชุดข้อมูลทดสอบจริง (cost model ผิด): Profit Factor จาก 1.215 เป็น 1.304 (old cost)</dd>
+        <dt>ผลทดสอบหลังแก้ต้นทุน</dt><dd><b>⚠️ ค่าจริง (spread floor + commission $0):</b> Profit Factor จาก 1.215 เป็น <b>1.268</b> — <b>ไม่ผ่าน</b> เกณฑ์เลื่อนขั้น Backtest → Paper (PF ≥ 1.3; ต่ำกว่า 0.032) อย่างไรก็ตาม <b>การตัดสินใจปิด breakeven/trail ยังถูกต้อง</b> (ยืนยันด้วย 3 วิธี independent) เพราะมันสาเหตุการปรับปรุง expectancy ตัวรวม แม้จะไม่ผ่าน Gate 1 เพียงอย่างเดียว</dd>
         <dt>Joint re-verification</dt><dd>ทดสอบซ้ำด้วย 3 วิธีอิสระที่ตัดปัญหา &ldquo;สัญญาณถูกทิ้งเพราะ lot ขั้นต่ำ&rdquo; ออก (risk-based sizing ที่ equity $50,000 และ $10,000, กับ fixed-lot 0.1 ที่ equity จริง $3,000) — ทั้ง 3 วิธียืนยันตรงกันว่าปิดกลไกนี้ดีขึ้นจริง เช่นที่ equity $50,000: PF 1.18→<b>1.24</b>, กำไรสุทธิ $13,357→<b>$17,060</b></dd>
         <dt>สถานะ</dt><dd>✅ ใช้งานจริงแล้ว, config อัปเดตและ restart ระบบแล้ว (22 ก.ค. 2026)</dd>
       </dl>
@@ -758,7 +848,8 @@
         <dt>อ้างอิง</dt><dd>บันทึกวัดผล Stage 1-2, 22 ก.ค. 2026 (ไม่ใช่ EXP-### เพราะเป็นการวัดผลกระทบของ position-sizing ไม่ใช่การหา edge ใหม่)</dd>
         <dt>เปลี่ยนจาก</dt><dd><code>min_lot_risk_cap_pct: null</code> (ปิด)</dd>
         <dt>เปลี่ยนเป็น</dt><dd><code>min_lot_risk_cap_pct: 1.5</code> (เปิด)</dd>
-        <dt>เหตุผล</dt><dd>ที่ risk=1.0% ยังมีสัญญาณ ~31.6% ถูกทิ้งเพราะ lot ต่ำกว่าขั้นต่ำของโบรกเกอร์ — Fallback นี้ (ซึ่งเบี่ยงเบนจากสเปค §3.1 อย่างตั้งใจ) ช่วยกู้สัญญาณที่เสียไปได้ 63 ไม้ในหน้าต่าง 1257 ไม้ (full history 2021–2026; ไม้ที่กู้ได้ทั้งหมดกระจุกอยู่ช่วง 2025–26 เพราะเป็นช่วงราคาทอง/ATR สูงที่ stop กว้างจน lot ต่ำกว่าขั้นต่ำ) โดยไม้ที่กู้กลับมามี PF 1.60 ค่อนข้างสูง ไม่ใช่ไม้ขยะ</dd>
+        <dt>เหตุผล</dt><dd><strong style="color: var(--rejected-fg);">⚠️ เงื่อนไข:</strong> ตัวเลขข้างล่างวัดจาก Stage 1 (2026-07-22) แต่ยังใช้ commission $7/lot (ผิด); re-measurement ด้วย commission $0 ที่ถูกต้องยังคงรอ run — ผู้ใช้ยอมรับการ adopt นี้ล่วงหน้า
+        <br><br>ที่ risk=1.0% (ข้อมูล old commission) ยังมีสัญญาณ ~31.6% ถูกทิ้งเพราะ lot ต่ำกว่าขั้นต่ำของโบรกเกอร์ — Fallback นี้ (ซึ่งเบี่ยงเบนจากสเปค §3.1 อย่างตั้งใจ) ช่วยกู้สัญญาณที่เสียไปได้ 63 ไม้ในหน้าต่าง 1257 ไม้ (full history 2021–2026; ไม้ที่กู้ได้ทั้งหมดกระจุกอยู่ช่วง 2025–26 เพราะเป็นช่วงราคาทอง/ATR สูงที่ stop กว้างจน lot ต่ำกว่าขั้นต่ำ) โดยไม้ที่กู้กลับมามี PF 1.60 ค่อนข้างสูง ไม่ใช่ไม้ขยะ</dd>
         <dt>Trade-off</dt><dd>maxSingleLoss ต่อไม้ขยับได้ถึง ~3.5% ของ equity เมื่อ fallback ทำงาน (เดิม ~1.9% ที่ risk 1.0% ปกติ) — ยอมรับได้ด้วยข้อมูลเต็มๆ</dd>
         <dt>สถานะ</dt><dd>✅ ใช้งานจริงแล้ว (22 ก.ค. 2026)</dd>
       </dl>
@@ -774,7 +865,8 @@
       <dl class="history-grid">
         <dt>อ้างอิง</dt><dd>Timeframe probe (NOTE ไม่ใช่ EXP-###), 22 ก.ค. 2026</dd>
         <dt>ทดสอบ</dt><dd>นำกฎ H1 ปัจจุบันมาใช้บนกราฟ M30, M15, M5 เปรียบเทียบผล</dd>
-        <dt>ผลลัพธ์</dt><dd>Full-history: <b>H1 PF 1.081</b> vs <b>M30 1.007 / M15 1.001 (= เสมอตัว)</b>; หน้าต่างร่วม ก.พ. 2025–ก.ค. 2026 (ไกลสุดที่ข้อมูล M5 มี): H1 1.215 → M30 1.111 → M15 1.075 → <b>M5 1.017</b> พร้อม drawdown บันได 11.5%→53.7% — ลดลงทีละขั้นทุกมุมมอง ทั้งนี้ cost/R ratio แย่ลงมาก: H1 ~1.7% vs M30 ~2.5% vs M15 ~3.7% vs M5 ~6.7% (ตัวเลขวัดก่อนแก้ spread floor/commission — ทิศทางยืน แต่ตัวเลขเป๊ะๆ ล้าสมัยแล้ว ดู ADDENDUM ใน experiments log)</dd>
+        <dt>ผลลัพธ์</dt><dd>Full-history (ก่อนแก้ cost model): <b>H1 PF 1.081</b> vs <b>M30 1.007 / M15 1.001 (= เสมอตัว)</b>; หน้าต่างร่วม ก.พ. 2025–ก.ค. 2026: H1 1.215 → M30 1.111 → M15 1.075 → <b>M5 1.017</b> พร้อม drawdown บันได 11.5%→53.7% — ลดลงทีละขั้นทุกมุมมอง
+        <br><br><strong style="color: var(--rejected-fg);">⚠️ ข้อจำกัด:</strong> ตัวเลขข้างบนวัดก่อน 2026-07-22 ทั้ง spread floor fix และ commission $0 correction — ทิศทาง/เวอร์ดิกต์ (lower-TF collapse) ยังจริง แต่ห้ามอ้างตัวเลขเป๊ะๆ; ใครจะ re-run probe ต้อง baseline ใหม่บน floored data + comm 0 (ดู ADDENDUM ใน experiments_log.md)</dd>
         <dt>สถานะ</dt><dd>✅ H1 ยืนยันว่าเป็นตัวหลัก; lower-TF as primary ถูกปฏิเสธอย่างแน่นอน</dd>
       </dl>
     </div>
@@ -787,8 +879,14 @@
       <dl class="history-grid">
         <dt>อ้างอิง</dt><dd>EXP-010 (pre-registered, 22 ก.ค. 2026)</dd>
         <dt>สมมติฐาน</dt><dd>ใช้สัญญาณ H1 Council แต่จับเวลาเข้าไม้ด้วย M30 pullback-then-resume trigger + M30-structure stop → ได้ entry ที่ดีกว่า stop ที่แคบกว่า lot ที่ใหญ่กว่า ใช้สิ่งที่เก็บเกี่ยวได้ → น้อยสัญญาณที่ถูกทิ้งเพราะ lot ขั้นต่ำ</dd>
-        <dt>ก่อนเงื่อนไข</dt><dd>(a) แก้ spread=0 ในข้อมูล historical — <b>✅ เคลียร์แล้ว 22 ก.ค. 2026</b> (floor เฉพาะแถวที่เป็น 0: XAUUSD → 5 pts ทุก TF; และตั้งแต่ commit <code>5be62c8</code> โค้ด download floor ให้อัตโนมัติแล้ว — download ใหม่ไม่ทำให้ปัญหากลับมา); (b) re-baseline H1/M30 ด้วยข้อมูลที่แก้แล้ว + commission 0 (บัญชี Standard); (c) สร้าง two-TF bridge harness</dd>
-        <dt>สถานะ</dt><dd>🔄 <b>PRE-REGISTERED</b> — spread fix เคลียร์แล้ว พร้อมเริ่มเมื่อ re-baseline + harness เสร็จ (rule 1: rigor in cost model)</dd>
+        <dt>สิ่งที่บล็อกคำงาน</dt><dd>
+          <ul style="margin: 0; padding-left: 1.5rem;">
+            <li><strong>(a) Spread=0 data fix</strong> — <b>✅ เคลียร์แล้ว 22 ก.ค. 2026</b> (floor เฉพาะแถวที่เป็น 0: XAUUSD → 5 pts ทุก TF; commit <code>5be62c8</code> โค้ด download floor ให้อัตโนมัติแล้ว)</li>
+            <li><strong style="color: var(--pending-fg);">(b) PENDING:</strong> Re-baseline H1/M30 ด้วยข้อมูลที่แก้แล้ว + commission 0 (baseline figures ใน pre-registration เป็นค่าก่อนแก้ cost — ล้าสมัยแล้ว)</li>
+            <li><strong style="color: var(--pending-fg);">(c) PENDING:</strong> Two-TF bridge harness (backtest engine ตอนนี้ support H1 single-TF เท่านั้น)</li>
+          </ul>
+        </dd>
+        <dt>สถานะ</dt><dd>🔄 <b>PRE-REGISTERED, NOT RUN</b> — (a) เคลียร์แล้ว (b) และ (c) ยังค้าง</dd>
       </dl>
     </div>
 

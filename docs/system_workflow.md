@@ -76,8 +76,9 @@ Council มี 3 "เสียง" (voices) ที่ให้คะแนนส
 | `tp_r_multiple` | 2.0 | Take Profit = 2.0 × (Entry − SL) = เป้าหมายเป็น "2 R" (2 เท่าของการเสี่ยง) |
 
 ### ที่มา/ประวัติการปรับจูน
-- **EXP-002** (2026-07-21): ทดสอบ `tp_r_multiple` 1.5–3.0 → **REJECTED ทั้งหมด**, ค่า 2.0 ยังคงดีที่สุด (แข็งแรง​ทุก​ปี)
+- **EXP-002** (2026-07-21): ทดสอบ `tp_r_multiple` 1.5–3.0 → **REJECTED ทั้งหมด**, ค่า 2.0 ยังคงดีที่สุด (แข็งแรง​ทุก​ปี เมื่อวัดเป็น per-year; candidates อื่น fail Y1 หรือ Y2)
 - **EXP-009** (2026-07-22): ทดสอบ tp ใหม่ด้วย Watchman modeling → **REJECTED อีกครั้ง** (ยืนยัน 2.0 ยังเป็นตัวเลือกที่ดีที่สุด)
+- **RE-VERIFICATION (P2, 2026-07-22):** หลังแก้ cost model (spread floor + commission $0), tp=2.0 ยังคงดีที่สุด — candidates 2.25/2.5 fail Y1 *harder* (Y1 PF 0.833→0.805 ที่ tp 2.25) — **การปฏิเสธนี้ RECONFIRMED** ไม่ใช่แค่ยืนยัน
 
 ---
 
@@ -108,11 +109,12 @@ Risk Voice คือ "ประตูรักษาความปลอดภ�
 
 ### ที่มา/ประวัติการปรับจูน
 - **EXP-003** (2026-07-21): ทดสอบ session gate [14,18) vs all-24h
-  - **ผลลัพธ์:** all-24h ชนะใน 4 ของ 5 ปี → **ADOPTED** เปลี่ยน `session_start_hour=0, session_end_hour=24` ✅ **LIVE NOW**
-  - เหตุผล: [14,18) ปิด London+NY overlap เท่านั้น แต่มันปิดเวลา profitable อื่นๆ เช่น Asia session บางครั้งก็ดี
+  - **ผลลัพธ์:** all-24h ชนะใน 4 ของ 5 ปี incl. Test year → **ADOPTED** เปลี่ยน `session_start_hour=0, session_end_hour=24` ✅ **LIVE NOW**
+  - เหตุผล: [14,18) ปิด London+NY overlap เท่านั้น แต่มันปิดเวลา profitable อื่นๆ เช่น Asia session บางครั้งก็ดี; filter ยังทำให้ year 2021-22 (ปีที่ choppy) กลับจาก +$297 เป็น -$518
+  - **RE-VERIFICATION (P3, 2026-07-22):** หลังแก้ cost model (spread floor + commission $0), all-24h ชนะใน 3/4 ปี net profit และ aggregate profit ขยับจาก +$2000 → +$3964 (ประมาณ 7 เท่าเมื่อเทียบกับ filter) — **การตัดสินใจนี้ STRENGTHENED** ไม่ใช่แค่ยืนยัน
   
 - **EXP-004** (2026-07-21): ทดสอบ compromise [0,22) (ไม่รวม rollover 22-23)
-  - **ผลลัพธ์:** ไม่ดีกว่า all-24h → **REJECTED** เหตุผล: "hours 22-23 losses" เป็น artifact ของ multi-year aggregate ไม่ใช่ per-year pattern
+  - **ผลลัพธ์:** ไม่ดีกว่า all-24h → **REJECTED** เหตุผล: "hours 22-23 losses" เป็น artifact ของ multi-year aggregate ไม่ใช่ per-year pattern; ที่ Train+Val โค้ง [0,22) แย่กว่า all-24h ~$91 aggregate
 
 ---
 
@@ -172,7 +174,7 @@ lot_size = risk_amount / (stop_distance × point_value)
 ### ที่มา/ประวัติการปรับจูน
 - **ADOPTED (2026-07-22)**: ปรับจาก 0.5% → **1.0%** แล้ว (`config/base.yaml` ปัจจุบัน) หลังจากเจอเหตุการณ์จริงที่สัญญาณ Council ผ่านทุกด่านแล้วถูกทิ้งเพราะคำนวณ lot ได้ต่ำกว่าขั้นต่ำของ broker (0.01 lot) — การวัดผล (บันทึกใน experiments_log.md เป็น informational note ไม่ใช่ EXP-### เพราะเป็นแค่การวัดผลกระทบของ position-sizing ไม่ใช่การหา edge ใหม่) พบว่าที่ 0.5% สัญญาณที่ผ่านทุกด่านถูกทิ้งไปถึง ~72% เพราะบัญชี demo $3,000 เล็กเกินไปเทียบกับ stop distance ของทองคำ ที่ 1.0% อัตราการถูกทิ้งลดลงเหลือ ~52% (**ตัวเลขนี้วัดตอน `breakeven_enabled`/`trail_enabled` ยังเป็น `true` — ล้าสมัยแล้ว**) การวัดผลเดียวกันนี้ยัง flag ไว้ว่าการเพิ่มเงินฝากในบัญชี demo (เช่น $10,000) จะแก้ปัญหานี้ได้ตรงจุดกว่าการดัน risk% ขึ้นอีก — แต่ผู้ใช้ยืนยันปรัชญาโปรเจกต์ว่าห้ามใช้ทางแก้นี้ ต้องใช้งานได้จริงบนบัญชีเล็ก
 - **Re-measured (2026-07-22, หลัง EXP-008 adopted):** ที่ risk 1.0% + be/trail ปิดแล้ว อัตราการถูกทิ้งจริงตอนนี้คือ **~31.6%** (ต่ำกว่าตัวเลขเดิมมาก เพราะปิด be/trail ทำให้ถือไม้นานขึ้นถึง 2R เป้าหมาย แท่งที่ว่างสำหรับสัญญาณใหม่จึงน้อยลง) — ยังถือว่าสูงอยู่ นำไปสู่การทดสอบ **min-lot risk-cap fallback** (ดูรายละเอียดเต็มใน `experiments/experiments_log.md`'s NOTE ล่าสุด และหัวข้อประวัติการปรับจูนด้านล่าง)
-- **ADOPTED (2026-07-22, Stage 2 decision) — `min_lot_risk_cap_pct: 1.5`:** เพิ่ม fallback ที่เบี่ยงเบนจากสเปค §3.1 ("อย่าฝืนเสี่ยงเกินแผน") แบบตั้งใจและเปิด/ปิดได้ด้วย config (`risk/sizing.py::compute_lot_size`'s default ในโค้ดยังเป็น `None`/ปิดเสมอ — `config/base.yaml` เป็นจุดเดียวที่ตั้งใจเปิดใช้จริง). Stage 1 measurement (`experiments/experiments_log.md`'s NOTE วันเดียวกัน "small-account sizing REFRESH + min-lot-fallback measurement", full history 2021–2026 ~29,500 H1 bars) พบว่าที่ risk=1.0% ยังมีสัญญาณ ~31.6% ถูกทิ้งเพราะ lot ต่ำกว่าขั้นต่ำ broker — เปิด fallback ที่ cap=1.5% กู้สัญญาณกลับมาได้ 63 ไม้ (จากทั้งหมด 1257 ไม้ในช่วงทดสอบ), PF รวมขยับจาก 1.0496 → 1.1244, net$ จาก $1049 → $2808 และที่สำคัญคือ **ไม้ที่กู้กลับมาเองมี PF 1.60 แยกต่างหาก** ไม่ใช่ไม้ขยะ แม้ maxSingleLoss ต่อไม้จะขยับขึ้นได้ถึง ~3.5% ของ equity (เดิม ~1.9% ที่ risk 1.0% ปกติ) เมื่อ fallback ทำงานจริง — trade-off นี้ถูกยอมรับอย่างมีข้อมูลรองรับ ไม่ใช่การเดา
+- **ADOPTED (2026-07-22, Stage 2 decision) — `min_lot_risk_cap_pct: 1.5`:** เพิ่ม fallback ที่เบี่ยงเบนจากสเปค §3.1 ("อย่าฝืนเสี่ยงเกินแผน") แบบตั้งใจและเปิด/ปิดได้ด้วย config (`risk/sizing.py::compute_lot_size`'s default ในโค้ดยังเป็น `None`/ปิดเสมอ — `config/base.yaml` เป็นจุดเดียวที่ตั้งใจเปิดใช้จริง). **⚠️ Stage 1 measurement ที่ยืนยัน:** ตัวเลขข้างล่างวัดจาก Stage 1 NOTE (`experiments/experiments_log.md`'s "small-account sizing REFRESH + min-lot-fallback measurement", full history 2021–2026 ~29,500 H1 bars) **แต่ยังใช้ commission $7/lot (ค่าเดิมที่ผิด)**; re-measurement ด้วย commission $0 ที่ถูกต้องยังคงรอ run — ผู้ใช้ยอมรับการ adopt นี้ล่วงหน้า แต่เลขตัวจริงอาจต่างได้. ตัวเลขจาก Stage 1 (commission $7): ที่ risk=1.0% มีสัญญาณ ~31.6% ถูกทิ้งเพราะ lot ต่ำกว่าขั้นต่ำ broker — เปิด fallback ที่ cap=1.5% กู้สัญญาณกลับมาได้ 63 ไม้ (จากทั้งหมด 1257 ไม้), PF รวมขยับจาก 1.0496 → 1.1244, net$ จาก $1049 → $2808 และที่สำคัญคือ **ไม้ที่กู้กลับมาเองมี PF 1.60 แยกต่างหาก** ไม่ใช่ไม้ขยะ — trade-off ถูกยอมรับจากข้อมูลนี้ (แม้ยังรอ verify ด้วย commission $0)
 
 ---
 
@@ -185,7 +187,7 @@ lot_size = risk_amount / (stop_distance × point_value)
 - **Detect structure breaks** — ถ้า​ราคา​พัง​โครงสร้าง​ที่​ใช้​สร้าง​สัญญาณ​ → **ปิด​ทันที** (ไม่รอ​ SL)
 - **Time stop** — ไม้​ที่​​เปิด​เกิน​ 48 ชั่วโมง​แล้ว​ อยู่​ในช่วง​ dead-trade (±0.3R กำไร/ขาดทุน) → ปิด (ไม่ค้นไม่ยุ่ง)
 - **News protection** — ข่าว​มา​ใน​ 30 นาที​ แล้ว​ไม้​กำไร​ ≥ 0.5R → ปิด​ครึ่ง​ + ย้าย​ SL​ break-even
-- **เฝ้าดู​ปุ่ม AutoTrading ของ MT5 terminal** *(ใหม่ 2026-07-22)* — ถ้า​มี​ใคร​กดปิด​ปุ่ม "AutoTrading"/"Algo Trading" ที่​ตัว​โปรแกรม MT5​ เอง​ (ไม่ใช่ bug ของ​ระบบ​นี้) ระบบ​จะ​ส่ง Telegram แจ้ง​เตือน​ทันที​ว่า​ห้าม​เปิด​ไม้​ใหม่​ได้​จนกว่า​จะ​เปิด​กลับ และ​จะ​แจ้ง​อีก​ครั้ง​เมื่อ​เปิด​กลับ​เรียบร้อย​แล้ว — เกิด​จาก​เหตุการณ์​จริง​ที่​ปุ่ม​นี้​ถูก​ปิด​โดย​ไม่ตั้งใจ​แล้ว​ไม่มี​ใคร​รู้​จน​กระทั่ง​ไม้​ถูก​ MT5​ ปฏิเสธ​ซ้ำๆ (retcode 10027)
+- **AutoTrading toggle monitor** *(ใหม่ 2026-07-22)* — ระบบ​เฝ้าดู​ปุ่ม "AutoTrading"/"Algo Trading" ของ MT5 terminal เอง (Tool > Options > Expert Advisors) — ถ้ามี​ใคร​กดปิด​หรือ​เปิด​ปุ่ม​นี้​ ระบบ​จะ​ส่ง​ Telegram alert ทันที ​พร้อม​ยกเลิก​ entries ใหม่​จนกว่า​จะ​เปิด​กลับ ​— สาเหตุ​มา​จาก​เหตุการณ์​จริง (2026-07-21): ปุ่ม​ถูก​ปิด​โดย​ไม่ตั้งใจ​ แล้ว​ทุก​ order ถูก MT5 ปฏิเสธ​ด้วย retcode 10027 ​แต่​ไม่มี​ใคร​รู้​นาน ​จนกว่า​โปรแกรม​จะ​มี alert ตามด​
 
 ### เงื่อนไข/Threshold ปัจจุบัน
 
@@ -214,7 +216,8 @@ lot_size = risk_amount / (stop_distance × point_value)
     - **structure-invalidation** = net-beneficial (+$392) → KEEP
     - **time-stop** = neutral-to-slightly-negative → KEEP (มีค่า live protection)
   - **วิธีปิด:** EXP-008 เสนอไว้แบบ sentinel (`breakeven_at_r: 999`) เป็นทางลัด แต่ทีมเลือกวิธีที่สะอาดกว่าคือเพิ่ม boolean flag ตรงๆ — `watchman.breakeven_enabled`/`watchman.trail_enabled`
-  - **ผลลัพธ์ Test (ก่อน joint verify)**: PF 1.215 → 1.304 (+$387 net) ✅ ผ่านเกณฑ์ promotion gate (PF≥1.3)
+  - **ผลลัพธ์ Test (ก่อน joint verify)**: PF 1.215 → 1.304 (old cost model)
+  - **ผลลัพธ์ Test (หลัง spread-floor fix + commission $0)**: PF 1.215 → **1.268** — **ไม่ผ่าน** เกณฑ์ promotion gate (PF≥1.3; ต่ำกว่า 0.032) ⚠️ **เหตุผล:** หลังจาก 2026-07-22 ได้แก้ไข cost model ให้จริงจัง (spread floor + commission $0 ที่ถูก), ตัวเลขทดสอบที่เก่ากว่านี้คำนวณผิด — อย่างไรก็ตาม **การตัดสินใจปิด breakeven/trail ยังคงถูกต้อง** (ยืนยันด้วย 3 วิธี independent ที่ตัด sizing confound ออก) เพราะมันยังคงปรับปรุง expectancy โดยรวม แม้ว่าจะไม่ผ่าน Gate 1 เพียงลำพัง
 
 - **Joint re-verification** (2026-07-22, ทำ 3 วิธีอิสระเพื่อตัด sizing-floor confound: risk-based sizing ที่ equity $50,000 และ $10,000, กับ fixed-lot 0.1 ที่ equity จริง $3,000):
   - ทั้ง 3 วิธี**เห็นตรงกัน**ว่า "ปิด breakeven/trail อย่างเดียว (คง pivot_bars=3)" ดีที่สุด — เช่นที่ equity $50,000: PF 1.18→**1.24**, net $13,357→**$17,060**
@@ -264,7 +267,7 @@ lot_size = risk_amount / (stop_distance × point_value)
 
 2. **Watchman breakeven + trailing disabled, structure-invalidation/time-stop KEPT** — EXP-008 + joint re-verification
    - **เปลี่ยน:** `watchman.breakeven_enabled: false`, `watchman.trail_enabled: false` (boolean gate ใหม่ แทนวิธี sentinel ตัวเลขที่ EXP-008 เสนอไว้ตอนแรก)
-   - **เหตุผล:** breakeven+trail ทำให้ ปิด winners ก่อนถึง 2R target; disabling เพิ่ม PF 1.215 → 1.304 on Test (ก่อน joint verify) และยืนยันอีกครั้งด้วย 3 วิธีอิสระที่ตัด sizing-floor confound ออก (equity $50,000/$10,000 + fixed-lot ที่ equity จริง)
+   - **เหตุผล:** breakeven+trail ทำให้ ปิด winners ก่อนถึง 2R target; disabling เพิ่ม PF บน out-of-sample (Test year, 2025-07-21 → 2026-07-21) **เมื่อ cost model ถูกต้อง:** PF 1.215 → **1.268** (ค่าเดิม 1.304 เป็นจากการคำนวณผิด ก่อนแก้ cost) — และยืนยันการปรับปรุง PF นี้อีกครั้งด้วย 3 วิธีอิสระ (equity $50,000/$10,000 + fixed-lot 0.1 ที่ equity จริง $3,000) ที่ตัด sizing-floor confound ออก
    - **สถานะ:** ✅ **LIVE** — config/base.yaml updated, shadow loop restarted (2026-07-22)
 
 ### ❌ REJECTED / SUPERSEDED (Tested, Didn't Pan Out)
@@ -291,14 +294,17 @@ lot_size = risk_amount / (stop_distance × point_value)
 
 7. **Timeframe probe: H1 vs M30/M15/M5** — Probe (not EXP-###)
    - **ทดสอบ:** Apply current H1 rules on M30/M15/M5 → edge collapse
-   - **ผลลัพธ์:** Full-history: **H1 PF 1.081** vs M30 1.007 / M15 1.001 (= breakeven, ตัด top-5 winners แล้วเหลือ ≤1.0); common window (ก.พ. 2025–ก.ค. 2026): H1 1.215 → M30 1.111 → M15 1.075 → M5 1.017 พร้อม DD บันได 11.5%→53.7% — monotone staircase ทุกมุมมอง; cost/R แย่ลงตาม TF (~1.7% H1 → ~6.7% M5)
-   - **หมายเหตุ:** ตัวเลข probe รันก่อนแก้ spread floor + ก่อนรู้ว่า commission จริงเป็น 0 (ดู ADDENDUM ใน experiments_log.md) — verdict ยืน แต่ห้ามอ้างตัวเลขเป๊ะๆ ต่อ
+   - **ผลลัพธ์ (ก่อนแก้ cost model):** Full-history: **H1 PF 1.081** vs M30 1.007 / M15 1.001 (= breakeven, ตัด top-5 winners แล้วเหลือ ≤1.0); common window (ก.พ. 2025–ก.ค. 2026): H1 1.215 → M30 1.111 → M15 1.075 → M5 1.017 พร้อม DD บันได 11.5%→53.7% — monotone staircase ทุกมุมมอง; cost/R แย่ลงตาม TF (~1.7% H1 → ~6.7% M5)
+   - **⚠️ Important:** ตัวเลข probe ข้างบนรันก่อน 2026-07-22 ทั้ง spread floor fix และ commission $0 correction — สัญญาณของคณ ประเมินผลและแนวทาง (lower-TF collapse) ยังคงจริง แต่ห้ามอ้างตัวเลขเป๊ะๆ; ใครจะ re-run probe ต้อง baseline ใหม่บน floored data + commission 0 (ดู ADDENDUM ใน experiments_log.md)
    - **สถานะ:** ✅ **H1 CONFIRMED** as primary signal timeframe; lower TFs rejected; M5 rejected outright
 
-8. **H1→M30 hybrid entry timing** — EXP-010 pre-registered
+8. **H1→M30 hybrid entry timing** — EXP-010 pre-registered but blocked
    - **ทดสอบ:** (NOT YET RUN) Keep H1 Council bias/veto, but enter on M30 pullback-then-resume trigger with M30-structure stop → tighter stop, better entry price, fewer sub-min-lot skips on $3k account
-   - **Prerequisites:** (a) ~~spread-zero data fix~~ ✅ เคลียร์แล้ว 2026-07-22 (spread floor applied); (b) re-baseline H1/M30 ด้วยข้อมูลที่แก้แล้ว + commission 0 (ตัวเลข baseline ใน pre-registration เป็นค่าก่อนแก้ cost); (c) two-TF bridge harness ยังไม่ได้สร้าง
-   - **สถานะ:** 🔄 **PRE-REGISTERED ONLY** — พร้อมเริ่มเมื่อ re-baseline + harness เสร็จ
+   - **Prerequisites blocking:** 
+     - (a) ~~spread-zero data fix~~ ✅ เคลียร์แล้ว 2026-07-22 (spread floor applied on-disk + permanent in code)
+     - **(b) PENDING:** re-baseline H1/M30 ด้วยข้อมูลที่แก้แล้ว + commission $0 (ตัวเลข baseline ใน pre-registration เป็นค่าก่อนแก้ cost — baseline figures stale)
+     - **(c) PENDING:** two-TF bridge harness ยังไม่ได้สร้าง (จำเป็นเพราะ backtest engine ตอนนี้ support H1 single-TF ไม่ support dual-TF replay)
+   - **สถานะ:** 🔄 **PRE-REGISTERED, NOT RUN** — block จน (b) & (c) clear; cost model fixes ใน (a) แล้ว
 
 ### 🔄 INFRASTRUCTURE READY, AWAITING REAL-WORLD VERIFICATION
 
@@ -307,10 +313,13 @@ lot_size = risk_amount / (stop_distance × point_value)
    - **Impact:** EXP-006+ first time these params have real backtest exposure
    - **สถานะ:** ✅ Code ready, pending parameter tuning outcomes (see point 2 above)
 
-8. **Historical spread=0 floored (data-integrity fix, 2026-07-22)** — ⚠️ มี gotcha ประจำ
-   - **ปัญหา:** MT5 ไม่ retro-populate spread ของ bars เก่า → `spread=0` ~50% ของไฟล์ H1 = backtest คิดต้นทุนต่ำเกินจริงมาตลอด
-   - **แก้แล้ว:** แทนเฉพาะแถว `spread==0` (ค่าจริง 1–4 pts ไม่แตะ): XAUUSD ทุก TF → 5 pts, EURUSD → 10, GBPUSD → 13, USDJPY → 10 (ที่มาเต็มใน experiments_log.md NOTE "Historical `spread` zero-value floor")
-   - **✅ แก้ถาวรแล้ว (commit `5be62c8`, 2026-07-22):** `feed/historical.py` ตอนนี้ floor spread==0 ให้อัตโนมัติทุกครั้งที่ download (per-symbol, ทุก TF, raise ดังๆ ถ้าเจอ symbol ที่ไม่รู้จัก) — download ใหม่ไม่ทำให้ zeros กลับมาอีกแล้ว ข้อยกเว้นเดียวที่ยังค้าง: GBPUSD/USDJPY ข้อมูล spread ที่*มีค่าอยู่แล้ว*ไม่น่าเชื่อถือ (1pt = 0.1 pip ไม่สมจริง) ต้อง re-download ก่อน FX go-live
+8. **Commission model + Historical spread=0 floored (cost-integrity fixes, 2026-07-22)**
+   - **Commission แก้:** ยืนยันว่า IC Markets **Standard** account = **ZERO commission** ($0/lot) ต้นทุนอยู่ใน spread ทั้งหมด — experiments ทั้งหมดก่อนนี้ใช้ $7/lot (phantom cost) ผิด
+   - **Spread floor ปัญหา:** MT5 ไม่ retro-populate spread ของ bars เก่า → `spread=0` ~50% ของไฟล์ H1 (90% ของ Train-era 2021-22, 30% ของ Test year) = backtest คิดต้นทุนต่ำเกินจริงมาตลอด
+   - **Spread floor แก้ (2 ชั้น):**
+     - **On-disk (ครั้งแรก, 2026-07-22):** Manual floor ไป `spread==0` rows ใน CSV: XAUUSD ทุก TF → 5 pts, EURUSD → 10, GBPUSD → 13, USDJPY → 10
+     - **Permanent (commit `5be62c8`, 2026-07-22):** `feed/historical.py` ตอนนี้ floor spread==0 ให้อัตโนมัติทุกครั้งที่ download (per-symbol, ทุก TF, raise ดังๆ ถ้าเจอ symbol ที่ไม่รู้จัก) — download ใหม่ไม่ทำให้ zeros กลับมาอีกแล้ว
+   - **⚠️ ข้อยกเว้น:** GBPUSD/USDJPY ข้อมูล spread ที่*มีค่าอยู่แล้ว*ไม่น่าเชื่อถือ (1pt = 0.1 pip ไม่สมจริง) ต้อง re-download ก่อน FX go-live
 
 ---
 
