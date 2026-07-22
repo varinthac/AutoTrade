@@ -76,6 +76,18 @@ cfo:
   daily_loss_limit_pct: 2.0
   max_consecutive_losses: 3
   max_drawdown_halt_pct: 8.0
+  # min_lot_risk_cap_pct: ADOPTED 2026-07-22 (Stage 2 decision) -- a deliberate,
+  # config-gated deviation from Appendix A §3.1 ("อย่าฝืนเสี่ยงเกินแผน" / don't
+  # force excess risk), NOT spec-exact behavior. When the risk-based lot rounds
+  # below the broker's 0.01 minimum, trade 0.01 anyway IFF its dollar risk is
+  # still <= this % of equity, instead of skipping the signal outright. Stage 1
+  # measurement (experiments/experiments_log.md's 2026-07-22 NOTE "small-account
+  # sizing REFRESH + min-lot-fallback measurement") found this recovers 63 real
+  # trades out of 1257 total (Test-year window), with that rescued subset alone
+  # showing PF 1.60 -- a genuine small-account accommodation, not dead weight.
+  # See risk/sizing.py::compute_lot_size for the exact cap check (uses full
+  # equity, independent of the ATR-based volatility halving).
+  min_lot_risk_cap_pct: 1.5
 
 # Council Bull/Bear scoring + Decision Matrix (council/scoring.py,
 # council/decision_matrix.py), per trading_system_summary_v2.md Appendix A

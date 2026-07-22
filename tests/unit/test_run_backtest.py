@@ -118,6 +118,7 @@ def test_build_envelope_cost_model_complete_true_when_commission_set_and_min_spr
     envelope = run_backtest_script.build_envelope(
         "XAUUSD", df, report, CostModelConfig(commission_per_lot=3.5, slippage_points=None),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
+        min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is True
 
@@ -133,6 +134,7 @@ def test_build_envelope_cost_model_complete_true_when_commission_zero_and_min_sp
     envelope = run_backtest_script.build_envelope(
         "XAUUSD", df, report, CostModelConfig(commission_per_lot=0.0, slippage_points=None),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
+        min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is True
 
@@ -145,6 +147,7 @@ def test_build_envelope_cost_model_complete_false_when_slippage_explicitly_overr
     envelope = run_backtest_script.build_envelope(
         "XAUUSD", df, report, CostModelConfig(commission_per_lot=3.5, slippage_points=2.0),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
+        min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is False
 
@@ -168,6 +171,7 @@ def test_run_and_persist_writes_a_loadable_envelope(tmp_path, monkeypatch):
     assert envelope.cost_model_complete is True
     assert envelope.risk_voice_modeled is False  # risk_voice_cfg omitted -> not modeled
     assert envelope.watchman_exits_modeled is False  # watchman_cfg omitted -> not modeled
+    assert envelope.min_lot_risk_cap_pct is None  # min_lot_risk_cap_pct omitted -> fallback disabled
 
     raw = json.loads(out_path.read_text(encoding="utf-8"))
     assert raw["bar_range"]["start"] == str(df["time"].iloc[0])
@@ -237,6 +241,34 @@ def test_run_and_persist_threads_pivot_bars_into_backtest_config(tmp_path, monke
     assert captured["pivot_bars"] == 7
 
 
+def test_run_and_persist_threads_min_lot_risk_cap_pct_into_backtest_config_and_envelope(tmp_path, monkeypatch):
+    # Proves run_and_persist's min_lot_risk_cap_pct= kwarg reaches
+    # BacktestConfig itself (not just added to the dataclass and silently
+    # ignored) AND is recorded in the written envelope for auditability.
+    captured = {}
+    real_run_backtest = run_backtest_script.run_backtest
+
+    def _capturing_run_backtest(df, symbol, symbol_spec, config):
+        captured["min_lot_risk_cap_pct"] = config.min_lot_risk_cap_pct
+        return real_run_backtest(df, symbol, symbol_spec, config)
+
+    monkeypatch.setattr(run_backtest_script, "run_backtest", _capturing_run_backtest)
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    output_dir = tmp_path / "backtest_reports"
+
+    out_path = run_backtest_script.run_and_persist(
+        "XAUUSD", df, SYMBOL, 10_000.0, 1.0,
+        CostModelConfig(commission_per_lot=2.0, slippage_points=None),
+        False, output_dir, min_lot_risk_cap_pct=1.5,
+    )
+
+    assert captured["min_lot_risk_cap_pct"] == 1.5
+    envelope = load_backtest_report_envelope(out_path)
+    assert envelope.min_lot_risk_cap_pct == 1.5
+
+
 # --- main() end-to-end wiring -----------------------------------------------
 #
 # The tests above exercise build_envelope/run_and_persist/_council_signal_fn
@@ -256,7 +288,7 @@ def _fake_session(creds):
 
 _FAKE_MAIN_CFG = {
     "global": {"swing_pivot_bars": 7},
-    "cfo": {"risk_per_trade_pct": 0.75},
+    "cfo": {"risk_per_trade_pct": 0.75, "min_lot_risk_cap_pct": 1.25},
     "risk_voice": {
         "max_spread_multiple": 2.5, "max_spread_points_xauusd": 40.0,
         "news_blackout_before_min": 10.0, "news_blackout_after_min": 5.0,
@@ -375,6 +407,48 @@ def test_main_threads_pivot_bars_from_config_into_run_and_persist(monkeypatch, t
     assert captured["pivot_bars"] == 7
 
 
+def test_main_threads_min_lot_risk_cap_pct_from_config_into_run_and_persist(monkeypatch, tmp_path):
+    # A KeyError, a swapped field, or silently relying on run_and_persist's/
+    # BacktestConfig's own min_lot_risk_cap_pct=None default (regardless of
+    # config) would all fail this -- _FAKE_MAIN_CFG's cfo.min_lot_risk_cap_pct
+    # =1.25 is a distinct value from that default specifically to catch that.
+    _patch_main_wiring(monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}]))
+    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0"])
+
+    captured = {}
+
+    def _fake_run_and_persist(*args, **kwargs):
+        captured["min_lot_risk_cap_pct"] = kwargs.get("min_lot_risk_cap_pct")
+        return tmp_path / "envelope.json"
+
+    monkeypatch.setattr(run_backtest_script, "run_and_persist", _fake_run_and_persist)
+
+    exit_code = run_backtest_script.main()
+
+    assert exit_code == 0
+    assert captured["min_lot_risk_cap_pct"] == 1.25
+
+
+def test_main_min_lot_risk_cap_pct_cli_override_takes_precedence_over_config(monkeypatch, tmp_path):
+    _patch_main_wiring(monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}]))
+    monkeypatch.setattr(sys, "argv", [
+        "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0", "--min-lot-risk-cap-pct", "2.0",
+    ])
+
+    captured = {}
+
+    def _fake_run_and_persist(*args, **kwargs):
+        captured["min_lot_risk_cap_pct"] = kwargs.get("min_lot_risk_cap_pct")
+        return tmp_path / "envelope.json"
+
+    monkeypatch.setattr(run_backtest_script, "run_and_persist", _fake_run_and_persist)
+
+    exit_code = run_backtest_script.main()
+
+    assert exit_code == 0
+    assert captured["min_lot_risk_cap_pct"] == 2.0
+
+
 def test_main_writes_an_envelope_with_risk_voice_modeled_true(monkeypatch, tmp_path):
     monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
     monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
@@ -391,6 +465,7 @@ def test_main_writes_an_envelope_with_risk_voice_modeled_true(monkeypatch, tmp_p
     envelope = load_backtest_report_envelope(out_path)
     assert envelope.risk_voice_modeled is True
     assert envelope.watchman_exits_modeled is True
+    assert envelope.min_lot_risk_cap_pct == 1.25  # _FAKE_MAIN_CFG's cfo.min_lot_risk_cap_pct
 
 
 def test_main_with_commission_zero_writes_envelope_with_cost_model_complete_true(monkeypatch, tmp_path):

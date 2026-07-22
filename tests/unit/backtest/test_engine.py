@@ -299,6 +299,36 @@ def test_signal_below_broker_minimum_lot_never_becomes_a_trade():
     assert trades == []
 
 
+def test_min_lot_risk_cap_pct_threads_into_the_real_compute_lot_size_call():
+    # Same below-broker-minimum setup as the test above, but with
+    # min_lot_risk_cap_pct set -- proves BacktestConfig.min_lot_risk_cap_pct
+    # actually reaches the real risk.sizing.compute_lot_size() call inside
+    # run_backtest() (not just added to the dataclass and silently ignored --
+    # this project has hit that exact bug pattern before). min_lot_risk =
+    # stop_distance(10) * point_value(1.0) * volume_min(0.01) = 0.1, well
+    # within 1.0% of equity(10000) = 100 -- the fallback rescues the lot
+    # instead of skipping the signal.
+    plan = OrderPlan(direction="BUY", entry=100.0, stop_loss=90.0, take_profit=120.0, stop_distance=10.0)
+    calls: list[int] = []
+    df = _bars([
+        {"open": 99, "high": 100, "low": 98, "close": 100, "spread": 0},
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.5, "spread": 0},
+        {"open": 101, "high": 102, "low": 99.5, "close": 101.5, "spread": 0},
+    ])
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY,
+        risk_per_trade_pct=0.0001,  # same tiny risk% as the None-cap test above
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        signal_fn=_fixed_signal_at(0, plan, calls),
+        min_lot_risk_cap_pct=1.0,
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].lot_size == pytest.approx(SYMBOL.volume_min)
+
+
 def test_engine_ignores_new_signals_while_a_position_is_open_even_if_signal_fn_always_fires():
     # Unlike the no-lookahead test above (whose fake signal_fn only ever
     # fires once), this signal_fn returns a plan on EVERY call. If the

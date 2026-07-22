@@ -128,6 +128,7 @@ _BASE_CFG = {
     "cfo": {
         "risk_per_trade_pct": 0.5, "daily_loss_limit_pct": 2.0,
         "max_consecutive_losses": 3, "max_drawdown_halt_pct": 8.0,
+        "min_lot_risk_cap_pct": 1.5,
     },
     "order": {"sl_buffer_atr": 0.2, "sl_min_atr": 0.8, "sl_max_atr": 2.5, "tp_r_multiple": 2.0},
     "shield": {
@@ -220,6 +221,11 @@ def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(mon
     # regardless of config -- _BASE_CFG's swing_pivot_bars=7 is a distinct
     # value specifically to catch that.
     assert run_calls["init_kwargs"]["cfg"].pivot_bars == 7
+    # min_lot_risk_cap_pct is read from config/base.yaml's cfo.min_lot_risk_cap_pct
+    # into the real ShadowLoopConfig -- _BASE_CFG's value (1.5) is distinct
+    # from ShadowLoopConfig's own None default specifically to catch a
+    # silently-ignored field.
+    assert run_calls["init_kwargs"]["cfg"].min_lot_risk_cap_pct == 1.5
     # breakeven_enabled/trail_enabled are read from config/base.yaml's
     # watchman: block into the real WatchmanConfig wired into WatchmanLoop --
     # _BASE_CFG sets both False (distinct from WatchmanConfig's own True

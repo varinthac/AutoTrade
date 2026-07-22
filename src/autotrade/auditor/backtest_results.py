@@ -52,6 +52,15 @@ class BacktestReportEnvelope:
     param-tuner finding that first confirmed this gap) -- same "don't
     silently count an incomplete simulation" philosophy as
     `cost_model_complete`/`risk_voice_modeled`."""
+    min_lot_risk_cap_pct: float | None
+    """This run's `BacktestConfig.min_lot_risk_cap_pct`, recorded for
+    auditability -- `None` means `risk/sizing.py::compute_lot_size`'s
+    min-lot risk-cap fallback was disabled (spec-exact §3.1 behavior); a
+    numeric value means the deliberate 2026-07-22 deviation was in effect.
+    See that function's docstring and `experiments/experiments_log.md`'s
+    2026-07-22 NOTE for the Stage 1 measurement this is based on. Unlike
+    `risk_voice_modeled`/`watchman_exits_modeled`, `None` here is a
+    legitimate, expected value, not an incomplete-simulation flag."""
     report: BacktestReport
 
 
@@ -62,7 +71,8 @@ _REPORT_FIELDS = (
 )
 _TOP_LEVEL_FIELDS = (
     "symbol", "bar_range", "starting_equity", "cost_model", "cost_model_complete",
-    "is_out_of_sample", "risk_voice_modeled", "watchman_exits_modeled", "report",
+    "is_out_of_sample", "risk_voice_modeled", "watchman_exits_modeled",
+    "min_lot_risk_cap_pct", "report",
 )
 
 
@@ -102,6 +112,7 @@ def load_backtest_report_envelope(path: Path) -> BacktestReportEnvelope:
             is_out_of_sample=data["is_out_of_sample"],
             risk_voice_modeled=data["risk_voice_modeled"],
             watchman_exits_modeled=data["watchman_exits_modeled"],
+            min_lot_risk_cap_pct=data["min_lot_risk_cap_pct"],
             report=BacktestReport(**{k: data["report"][k] for k in _REPORT_FIELDS}),
         )
     except (TypeError, ValueError) as exc:

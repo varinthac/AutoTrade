@@ -243,6 +243,7 @@ def main() -> int:
         bull_threshold=cfg["council"]["bull_threshold"],
         bear_threshold=cfg["council"]["bear_threshold"],
         conflict_threshold=cfg["council"]["conflict_threshold"],
+        min_lot_risk_cap_pct=cfg["cfo"]["min_lot_risk_cap_pct"],
     )
     risk_voice_cfg = RiskVoiceConfig(
         max_spread_multiple=cfg["risk_voice"]["max_spread_multiple"],

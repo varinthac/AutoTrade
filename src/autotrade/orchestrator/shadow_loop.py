@@ -82,6 +82,16 @@ Known simplifications, documented rather than hidden:
   its CURRENT distance-to-stop and CURRENT equity, not the risk actually
   intended when it was opened (MT5 doesn't retain that) -- see
   execution/demo_adapter.py's docstring for the exact formula/caveat.
+- When `ShadowLoopConfig.min_lot_risk_cap_pct` is set (2026-07-22, see
+  `risk.sizing.compute_lot_size`'s docstring for the fallback mechanics),
+  Shield's `check()` is called (step 5, above) BEFORE CFO sizing runs (step
+  6) with `new_trade_risk_pct=self._cfg.risk_per_trade_pct` -- the
+  CONFIGURED risk (e.g. 1.0%), not the true risk a fallback-rescued trade
+  may end up carrying (up to `min_lot_risk_cap_pct`, e.g. 1.5%). Shield's
+  `total_risk_ceiling_pct` check therefore UNDERSTATES the true portfolio
+  risk whenever the fallback fires. This is a real, accepted gap -- not
+  silently fixed in this pass by also threading the true post-fallback risk
+  into Shield; that is out of scope here.
 """
 from __future__ import annotations
 
@@ -172,6 +182,14 @@ class ShadowLoopConfig:
     bear_threshold: int = 70
     conflict_threshold: int = 55
     max_history_bars: int = 500
+    min_lot_risk_cap_pct: float | None = None
+    """`None` (the default) means `risk.sizing.compute_lot_size`'s min-lot
+    risk-cap fallback is NOT modeled -- spec-exact §3.1 behavior, zero
+    change. See that function's docstring for the exact deliberate-deviation
+    mechanics; `config/base.yaml`'s `cfo.min_lot_risk_cap_pct: 1.5` is the
+    adopted live value, threaded through by `scripts/run_shadow_loop.py`. See
+    this module's "Known simplifications" section above for the accepted gap
+    this creates with Shield's `total_risk_ceiling_pct` check."""
 
 
 def _append_bar(history: pd.DataFrame, bar: Bar, max_bars: int) -> pd.DataFrame:
@@ -501,6 +519,7 @@ class ShadowLoop:
             entry=plan.entry, stop_loss=plan.stop_loss, point_value=point_value,
             volume_min=symbol_spec.volume_min, volume_max=symbol_spec.volume_max,
             volume_step=symbol_spec.volume_step,
+            min_lot_risk_cap_pct=self._cfg.min_lot_risk_cap_pct,
         )
         if lot is None:
             logger.info(
@@ -508,6 +527,27 @@ class ShadowLoop:
                 "minimum %.2f -- no trade placed", symbol, bar.time, plan.direction, symbol_spec.volume_min,
             )
             return history
+        if self._cfg.min_lot_risk_cap_pct is not None:
+            # Detect whether the fallback actually fired -- i.e. whether the
+            # risk-based lot alone (cap disabled) would have been None --
+            # by re-running the same real compute_lot_size call without the
+            # cap, rather than inferring it from `lot == volume_min` (which
+            # would also false-positive whenever the risk-based lot
+            # naturally rounds to exactly volume_min on its own).
+            lot_without_fallback = compute_lot_size(
+                equity=equity, risk_per_trade_pct=self._cfg.risk_per_trade_pct,
+                entry=plan.entry, stop_loss=plan.stop_loss, point_value=point_value,
+                volume_min=symbol_spec.volume_min, volume_max=symbol_spec.volume_max,
+                volume_step=symbol_spec.volume_step,
+            )
+            if lot_without_fallback is None:
+                logger.warning(
+                    "%s %s: %s signal's risk-based lot was below broker minimum %.2f -- rescued to "
+                    "the minimum lot via the min_lot_risk_cap_pct=%.2f%% fallback (risks up to that "
+                    "%% of equity, above the configured risk_per_trade_pct=%.2f%%)",
+                    symbol, bar.time, plan.direction, symbol_spec.volume_min,
+                    self._cfg.min_lot_risk_cap_pct, self._cfg.risk_per_trade_pct,
+                )
 
         # 7. Re-check Risk Voice immediately before sending the order
         # (Appendix A §1.5's explicit re-check requirement): spread/news can

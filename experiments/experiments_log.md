@@ -1630,3 +1630,541 @@ Verdict: Shield thresholds are OK; no config change. Backtest gap is real but mo
 `duplicate_signal_cooldown_hours` diverges live-vs-backtest today (~≤8% of trades, upper bound),
 worth a small engine wiring fix; the rest waits for multi-symbol. `config/base.yaml`, `shield/`,
 `backtest/engine.py` UNCHANGED. Auditor gates untouched (rule 8). Probe: scratchpad/cooldown_probe.py.
+
+---
+
+## NOTE (not an EXP) 2026-07-22 — small-account sizing REFRESH + min-lot-fallback measurement (Stage 1)
+
+**This NOTE SUPERSEDES the stale `cfo.risk_per_trade_pct` sizing table above** (the "NOTE ... sizing
+quantification @ $3,000 demo", the 6-row risk% table). That table was measured with Watchman
+breakeven/trail STILL ENABLED (its harness `scratchpad/one_level.py` built `WatchmanConfig(...)`
+positionally, silently defaulting `breakeven_enabled`/`trail_enabled` to `True`). EXP-008 has since
+ADOPTED `false`/`false` for both (commit eaa59c5), which materially changes the trade set (better PF),
+so the old skip-rate/PF/net numbers are no longer valid and must not be trusted. Everything below is
+re-measured under the CURRENT `config/base.yaml` (be/trail OFF, pivot_bars=3).
+
+NOT a predictive-edge search — same reasoning as the superseded note: `risk_per_trade_pct` and the
+min-lot fallback are pure position-sizing scalars; they cannot change which bars signal, which get
+vetoed, or exit timing (they only change lot size and the trade a skip-vs-take toggles via
+`max_positions_per_symbol=1`). So NO Train/Val/Test split discipline and no pre-registration protocol
+applies. Run over the FULL history (2021-07-22 → 2026-07-21, 29,543 H1 bars, all of Train+Val+Test
+together) BY DESIGN. **Test one-touch budget is UNSPENT / not applicable** — nothing here is validated
+against a held-out edge. This is Stage 1 of a staged plan; `config/base.yaml` is UNCHANGED. Stage 3
+(actually adding a `min_lot_risk_cap_pct` param to `risk/sizing.py`) only happens after a Stage 2
+decision the user reviews separately — NOT decided here.
+
+Method: read-only. Harness `experiments/sizing_smallacct_harness.py` (committable). Imports the reviewed
+`backtest/engine.py` UNCHANGED and monkeypatches `autotrade.backtest.engine.compute_lot_size` ONLY —
+`risk/sizing.py` and `backtest/engine.py` source NOT edited. RiskVoiceConfig + WatchmanConfig built
+with EVERY field from `config/base.yaml`, mirroring `scripts/run_backtest.py` main() exactly (so
+be/trail OFF is genuinely in effect — the specific bug that made the old note stale). `--starting-equity
+3000 --commission-per-lot 7.0` (Raw Spread commission — intentionally the SAME convention as the stale
+table it supersedes, to keep the refresh apples-to-apples; NOT the corrected $0 Standard-account figure).
+
+The fallback under test = a deliberate, config-gated deviation from spec §3.1 ("อย่าฝืนเสี่ยงเกินแผน"):
+if the risk-based lot rounds below `volume_min` (0.01) BUT the $risk of trading 0.01 anyway is still
+≤ `cap_pct` of equity, trade 0.01 instead of skipping. Implemented entirely in the harness wrapper.
+
+### Table 1 — RISKGRID (fallback OFF, cap=None = today's real behavior), full history, $3,000, comm $7
+```
+risk% | sig->size | skips | skip% | trades |  PF    | PF_ex5 |  net$   | avgR   | DD%   |  DD$     | maxSingleLoss$ | worstStreak$
+0.50  |    3770   | 2678  | 71.03 |  1092  | 1.0472 | 1.0263 |  377.66 | 0.0471 | 14.91 |  -497.13 |     -33.35     |   -159.41
+0.75  |    2619   | 1430  | 54.60 |  1189  | 1.0447 | 1.0244 |  591.85 | 0.0441 | 20.53 |  -709.84 |     -60.47     |   -235.72
+1.00  |    1801   |  569  | 31.59 |  1232  | 1.0496 | 1.0302 | 1049.38 | 0.0369 | 25.28 |  -961.99 |     -57.20     |   -339.89
+1.25  |    1405   |  158  | 11.25 |  1247  | 1.0938 | 1.0703 | 2748.50 | 0.0580 | 32.99 | -1349.71 |    -106.00     |   -455.45
+1.50  |    1326   |   71  |  5.35 |  1255  | 1.0964 | 1.0702 | 3253.49 | 0.0618 | 39.69 | -1607.79 |    -106.00     |   -535.80
+2.00  |    1273   |   13  |  1.02 |  1260  | 1.0755 | 1.0485 | 3881.03 | 0.0555 | 50.50 | -2296.66 |    -212.00     |   -785.30
+```
+Skip% at risk=1.0% is now **31.6%**, NOT the stale note's 52% — the refresh's whole point. Mechanism:
+be/trail OFF holds positions to the 2R target (or SL/structure/time-stop) LONGER, so the account is
+in-position more of the time → far fewer flat bars → far fewer marginal signals even reach sizing
+(1801 vs the stale 2718) → both numerator and denominator of the skip ratio shrink. Trade count barely
+moved (1232 vs stale 1306); net$ flipped from stale -292 to +1049 and PF from 0.982 to 1.050, exactly
+the direction EXP-008 documented — independent confirmation the harness is measuring the NEW config.
+Raising risk% still monotonically cuts skip% (as before), but at escalating DD (1.0%→25%, 2.0%→50%).
+
+### Table 2 — FALLBACK (fixed risk=1.0%, sweep min_lot_risk_cap_pct), full history, $3,000, comm $7
+```
+cap%  | sig->size | skips | skip% | trades |  PF    | PF_ex5 |  net$   | avgR   | DD%   |  DD$    | maxSingleLoss$ | worstStreak$
+None  |    1801   |  569  | 31.59 |  1232  | 1.0496 | 1.0302 | 1049.38 | 0.0369 | 25.28 | -961.99 |     -57.20     |   -339.89   <- fidelity twin of riskgrid risk=1.0
+1.25  |    1417   |  170  | 12.00 |  1247  | 1.1164 | 1.0895 | 2577.79 | 0.0604 | 25.28 | -961.99 |    -106.00     |   -339.89
+1.50  |    1329   |   72  |  5.42 |  1257  | 1.1244 | 1.0896 | 2807.51 | 0.0601 | 25.28 | -961.99 |    -106.00     |   -339.89
+2.00  |    1291   |   34  |  2.63 |  1257  | 1.0842 | 1.0495 | 1917.20 | 0.0533 | 25.28 | -961.99 |    -106.00     |   -339.89
+```
+
+### Table 3 — FALLBACK-SUBSET in isolation (the rescued trades ONLY: would have been SKIPPED without the cap)
+```
+cap%  | rescued | %of executed |  subset net$ | subset PF | subset winrate | subset maxSingleLoss$
+1.25  |    40   |    3.21%     |    +546.75   |   1.4934  |     47.5%      |       -67.72
+1.50  |    63   |    5.01%     |   +1088.53   |   1.6015  |     49.2%      |       -83.01
+2.00  |    78   |    6.21%     |    +151.03   |   1.0580  |     42.3%      |      -106.00
+```
+Attribution verified (harness gotcha #2): the ordered non-None sizing-call log was zipped 1:1 against
+the trade list with a lot-value equality assert on every pair before trusting the mapping. The subset
+has a GENUINE positive edge at cap 1.25 (PF 1.49) and 1.50 (PF 1.60) — well above the PF≈1.05 aggregate
+baseline, so rescued trades are NOT dead weight/pure cost; they are better-than-average trades. At
+cap=2.0 the subset PF COLLAPSES to 1.06: the 15 extra trades admitted beyond cap=1.5 (78−63) are the
+widest-stop marginal signals and are near-breakeven-to-negative — a clear plateau/degradation edge at
+1.25–1.5, junk starting at 2.0.
+
+### FIDELITY CHECK — PASSED
+Fallback cap=None cell reproduces the riskgrid risk=1.0% row EXACTLY: both are `run_cell(risk=1.0,
+cap=None)`; the wrapper's rescue branch is guarded by `if cap_pct is not None` so with cap=None it is a
+transparent pass-through of the real `compute_lot_size`. An independent single-threaded re-run
+(`scratchpad/sizing_diag2.py`) confirmed identical numbers: trades=1232, PF=1.0496, net=$1049.38,
+signals=1801, skips=569. ✓
+
+### DRAWDOWN DIAGNOSTIC — identical DD across all cap levels is a REAL FACT, not a bug
+Every fallback cell reports the SAME max DD (25.28% / −$961.99) and worst losing streak (−$339.89) as
+cap=None, despite different trade sets and net$ ranging $1049→$2807. Verified via `sizing_diag2.py`:
+the global max-DD trough occurs at **2023-07-10 15:00**, whereas the FIRST rescued trade does not even
+enter until **2025-04-04** (exits 2025-04-07). `rescued_exits_on_or_before_trough = 0` for cap=1.5
+(and by nested-superset logic, for all caps). Root cause: a sub-minimum lot only occurs when the
+stop_distance is very wide (>~$30 in gold at $3,000 equity/1.0% risk), which clusters in the
+high-price/high-ATR 2025–2026 regime — long AFTER the worst drawdown. So the fallback provably cannot
+touch the measured drawdown trough. (Rescue set is nested: cap=2.0 ⊇ cap=1.5 ⊇ cap=1.25, so all share
+the same post-trough first rescue.)
+
+### CAVEATS (read before any Stage 2 judgement)
+1. **Circuit breakers NOT modeled** — reiterated from the superseded note. `backtest/engine.py` does
+   NOT simulate `daily_loss_limit_pct` (2%) / `max_consecutive_losses` (3) / `max_drawdown_halt_pct`
+   (8%). Every DD$/streak/net$ here is UNCAPPED vs how live trading would halt. The 25.28% max DD would
+   have tripped the 8% halt in reality; live equity curves diverge from these beyond the first halt.
+2. **Fallback raises single-trade risk above the 1.0% plan BY DESIGN.** maxSingleLoss goes −$57 → −$106
+   once the fallback is on: a rescued 0.01-lot trade on a wide stop risks up to `cap_pct` of equity
+   (−$106 ≈ 3.5% of $3,000). That is the deliberate spec §3.1 deviation — the cap bounds it, it does
+   not eliminate it. cap=2.0 permits a single trade to risk 2% of the account.
+3. **Aggregate net improvement OVERSTATES the fallback's own edge.** cap=1.5 aggregate net jumps
+   +$1758 (1049→2807) but the 63 rescued trades themselves only net +$1089 in isolation; the rest is a
+   reshuffle artifact (adding a trade changes which later signals are taken while flat vs in-position,
+   × equity compounding — the same `max_positions_per_symbol=1` × skip-filter confound the superseded
+   note flagged). The clean, attributable signal is Table 3's SUBSET P&L, not the Table 2 aggregate.
+4. **Regime-concentrated, small sample.** All rescued trades live in 2025–2026 only (40–78 trades).
+   Not a stable multi-regime result.
+
+Config UNCHANGED (`config/base.yaml`, `risk/sizing.py`, `backtest/engine.py` all untouched); Auditor
+gates untouched (rule 8); Test budget UNSPENT/NA; pytest 1059 passed (unchanged). Harness:
+`experiments/sizing_smallacct_harness.py`. Stage 2 go/no-go is deferred to the user — NOT decided here.
+
+---
+
+## NOTE (not an EXP) 2026-07-22 — Timeframe probe: current rules on M30/M15/M5 vs H1
+
+NOT run under EXP-### pre-registration / Train-Val-Test protocol, deliberately: this is a coarse
+GO/NO-GO probe of an architecture question ("should the primary signal timeframe move below H1?"),
+not a parameter selection. No candidate was tuned or picked using these runs — the outcome is
+"reject all lower TFs, change nothing", so nothing here consumes the Test one-touch budget in the
+selection sense. Disclosure: the comparison window DOES overlap the held-out Test year
+(2025-07-21→2026-07-21) because M5 history only begins 2025-02-20 — the common window is forced by
+data availability, not chosen post-hoc. Triggered by user question: "H1 นานไป อยากเทรดเข้าออกเร็ว
+ไปดู M30/M15/M5 แทนดีกว่ามั้ย".
+
+Method: read-only. Unchanged live rules through `backtest/engine.py` — `config/base.yaml` as-is
+(post EXP-008: `breakeven_enabled/trail_enabled: false`, `swing_pivot_bars: 3`, tp 2.0, all-24h),
+RiskVoice + Watchman modeled, `--commission-per-lot 7.0`, slippage = bar spread, equity $10,000
+(prior-EXP convention, deliberately isolating TF edge from the $3k min-lot skip question — see the
+sizing NOTEs above). WatchmanConfig built with ALL fields INCLUDING the enabled flags — do NOT reuse
+exp009's `_build_watchman_cfgs`, which omits them and silently reverts to dataclass defaults
+`True/True`. Harness: session-local scratch (`tf_probe.py`), same structure as
+`exp009_tp_pivot_harness.py` with hardcoded `_SPEC`; data `data/historical/XAUUSD_{M5,M15,M30}.csv`.
+
+### Table 1 — common window (2025-02-20 → 2026-07-21), identical dates all TFs
+
+TF  | trades | win%  | PF    | net$   | avgR  | maxDD% | PF_ex5 | median hold | exits SL/TP/timestop/structinv
+H1  |   332  | 42.2  | 1.215 | +3903  | 0.118 | 11.54  | 1.141  | 16.5h       | 167/106/51/7
+M30 |   604  | 37.1  | 1.111 | +4515  | 0.083 | 15.89  | 1.074  |  7.5h       | 343/207/31/22
+M15 |  1155  | 36.1  | 1.075 | +6433  | 0.056 | 25.04  | 1.056  |  3.5h       | 684/401/24/45
+M5  |  2925  | 34.9  | 1.017 | +3223  | 0.021 | 53.68  | 1.009  |  1.2h       | 1787/1006/22/109
+
+### Table 2 — full history per file
+
+TF  | span                  | trades | PF    | net$   | avgR  | maxDD% | PF_ex5
+H1  | 2021-07-22→2026-07-21 |  1259  | 1.081 | +6590  | 0.052 | 29.45  | 1.061
+M30 | 2020-06-22→2026-07-21 |  2585  | 1.007 | +1022  | 0.015 | 48.08  | 0.999
+M15 | 2022-04-28→2026-07-21 |  3264  | 1.001 |  +216  | 0.013 | 59.29  | 0.994
+
+### Findings
+1. Monotone staircase in BOTH tables: every step down in TF thins the edge and deepens DD. On full
+   history M30/M15 are exactly breakeven (PF_ex5 0.999/0.994 = zero-to-negative excluding top-5
+   winners). M5 is breakeven even in the most favorable regime window.
+2. Lower-TF PF 1.0–1.1 on the common window is a 2025–26 gold-uptrend regime artifact, not rule
+   skill — the same cells collapse to 1.00 the moment history lengthens.
+3. Cost mechanics: round-trip cost (2×spread + $14/lot commission at 12pt live spread assumption)
+   ≈ 1.7% of R on H1 → ~2.5% M30 → ~3.7% M15 → ~6.7% M5 (median-ATR 1.5× stops, common window).
+   The rule set has NO cost-aware gate; nothing defends it as R shrinks.
+4. Small-account irony: lower TFs DO fix the $3k sub-min-lot skip problem (typical 1%-risk lot:
+   H1 0.013 / M15 0.029 / M5 0.053) — more tradeable signals, but on a zero-edge system.
+5. Data-quality finding (NEW, unfixed): historical `spread` column is ZERO on ~50% of H1 bars,
+   43% M30, 28% M15 (M5 clean, 4%) → spread+slippage understated wherever zeros occur, which
+   flatters lower TFs MORE (cost/R larger there). Lower-TF rows above are therefore optimistic
+   bounds. Fix (e.g. realistic spread floor) assigned before any future cost-sensitive experiment.
+6. Additional caveats, both flattering lower TFs: `features/indicators.rolling_average` hardcodes
+   480 bars = "20 days" (H1-only assumption; on M5 that's 1.7 days — affects relative spread/ATR
+   vetoes only); news blackout unmodeled at any TF (75-min dead zone per event would bite
+   short-hold TFs far harder live).
+
+### Verdict
+H1 CONFIRMED as the primary signal timeframe for this rule family. M5 rejected outright (cost/R
+~6.7% vs whole-system edge ~0.05–0.12R; DD 54% in its best regime). M15 and M30-as-primary
+rejected (zero full-history edge). The one open follow-up worth a real EXP: an UNTESTED hybrid —
+H1 Council keeps the bias/veto role, M30 used only for entry timing (tighter stop, faster entry,
+larger lot). Note EXP-005/EXP-007 rejected the REVERSE direction (lower-TF features confirming H1
+entries); the hybrid is a different mechanism and requires its own pre-registration, new signal
+code, per-TF re-scaling of time_stop/pivot_bars/session gating, and the spread-zero data fix as a
+prerequisite. Config UNCHANGED; Auditor gates untouched (rule 8).
+
+---
+
+## EXP-010 2026-07-22 — H1→M30 HYBRID: H1 Council bias/veto + M30 entry TIMING (NEW family)
+
+Status: **PRE-REGISTERED, NOT RUN.** No results below — this entry is the pre-commit only.
+Analysis-only mandate: `config/base.yaml`, `council/`, `backtest/engine.py`, `feed/`, `risk/`,
+`watchman/` NOT modified. This is the single surviving open question from the 2026-07-22 Timeframe
+probe NOTE (the last entry above): reject lower-TF as PRIMARY signal stands; test the HYBRID.
+**BLOCKED — do NOT execute until the prerequisites in §6 clear (esp. the spread-zero data fix).**
+
+### 0. What this is / NEW family / why EXP-005 & EXP-007 do NOT already answer it
+
+The TF-probe NOTE confirmed H1 as the only timeframe with proven edge (H1 full-history PF 1.081;
+M30/M15-as-primary collapse to PF_ex5 0.999/0.994) and flagged exactly one untested follow-up: a
+HYBRID where the **H1 Council keeps its bias/veto role unchanged** (same signals, same all-24h
+gate, same be/trail-OFF Watchman) but the **ENTRY is timed on M30** — a tighter, structure-based
+stop and a better-priced/faster fill, motivated by (i) the user's "เทรดเข้าออกเร็ว" (faster
+in/out) and (ii) the $3,000 min-lot skip problem (a tighter M30 stop → larger lot for the same
+$risk → fewer sub-min-lot skips; deposit will NOT be increased — user constraint).
+
+This is a **genuinely NEW family** (H1→M30 entry-timing) with its own multiple-testing budget and
+its own UNSPENT one-touch Test allowance. It is **mechanically different** from EXP-005 (M15) and
+EXP-007 (M30), which must be stated because a careless reader would think those rejections already
+close it:
+
+- **EXP-005/007 asked:** does lower-TF pre-entry STRUCTURE *discriminate* which H1 signals win vs
+  lose — i.e. lower-TF as a FILTER on the SAME H1 entry (same bar-i+1-open price, same H1 stop, same
+  trade set minus the ones filtered out). Verdict: no M15/M30 feature predicts H1 outcome (7/8 and
+  8/8 features fail cross-split / coherence).
+- **EXP-010 asks a DIFFERENT question:** take the SAME H1 signals (no filtering, no signal
+  selection) but change the **entry PRICE and STOP PLACEMENT** — enter on an M30 trigger with an
+  M30-structure stop. This alters R-per-trade, lot size, and the give-back/whipsaw profile; it does
+  NOT claim any predictive edge in M30 structure. **You can have ZERO M30 predictive edge (EXP-005/007's
+  finding) and STILL change expectancy purely by paying a better entry price and risking less per
+  trade.** EXP-005/007 therefore do not bear on this. (They ARE relevant as priors: EXP-005 §5's
+  give-back finding — losers already exit fast, median SL hold 12h vs TP 25h — warns that a TIGHTER
+  M30 stop risks *increasing* the stop-out/whipsaw rate, one of the falsifiable failure modes in §1.)
+
+Also NOT assumed to transfer: **EXP-003's all-24h session result was established on H1 entry timing
+only.** The H1 Council still fires all-24h (inherited, unchanged), but the actual M30 FILL hour is a
+NEW distribution (a pullback trigger can fire at :30 past the hour, or slip into a thinner-liquidity
+pocket than the H1 bar-i+1 open would). The all-24h choice is INHERITED (not re-tuned here) but the
+M30-fill-hour distribution is a mandated post-hoc DIAGNOSTIC (§5 (i)), not a swept parameter.
+
+### 1. Hypothesis (falsifiable, pre-registered)
+
+**H1:** Entering each H1 Council signal via an **M30 pullback-then-resume** trigger with an
+**M30-swing-structure stop** improves risk-adjusted performance (per-year PF and avgR) AND
+small-account tradability (lower stop distance → fewer sub-min-lot skips at $3,000/1.0%) versus
+plain H1 bar-i+1-open entry with the H1 ATR stop — WITHOUT dropping trade count below the 100/yr
+floor and WITHOUT turning any H1-positive year net-negative.
+
+**Null / falsifiers (any one ⇒ REJECT, H1-as-is stands):**
+- (F1) Cost/R erosion: the TF-probe measured round-trip cost rising ~1.7%→~2.5% of R from H1→M30
+  (tighter stop = smaller R = larger % cost). A better entry price may not clear this drag.
+- (F2) Whipsaw: a tighter M30 stop raises the stop-out rate on the SAME signals (EXP-005 §5), giving
+  back the better entry.
+- (F3) Trade-count starvation: a pullback that never resumes → signal EXPIRES → fewer trades; may
+  breach the 100/yr floor (worse than H1, and worse for the 200-trade gate).
+- (F4) sl_min_atr clamp defeats the motivation: if the M30 stop is floored back up to the H1-scale
+  minimum, the "tighter stop → larger lot" benefit evaporates (see §2 ATR-unit decision).
+- (F5) Regime artifact: an edge owed only to the 2025-26 gold uptrend (M30 covers the full 2021-22
+  choppy regime — unlike M15 — so Y1 is a hard, mandatory test; TF-probe finding #2).
+
+### 2. Mechanism spec (concrete enough to implement)
+
+H1 Council fires signal `dir∈{BUY,SELL}` at H1 bar `i` close (as_of = close[i]) — UNCHANGED from
+production. Instead of the current fill at bar `i+1` OPEN, ARM a window of `N` M30 bars over
+`[close[i], close[i] + N·30min)` and apply the entry trigger:
+
+**PRIMARY mechanism — "M30 pullback-then-resume" (the one that decides this experiment):**
+1. Walk the M30 bars in the arming window in order. First find a **pullback** M30 bar against `dir`
+   (for BUY: an M30 bar making a lower low than the prior M30 bar / closing below the prior M30
+   close; symmetric for SELL). Record the pullback extreme (`pb_low` for BUY / `pb_high` for SELL).
+2. Enter on the first SUBSEQUENT M30 bar that **resumes** in `dir` (for BUY: closes above the high
+   of the pullback bar; symmetric SELL). Fill = that M30 bar's close→next-M30-open convention,
+   mirroring the engine's bar-close-decide / next-bar-open-fill discipline (no lookahead).
+3. **SL** = `pb_low − sl_buffer_atr·ATR_M30` (BUY) / `pb_high + …` (SELL), i.e. off the M30 swing
+   structure, then **clamped to [sl_min_atr, sl_max_atr]·ATR_M30**. **TP** = entry ± `tp_r_multiple`
+   (2.0, UNCHANGED) · stop_distance — R-multiple based, off the NEW tighter stop.
+4. If no pullback-then-resume completes within `N` M30 bars, the **signal EXPIRES** (no trade) —
+   this is the F3 trade-count risk, measured, not assumed away.
+
+**ALTERNATIVE mechanism (at most one, declared, NOT run in this experiment):** "M30 structure
+break / momentum continuation" — enter on the first M30 bar that breaks the M30 swing high (BUY)
+formed inside the arming window (breakout confirmation instead of pullback). This is a DISTINCT
+entry rule and would need its OWN pre-registration; running BOTH and keeping the better one would
+inflate the family count and invite winner's curse (rule 7). **Only the PRIMARY decides EXP-010.**
+
+**ATR-unit decision (pinned, NOT swept — flagged as a load-bearing assumption):** `ATR_M30` = a
+short-lookback (14-bar) M30 ATR, computed INDEPENDENTLY of the H1 Council. sl_buffer/min/max_atr
+are applied in **M30-ATR units** so the floor stays proportional to M30 volatility and the tighter
+stop SURVIVES. If H1-ATR units were used instead, sl_min_atr=0.8·ATR_H1 would clamp most M30 stops
+back up to ~H1 width — defeating the whole motivation (F4). This choice is held FIXED; if the
+primary mechanism fails, whether the ATR-unit choice caused it is a separate follow-up, not swept
+here.
+
+**Risk Voice re-check timing (pinned):** Risk Voice bias/veto runs at the H1 signal bar `i` and
+gates whether we ARM at all (unchanged). Because the actual fill now occurs up to `N` M30 bars
+later, a **lightweight Risk Voice RE-CHECK runs at the candidate M30 entry bar** before the fill:
+spread (`max_spread_multiple`, `max_spread_points_xauusd`), news blackout, ATR panic
+(`max_atr_panic_multiple`), and `max_stop_atr_multiple`/`sl_max_atr` (2.5) evaluated against the
+**NEW M30 stop**. Rationale: spread and imminent-news conditions can change during the arming
+window; a stale H1-bar Risk Voice check would let a fill through into freshly-bad conditions. The
+all-24h session gate is inherited (M30-fill-hour is diagnostic-only, §5 (i)).
+
+### 3. Sweep families (staged; each is ONE coupled-pair experiment — NOT a 4-D joint grid, rule 3)
+
+Two staged coupled-pair sub-experiments. 10b runs ONLY if 10a yields a candidate clearing §5 vs
+H1-as-is (avoids sweeping Watchman re-scale over a mechanism that already failed).
+
+| stage | coupled pair (2-D grid) | grid | held-fixed while sweeping |
+|-------|-------------------------|------|---------------------------|
+| **10a** (primary: entry+stop micro-structure) | arming window `N` (M30 bars) × M30 `pivot_bars` (swing lookback for the stop) | N ∈ {2,4,6,8} (=1h/2h/3h/4h) × pivot ∈ {2,3,4} → 12 cells | time_stop_hours=48, dead_trade_r_band=0.3 (H1 defaults), be/trail OFF, tp 2.0, all-24h |
+| **10b** (Watchman re-scale for shorter M30 holds — CONDITIONAL on 10a) | time_stop_hours × dead_trade_r_band | time ∈ {12,24,36,48} × dead ∈ {0.2,0.3,0.4} → up to 12 cells (coupled pair) | 10a's winning (N × pivot); be/trail OFF; tp 2.0 |
+
+10b's rationale: H1 median hold is 16.5h and M30-as-primary was 7.5h, so the hybrid's holds are
+likely SHORTER than H1 → the 48h time-stop may rarely bind and the ±0.3R dead-trade band may need
+re-scaling for the faster cadence. These are the two Watchman params whose H1 calibration is most
+suspect under shorter holds; they are re-scaled, NOT re-optimized for their own sake.
+
+Multiple-testing (rule 7): PRIMARY path = 10a's 12 cells (+ up to 12 in 10b IF triggered) = ≤24 in
+this new family. If ≤20 evaluated when a candidate is chosen, standard bar; if >20 (i.e. 10b runs),
+hold the HIGHER bar (larger per-year edge, no sign flips across all 4 years) per rule 7. The
+ALTERNATIVE breakout mechanism is explicitly OUT (own future pre-registration) to keep the count honest.
+
+### 4. Baseline to beat — H1-AS-IS (must beat H1, NOT merely beat M30-as-primary)
+
+The hybrid must beat plain-H1 CURRENT-LIVE config (be/trail OFF, pivot 3, all-24h, tp 2.0). On the
+log's own splits, that baseline = EXP-008's `Struct+Time` condition (= current `config/base.yaml`):
+
+| window | H1-as-is PF / net (trades) | source |
+|--------|----------------------------|--------|
+| Y1 2021-22 (Train) | 1.022 / +156 (271) | EXP-008 §6.1 Struct+Time |
+| Y2 2022-23 (Train) | 0.959 / −314 (260) | " |
+| Y3 2023-24 (Train) | 1.148 / +901 (229) | " |
+| Y4 2024-25 (Val)   | 1.051 / +337 (263) | " |
+| Y5 2025-26 (Test)  | 1.304 / +1508 (214) | EXP-008 §6.5 Struct+Time |
+
+Cross-check (informational, NOT the Train/Val bar): TF-probe common-window (2025-02→2026-07) H1 =
+PF 1.215 / DD 11.54% / avgR 0.118 / 332 tr. The hybrid must clear the H1 per-year table above — NOT
+the rejected M30-as-primary (full-history PF 1.007 / PF_ex5 0.999), which is NOT a valid baseline.
+
+### 5. Acceptance criteria (pre-registered)
+
+Deciding metric: **per-year PF + net $ + avgR** vs H1-as-is (the robustness bar decisive in
+EXP-002/003/004/006/008), gated by trade floor and plateau. ADOPT-CANDIDATE the hybrid (config +
+spec change is the USER's call — analysis-only) iff ALL:
+- (a) **Trade floor:** ≥100 trades in EVERY year Y1–Y4 (and ≥100 on Test). If the pullback-expiry
+  (F3) drops any year <100 → report **INSUFFICIENT DATA** for that config (widen window or state
+  insufficient) — never extrapolate (rule 6).
+- (b) **vs H1 per-year:** hybrid PF ≥ H1 PF in a MAJORITY of Y1–Y4, AND not materially worse (PF
+  gap > 0.03) in ANY year, AND avgR(hybrid) ≥ avgR(H1) in a majority.
+- (c) **No sign flip (F5/whipsaw guard):** hybrid turns NO H1-positive year net-negative (the
+  EXP-002 tp2.5 / EXP-004 [0,22) / EXP-006 failure mode).
+- (d) **Plateau (rule 5):** the winning 10a `(N × pivot)` cell's ±1-grid-step neighbors within ~15%
+  PF; reject isolated peaks. Same for the 10b re-scale pair if run.
+- (e) **Per-year incl. 2021-22 (F5):** M30 covers the full Y1 choppy regime — a candidate owing its
+  edge to the 2025-26 uptrend only is REJECTED. Y1 is a hard, mandatory pass.
+- (f) **Small-account tradability (secondary check, must-not-regress; NOT an edge claim):** at
+  $3,000 / 1.0% risk, hybrid sub-min-lot skip% ≤ H1's (the motivation). A hybrid that improves
+  skip% but FAILS (a)–(e) is still REJECTED — tradability never overrides the edge/robustness bar.
+- (g) **Cost honesty (rule 1):** (a)–(f) computed ONLY after the §6(a) spread-zero fix. Any run on
+  zero-spread-contaminated data is EXPLORATORY ONLY and can never justify adoption (the zero-spread
+  bias flatters the tighter-stop hybrid MORE than H1 — cost/R is larger at M30).
+- (h) **Test (touched ONCE):** the single best survivor of (a)–(g) confirms (a)–(c) on
+  2025-07-21→2026-07-21 vs H1-as-is. One touch only; refuse to re-touch to fish for a better story.
+
+Else REJECT (H1-as-is stands) or INSUFFICIENT DATA. Auditor gate thresholds NOT touched (rule 8).
+
+### 6. Prerequisites / BLOCKERS (must clear before any sweep — currently BLOCKED)
+
+- **(a) Spread-zero data fix — HARD BLOCKER (rule 1).** TF-probe finding #5: historical `spread`
+  is ZERO on ~50% of H1 bars and **43% of M30 bars**, so spread+slippage is understated wherever
+  zeros occur, and this flatters lower TFs MORE (cost/R is larger at M30). The hybrid's entire
+  thesis is a small-R trade whose viability hinges on honest cost — so a realistic spread floor
+  (assigned to another session, NOT yet done) is a precondition. **Per rule 1, I will REFUSE to run
+  the sweep until the M30 cost model is honest**; any pre-fix run is exploratory (criterion §5(g)).
+- **(b) H1→M30 bridge harness — NEW code, does not exist.** Nothing in `backtest/engine.py` supports
+  two-TF replay (grep: single-symbol, single-TF `position` loop; §Shield-NOTE confirmed). Minimal
+  design, PRODUCTION UNTOUCHED (lives in `experiments/`, like the EXP-005/007/009 harnesses):
+  (1) reuse the stock H1 engine / stock signal fn to emit each H1 signal with `(as_of, dir, H1-ATR)`
+  — exactly the EXP-005/007 pattern; (2) NEW `m30_entry_bridge`: for each H1 signal, walk M30 bars
+  in the arming window, apply the §2 pullback-then-resume trigger + Risk Voice M30 re-check, compute
+  the M30 stop; (3) simulate the resulting position forward on the M30 clock (SL/TP + always-on
+  structure-invalidation + time-stop/dead-trade) driving `watchman/evaluate.py::evaluate_watchman`
+  on M30 bars, REUSING `backtest/cost_model.py` (commission $7/lot + slippage = bar's own spread)
+  and the cached IC Markets `SymbolSpec` UNCHANGED. Fidelity check REQUIRED before any sweep: the
+  degenerate config (N=1, trigger = "enter at first M30 open, H1-ATR stop") must approximately
+  reproduce the H1 bar-i+1-open baseline. Data already in hand: `data/historical/XAUUSD_M30.csv`
+  (EXP-007 validated M30→H1 OHLC BYTE-EXACT, full coverage back to 2020-06-22 — a prior, not a blocker).
+- **(c) `features/indicators.rolling_average` 480-bar H1 assumption.** It hardcodes 480 bars =
+  "20 days" — true only on H1 (480 M30 bars = 10 days). The harness must NOT naively call it on M30
+  bars. Handling: the H1 Council keeps H1 data + its native 480-bar (20-day) rolling_average
+  UNCHANGED (bias/veto stays pure-H1); the M30 layer computes its OWN short-lookback (14-bar) ATR
+  for stop sizing and does NOT reuse the 480-bar H1 rolling_average. If any M30 relative-spread/ATR
+  context ever needs the 20-day window, the harness must use 960 M30 bars to preserve wall-clock —
+  flagged so it is a conscious choice, not a silent 10-day contamination.
+
+### 7. Data & split discipline
+
+Usable overlap 2021-07-22→2026-07-21 (H1 start binds; M30 CSV runs earlier, 2020-06-22, but the H1
+Council needs H1 data). Chronological, no shuffle, reuse the whole log's splits:
+
+| Split | Range | use |
+|-------|-------|-----|
+| Train | 2021-07-22 → 2024-07-21 | sweep 10a/10b, per-year Y1,Y2,Y3 |
+| Validation | 2024-07-21 → 2025-07-21 | compare candidates, Y4 |
+| Test | 2025-07-21 → 2026-07-21 | **NEW family's UNSPENT one-touch** — single best candidate ONLY, after Train+Val |
+
+**Test-overlap disclosure (rule 2 honesty):** the TF-probe NOTE ran UNSELECTED baselines (no
+candidate tuned or picked) over 2025-02-20→2026-07-21, which OVERLAPS Test — a window forced by M5
+data availability, not chosen post-hoc. Per that NOTE's reasoning, running unselected baselines does
+not spend the selection budget. Treatment here: those TF-probe M30-as-PRIMARY numbers are a
+DIFFERENT mechanism and are NOT reused as hybrid evidence; the hybrid family's one-touch Test
+allowance is UNSPENT, and its §5(h) confirmation will be a FRESH run of the specific tuned hybrid
+candidate vs H1-as-is on the exact Test window — touched once.
+
+### 8. Spec bounds
+
+- M30 `pivot_bars` {2,3,4}: `swing_pivot_bars` is `[adjustable]` (§6), no hard bound — in bounds.
+- `tp_r_multiple` stays 2.0 (unchanged). `time_stop_hours`/`dead_trade_r_band` `[adjustable]`.
+- `sl_max_atr` ≤ 2.5 is the Risk-voice ceiling (Appendix A) — the M30 stop MUST still respect
+  sl_max_atr=2.5 (in M30-ATR units); within bounds, not swept.
+- **Arming window `N` is a NEW parameter with NO spec entry.** Appendix A does not describe two-TF
+  entry timing. Adopting the hybrid would therefore require the USER to **amend the spec FIRST**
+  (add the M30-entry-timing rule + `N`/M30-ATR-unit conventions), BEFORE any `config/base.yaml`
+  change. This pre-registration flags that — it does NOT amend the spec and does NOT modify config
+  (rule 10 / analysis-only). Auditor gate thresholds NOT touched (rule 8).
+
+**Status: PRE-REGISTERED, NOT RUN — BLOCKED on §6 prerequisites (spread-zero fix + bridge harness).
+No results section exists yet; results may only be appended AFTER §6(a) clears (rule 1).**
+
+---
+
+## NOTE (not an EXP) 2026-07-22 — Historical `spread` zero-value floor (cost-model data-integrity fix)
+
+Data-integrity fix, NOT a parameter search / edge selection — so NO EXP-### pre-registration, NO
+Train/Val/Test discipline, NO plateau protocol (same convention as the sizing/Shield NOTEs above).
+Test one-touch budget UNSPENT/NA. **Directly CLEARS the EXP-010 §6(a) HARD BLOCKER** (spread-zero
+fix), which per rule 1 was gating that experiment's sweep. `config/base.yaml`, `src/`, `tests/`
+UNCHANGED (this is a `data/historical/*` fix only). pytest: 1072 passed (unchanged — no code touched).
+
+### What was wrong
+`backtest/cost_model.py` uses the bar's OWN `spread` column as both the spread cost AND (via
+`slippage_points=None`) the min-1-spread slippage assumption — effective modeled round-trip cost =
+`(spread + slippage)*point*point_value*lot` = **2x the raw per-bar spread points** ($/lot; slippage
+defaults to spread). But MT5's `copy_rates_range`/`copy_rates_from` does NOT retro-populate real
+spread for older historical bars — it returns `spread=0` (bid==ask, non-physical, never a real
+market condition). Any bar with `spread=0` was therefore modeled at **ZERO transaction cost** (both
+spread and slippage), understating cost on ~half the dataset and flattering every past/future
+backtest's PF/net on the affected bars. `scripts/download_historical.py` -> `feed/historical.py`
+does NOT post-process spread (grep: 0 matches), so this is inherent to the raw MT5 pull.
+
+### Investigation (measured this session; XAUUSD_H1 2021-07-22->2026-07-21, 29,543 bars)
+| symbol | zero% | zeros | nonzero mode / median / mean | note |
+|--------|-------|-------|------------------------------|------|
+| XAUUSD H1 | 50.2% | 14,839 | 5 / 5 / 4.86 | clean, large real sample (14,704 bars) |
+| EURUSD H1 | 95.9% | 11,902 | 21 / 15 / 14.95 | only 511 real bars (thin, likely news-biased) |
+| GBPUSD H1 | 29.7% | 3,692 | 1 / 1 / 2.94 | nonzero DOMINATED by implausible 1-pt (0.1 pip) |
+| USDJPY H1 | 77.2% | 9,588 | 1 / 1 / 8.49 | nonzero also dominated by implausible 1-pt |
+
+Zeros are NOT confined to old history — they are scattered across the whole 5-yr span, only
+CONCENTRATED in older years: XAUUSD H1 zero% by year = 2021 90%, 2022 91%, 2023 56%, 2024 16%,
+2025 28%, 2026 36%. (So the recent Test year 2025-26 is only ~30% contaminated; the Train years
+2021-22 are ~90% — this matters for the sanity check below.) XAU intraday files show the same:
+M30 44%, M15 28%, M5 4% zeros. Matches the 2026-07-22 TF-probe NOTE finding #5 (50%/43%/28%).
+
+### Floor derivation (POINTS) — reconciling empirical vs published $7/lot
+XAUUSD SymbolSpec (harness-validated in the log header; confirmed by 2-digit price 1799.09):
+`point=0.01, tick_size=0.01, tick_value=1.0 -> point_value=tick_value/tick_size=100 $/price-unit/lot`.
+So **1 spread point = $1/lot** raw round-trip (S*0.01*100). IC Markets Standard published XAU
+round-trip ~ **$7/lot** (all spread, no commission) => **7 points** as an AVERAGE (tail-inflated by
+news/rollover bars). Empirical NON-zero spread on THIS feed: mode 5, median 5, mean 4.86 (from 14,704
+real bars) => **5 points** as the TYPICAL/modal bar.
+
+Reconciliation: 5 (empirical typical) vs 7 (published average) agree to order-of-magnitude; the gap
+is exactly the tail (news/rollover bars pull the mean toward 7 while the mode stays 5) plus a possible
+account-tier difference (this demo feed vs a retail Standard table). **Chosen floor = 5 points**,
+because (i) it is the mode = median ~ mean of a large, clean real-bar sample from the exact feed being
+patched — the best point-estimate of the missing spread on a typical bar; (ii) it does NOT overwrite
+the tail — a floor only lifts values BELOW it; (iii) CRUCIALLY, the cost model's 2x convention means a
+floored bar's EFFECTIVE modeled cost = 2*5 = **$10/lot** round-trip, already MORE conservative than
+the published $7/lot real all-in cost. Flooring at the full 7 would give effective $14/lot (2x reality)
+— double-conservative and punitive (could reject genuinely-good configs), which is why the raw floor is
+NOT the whole $7 figure. Per spec §5.2 the spread column should hold the REAL average spread and the
+min-1-spread slippage is a SEPARATE additive conservative buffer ON TOP — so 5 (real) + 5 (slippage
+buffer) is the spec-correct construction, NOT netting slippage out to force effective=$7.
+
+Applied ONLY to `spread == 0` rows (the non-physical MT5 quirk). Populated nonzero values 1-4 pts were
+LEFT UNTOUCHED — they are genuine recorded observations, not the not-populated defect (which is exactly
+0); overwriting them would fabricate cost on legitimately-tight bars.
+
+FX floors (per-symbol, NOT XAUUSD's number — different point conventions; all 5-digit except JPY
+3-digit => 1 pip = 10 points on every one here). FX empirical distributions are too degraded to trust
+(EUR: 511 real bars; GBP/JPY: nonzero DOMINATED by an implausible 1-pt = 0.1-pip value), so the floor
+falls back to published IC Markets Standard typical spread — the more trustworthy of the two views for
+these symbols (the opposite call from XAUUSD, where the huge clean empirical sample wins). Floors:
+EURUSD **10 pts** (~1.0 pip), GBPUSD **13 pts** (~1.3 pip), USDJPY **10 pts** (~1.0 pip). Again applied
+to `spread == 0` rows only. CAVEAT: for GBP/JPY the zero-floor does NOT fully fix the file — the BULK of
+their POPULATED spreads are an implausible 1 pt (0.1 pip), so those feeds are fundamentally unreliable
+and MUST be re-downloaded with proper spread capture before any FX go-live, not merely patched. FX
+pairs are disabled in `config/base.yaml` and read by no current backtest, so this is precautionary.
+
+### Files edited (all gitignored — `.gitignore` line 14 `data/historical/*`; NOT committed, exist on disk)
+XAUUSD_H1 (14,839->5), EURUSD_H1 (11,902->10), GBPUSD_H1 (3,692->13), USDJPY_H1 (9,588->10),
+XAUUSD_M30 (31,267->5), XAUUSD_M15 (27,622->5), XAUUSD_M5 (4,284->5). Verified byte-level: for XAUUSD_H1,
+ALL non-spread columns (OHLC/tick_volume/real_volume) are IDENTICAL to the pre-edit backup (0 diffs),
+only the 14,839 zero-spread cells changed, 0 populated cells touched, 0 zeros remaining. Same
+zeros-only logic on every file.
+
+### Before/after backtest sanity check (magnitude of the bug)
+Engine bakes spread into the FILL price, so changing spreads shifts fills -> SL/TP timing -> with
+`max_positions_per_symbol=1` the downstream trade SET RESHUFFLES (a trade count change, not just a
+per-trade cost delta). So the clean directional effect only shows where zeros dominate:
+- **Full history (2021-07-22->2026-07-21, comm $7, equity $10k):** before PF 1.0800 / net +$6,522.67 /
+  DD 29.45% / 1259 tr -> after PF 1.0782 / net +$6,213.65 / DD 31.05% / 1277 tr. i.e. **net -$309
+  (-4.7%), DD +1.6pp, PF ~ flat** — the EXPECTED direction (more cost) once the zero-heavy 2021-22
+  years (~90% zeros) dominate. Effect is modest because only the ENTRY bar's spread is charged once
+  (0->5 adds 10 effective pts = $10/lot on that entry), and the reshuffle partly offsets.
+- **Test window only (2025-07-21->2026-07-21, comm $0, `--out-of-sample`):** before PF 1.22 / net
+  +$2,672.18 / DD 12.41% / 228 tr -> after PF 1.23 / net +$2,897.84 / DD 10.08% / 241 tr. Here the sign
+  FLIPS (net UP, DD DOWN) — NOT a contradiction: this window is only ~30% zero-spread, so the direct
+  cost bump is small and the fill-driven RESHUFFLE (+13 trades) dominates and happened to be favourable.
+  This is exactly why the full-history number is the honest magnitude and the recent-window delta is not.
+  (This before/after pair is a cost-model magnitude check run IDENTICALLY both sides, NOT an edge
+  evaluation — it does NOT spend any parameter family's Test one-touch budget.)
+
+### RECURRING GOTCHA — re-apply after ANY re-download
+`scripts/download_historical.py` -> `feed/historical.py` saves raw `copy_rates_*` output and does NOT
+floor spread. A fresh download of the SAME date range WILL reintroduce `spread=0` on older bars (the
+MT5 quirk is a function of history depth, not of when you pull). **This floor must be RE-APPLIED after
+every re-download / new-symbol download**, per-symbol: XAUUSD (any TF) -> 5 pts; EURUSD -> 10; GBPUSD ->
+13 (+ re-download, feed unreliable); USDJPY -> 10 (+ re-download). Rule: replace `spread==0` only; leave
+populated values. A permanent fix would post-process spread inside `feed/historical.py` (a code change,
+out of this data-only mandate — flagged for the user). Verified by: re-run the per-symbol zero-count
+check; all should read 0 zeros after flooring.
+
+---
+
+## ADDENDUM 2026-07-22 — to the TF-probe NOTE above: its tables predate two cost corrections
+
+The "Timeframe probe: current rules on M30/M15/M5 vs H1" NOTE's tables were computed (a) BEFORE the
+spread zero-value floor (previous entry) and (b) WITH `--commission-per-lot 7.0`, which commit
+`eaa59c5` has since established is WRONG for this account (IC Markets **Standard** — zero commission,
+cost lives in the spread; the $7 assumption double-counted). The two corrections push lower-TF
+numbers in OPPOSITE directions: removing phantom commission helps lower TFs MORE (more trades,
+larger lots per $ of R — e.g. M5 common-window paid ~$3.6k phantom commission vs H1's ~$0.4k), while
+the spread floor hurts H1/M30/M15 more (50/44/28% zero bars vs M5's 4%). Directionally these
+partially offset; the probe's VERDICT (monotone edge staircase, full-history collapse to PF~1.00 on
+M30/M15, DD staircase 11%→54%, H1 confirmed) is not commission-driven and stands — but do NOT quote
+the probe's exact PF/net figures as current. Any EXP-010 work must FIRST re-run its H1/M30 baselines
+on the floored data with a consciously-chosen commission (now a required CLI arg) — the baseline
+figures cited in EXP-010 §4 are stale for the same reason. No re-run performed here (compute-heavy;
+EXP-010 re-baselines as its own first step anyway). Config UNCHANGED; Test budget UNSPENT.

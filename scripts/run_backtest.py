@@ -7,7 +7,7 @@ ClosedTrade list.
 
     python scripts/run_backtest.py XAUUSD --starting-equity 10000
         --commission-per-lot 0.5 [--slippage-points 5.0]
-        [--risk-per-trade-pct 0.5] [--out-of-sample]
+        [--risk-per-trade-pct 0.5] [--min-lot-risk-cap-pct 1.5] [--out-of-sample]
 
 `--commission-per-lot` is REQUIRED (not optional) -- it must be a conscious,
 account-specific choice every run, since `0.0` is a legitimate real value for
@@ -67,6 +67,7 @@ def build_envelope(
     is_out_of_sample: bool,
     risk_voice_modeled: bool,
     watchman_exits_modeled: bool,
+    min_lot_risk_cap_pct: float | None,
 ) -> dict:
     """The JSON-serializable envelope written to disk -- see
     `auditor/backtest_results.py`'s `BacktestReportEnvelope` for the
@@ -84,7 +85,10 @@ def build_envelope(
     `risk_voice_modeled`/`watchman_exits_modeled` mirror that same "don't
     silently count an incomplete simulation" philosophy for Risk Voice and
     Watchman's exit management respectively -- see `backtest/engine.py`'s
-    module docstring.
+    module docstring. `min_lot_risk_cap_pct` records this run's
+    `BacktestConfig.min_lot_risk_cap_pct` for auditability (`None` when the
+    min-lot risk-cap fallback was disabled) -- see `risk/sizing.py`'s
+    `compute_lot_size` docstring.
     """
     cost_model_complete = cost_model.slippage_points is None
     return {
@@ -96,6 +100,7 @@ def build_envelope(
         "is_out_of_sample": is_out_of_sample,
         "risk_voice_modeled": risk_voice_modeled,
         "watchman_exits_modeled": watchman_exits_modeled,
+        "min_lot_risk_cap_pct": min_lot_risk_cap_pct,
         "report": asdict(report),
     }
 
@@ -112,6 +117,7 @@ def run_and_persist(
     risk_voice_cfg: RiskVoiceConfig | None = None,
     watchman_cfg: WatchmanConfig | None = None,
     pivot_bars: int = 3,
+    min_lot_risk_cap_pct: float | None = None,
 ) -> Path:
     """`risk_voice_cfg=None`/`watchman_cfg=None` (the defaults) mean Risk
     Voice / Watchman's exit management are NOT modeled in this run -- an
@@ -122,10 +128,15 @@ def run_and_persist(
     either `None` is only appropriate for tests/tooling that don't need
     that veto/exit behavior. `pivot_bars` defaults to `BacktestConfig`'s own
     default (3); `main()` always passes `config/base.yaml`'s
-    `global.swing_pivot_bars` instead of relying on that default."""
+    `global.swing_pivot_bars` instead of relying on that default.
+    `min_lot_risk_cap_pct=None` (the default) disables `risk/sizing.py`'s
+    min-lot risk-cap fallback -- spec-exact behavior; `main()` passes
+    `config/base.yaml`'s `cfo.min_lot_risk_cap_pct` (the adopted 1.5 value)
+    unless overridden by `--min-lot-risk-cap-pct`."""
     config = BacktestConfig(
         starting_equity=starting_equity, risk_per_trade_pct=risk_per_trade_pct, cost_model=cost_model,
         risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg, pivot_bars=pivot_bars,
+        min_lot_risk_cap_pct=min_lot_risk_cap_pct,
     )
     trades = run_backtest(df, symbol, symbol_spec, config)
     report = generate_report(trades, starting_equity)
@@ -133,6 +144,7 @@ def run_and_persist(
         symbol, df, report, cost_model, starting_equity, is_out_of_sample,
         risk_voice_modeled=risk_voice_cfg is not None,
         watchman_exits_modeled=watchman_cfg is not None,
+        min_lot_risk_cap_pct=min_lot_risk_cap_pct,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -166,6 +178,10 @@ def main() -> int:
     parser.add_argument(
         "--risk-per-trade-pct", type=float, default=None,
         help="Overrides config/base.yaml's cfo.risk_per_trade_pct",
+    )
+    parser.add_argument(
+        "--min-lot-risk-cap-pct", type=float, default=None,
+        help="Overrides config/base.yaml's cfo.min_lot_risk_cap_pct",
     )
     parser.add_argument(
         "--commission-per-lot", type=float, required=True,
@@ -206,6 +222,11 @@ def main() -> int:
     cfg = load_yaml_config("base")
     risk_per_trade_pct = (
         args.risk_per_trade_pct if args.risk_per_trade_pct is not None else cfg["cfo"]["risk_per_trade_pct"]
+    )
+    min_lot_risk_cap_pct = (
+        args.min_lot_risk_cap_pct
+        if args.min_lot_risk_cap_pct is not None
+        else cfg["cfo"]["min_lot_risk_cap_pct"]
     )
     # Always model Risk Voice from config/base.yaml's real thresholds -- same
     # "no opt-out" convention scripts/run_shadow_loop.py already uses (unlike
@@ -248,6 +269,7 @@ def main() -> int:
         cost_model, args.out_of_sample, args.output_dir,
         risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg,
         pivot_bars=cfg["global"]["swing_pivot_bars"],
+        min_lot_risk_cap_pct=min_lot_risk_cap_pct,
     )
     return 0
 

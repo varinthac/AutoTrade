@@ -36,7 +36,8 @@ def _envelope(
         symbol="XAUUSD", bar_range_start=datetime(2024, 1, 1), bar_range_end=datetime(2026, 1, 1),
         starting_equity=10_000.0, cost_model=CostModelConfig(commission_per_lot=3.5, slippage_points=None),
         cost_model_complete=cost_model_complete, is_out_of_sample=is_out_of_sample,
-        risk_voice_modeled=risk_voice_modeled, watchman_exits_modeled=watchman_exits_modeled, report=report,
+        risk_voice_modeled=risk_voice_modeled, watchman_exits_modeled=watchman_exits_modeled,
+        min_lot_risk_cap_pct=1.5, report=report,
     )
 
 

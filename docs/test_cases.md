@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1059 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1072 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1059 (including all parametrized variants)
+- **Total Test Count**: 1072 (including all parametrized variants)
 - **Test Files**: ~55 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -14,20 +14,20 @@ This document provides a comprehensive list of all 1059 test cases in the AutoTr
 
 | Subsystem | Test File | Test Count |
 |-----------|-----------|-----------|
-| Auditor | test_backtest_results.py | 8 |
+| Auditor | test_backtest_results.py | 10 |
 | | test_borderline.py | 15 |
 | | test_daily_report.py | 3 |
 | | test_demotion.py | 12 |
 | | test_metrics.py | 6 |
 | | test_promotion.py | 30 |
-| **Auditor Subtotal** | | **74** |
+| **Auditor Subtotal** | | **76** |
 | Backtest | test_clock.py | 3 |
 | | test_cost_model.py | 7 |
-| | test_engine.py | 37 |
+| | test_engine.py | 38 |
 | | test_forward_walk.py | 10 |
 | | test_lookahead_validation.py | 3 |
 | | test_report.py | 15 |
-| **Backtest Subtotal** | | **75** |
+| **Backtest Subtotal** | | **76** |
 | Council | test_decision_matrix.py | 50 |
 | | test_finnhub_news_calendar.py | 12 |
 | | test_mql5_calendar_provider.py | 21 |
@@ -56,8 +56,8 @@ This document provides a comprehensive list of all 1059 test cases in the AutoTr
 | Orchestrator | test_shadow_loop.py | 44 |
 | **Orchestrator Subtotal** | | **44** |
 | Risk | test_circuit_breaker.py | 32 |
-| | test_sizing.py | 13 |
-| **Risk Subtotal** | | **45** |
+| | test_sizing.py | 20 |
+| **Risk Subtotal** | | **52** |
 | Shield | test_checkpoint.py | 20 |
 | | test_correlation.py | 4 |
 | **Shield Subtotal** | | **24** |
@@ -84,14 +84,14 @@ This document provides a comprehensive list of all 1059 test cases in the AutoTr
 | | test_pid_file.py | 19 |
 | | test_poller.py | 10 |
 | | test_run_auditor.py | 37 |
-| | test_run_backtest.py | 19 |
+| | test_run_backtest.py | 22 |
 | | test_run_shadow_loop.py | 24 |
 | | test_run_telegram_control.py | 10 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **239** |
+| **Scripts & CLI Subtotal** | | **242** |
 | | | |
-| **GRAND TOTAL** | | **1059** |
+| **GRAND TOTAL** | | **1072** |
 
 ---
 
@@ -103,6 +103,8 @@ This document provides a comprehensive list of all 1059 test cases in the AutoTr
 - test_missing_top_level_field_raises
 - test_missing_risk_voice_modeled_field_raises
 - test_missing_watchman_exits_modeled_field_raises
+- test_missing_min_lot_risk_cap_pct_field_raises
+- test_min_lot_risk_cap_pct_none_is_a_valid_value_not_a_missing_field
 - test_missing_report_field_raises
 - test_invalid_json_raises
 - test_missing_file_raises
@@ -220,6 +222,7 @@ This document provides a comprehensive list of all 1059 test cases in the AutoTr
 - test_no_lookahead_signal_evaluated_once_and_fill_uses_next_bar_open_not_signal_bar_close
 - test_signal_firing_on_the_very_last_bar_produces_no_trade_no_next_bar_to_fill_on
 - test_signal_below_broker_minimum_lot_never_becomes_a_trade
+- test_min_lot_risk_cap_pct_threads_into_the_real_compute_lot_size_call
 - test_engine_ignores_new_signals_while_a_position_is_open_even_if_signal_fn_always_fires
 - test_immediate_exit_on_the_same_bar_the_pending_order_fills
 - test_default_zero_commission_is_actually_applied_end_to_end_not_silently_ignored
@@ -871,6 +874,13 @@ This document provides a comprehensive list of all 1059 test cases in the AutoTr
 - test_volatility_ratio_exactly_at_threshold_does_not_trigger_halving
 - test_avg_atr_20d_zero_is_treated_as_no_volatility_data_no_division_error
 - test_sell_direction_stop_above_entry_uses_absolute_distance
+- test_min_lot_risk_cap_pct_default_none_behaves_exactly_as_before
+- test_min_lot_risk_cap_pct_rescues_lot_when_min_lot_risk_within_cap
+- test_min_lot_risk_cap_pct_still_skips_when_min_lot_risk_exceeds_cap
+- test_min_lot_risk_cap_pct_exact_boundary_is_accepted_not_rejected
+- test_min_lot_risk_cap_pct_does_not_affect_normal_sizing_path
+- test_min_lot_risk_cap_pct_check_uses_full_equity_not_the_atr_halved_budget
+- test_min_lot_risk_cap_pct_negative_raises_value_error
 
 ---
 
@@ -1296,10 +1306,13 @@ This document provides a comprehensive list of all 1059 test cases in the AutoTr
 - test_run_and_persist_risk_voice_cfg_marks_envelope_as_modeled
 - test_run_and_persist_watchman_cfg_marks_envelope_as_modeled
 - test_run_and_persist_threads_pivot_bars_into_backtest_config
+- test_run_and_persist_threads_min_lot_risk_cap_pct_into_backtest_config_and_envelope
 - test_main_requires_commission_per_lot_argument
 - test_main_constructs_risk_voice_cfg_from_config_with_every_field_mapped_correctly
 - test_main_constructs_watchman_cfg_from_config_with_every_field_mapped_correctly
 - test_main_threads_pivot_bars_from_config_into_run_and_persist
+- test_main_threads_min_lot_risk_cap_pct_from_config_into_run_and_persist
+- test_main_min_lot_risk_cap_pct_cli_override_takes_precedence_over_config
 - test_main_writes_an_envelope_with_risk_voice_modeled_true
 - test_main_with_commission_zero_writes_envelope_with_cost_model_complete_true
 

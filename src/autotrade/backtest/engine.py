@@ -292,6 +292,12 @@ class BacktestConfig:
     `scripts/run_backtest.py` always passes a real `WatchmanConfig` loaded
     from `config/base.yaml`; leaving this `None` is only appropriate for
     tests/tooling that don't need Watchman's exit behavior."""
+    min_lot_risk_cap_pct: float | None = None
+    """`None` (the default) means `risk.sizing.compute_lot_size`'s min-lot
+    risk-cap fallback is NOT modeled -- spec-exact §3.1 behavior, zero
+    change. See that function's docstring for the exact deliberate-deviation
+    mechanics; `config/base.yaml`'s `cfo.min_lot_risk_cap_pct: 1.5` is the
+    adopted live value, threaded through by `scripts/run_backtest.py`."""
 
 
 @dataclass
@@ -577,6 +583,7 @@ def run_backtest(
                     entry=plan.entry, stop_loss=plan.stop_loss, point_value=point_value,
                     volume_min=symbol_spec.volume_min, volume_max=symbol_spec.volume_max,
                     volume_step=symbol_spec.volume_step,
+                    min_lot_risk_cap_pct=config.min_lot_risk_cap_pct,
                 )
                 if lot is not None and i + 1 < len(df):
                     pending = _PendingOrder(plan=plan, lot_size=lot, signal_index=i)

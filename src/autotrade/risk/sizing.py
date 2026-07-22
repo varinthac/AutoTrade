@@ -43,6 +43,7 @@ def compute_lot_size(
     current_atr: float | None = None,
     avg_atr_20d: float | None = None,
     volatility_multiplier_threshold: float = 1.5,
+    min_lot_risk_cap_pct: float | None = None,
 ) -> float | None:
     """Compute a broker-valid lot size for a single trade.
 
@@ -63,6 +64,25 @@ def compute_lot_size(
     "do not trade" -- rather than silently trading the minimum lot, per
     Appendix A §3.1 ("อย่าฝืนเสี่ยงเกินแผน" / don't force a trade that risks
     more than planned). The result is capped at `volume_max`.
+
+    **`min_lot_risk_cap_pct` -- dated, deliberate deviation from Appendix A
+    §3.1 (added 2026-07-22).** `None` (the default) preserves the
+    spec-exact behavior above with zero change. When set, and the
+    risk-based lot rounds below `volume_min`, this checks whether trading
+    `volume_min` anyway would still risk no more than `min_lot_risk_cap_pct`
+    percent of `equity` (using FULL `equity`, independent of the ATR-based
+    halving above -- the cap bounds the broker-minimum trade's own risk,
+    not the halved risk budget that produced the sub-minimum lot in the
+    first place): if so, this returns `min(volume_min, volume_max)` instead
+    of `None`. Otherwise it still returns `None`, same as today. This
+    exists because on a small account relative to XAUUSD's stop distances,
+    the spec-exact behavior discards a large fraction of signals that pass
+    every other gate; Stage 1 measurement (`experiments/experiments_log.md`,
+    the 2026-07-22 NOTE "small-account sizing REFRESH + min-lot-fallback
+    measurement") found the rescued trades carry a real, positive edge
+    (PF 1.60 at cap=1.5 in isolation), not dead weight. `config/base.yaml`'s
+    `cfo.min_lot_risk_cap_pct: 1.5` is the user's Stage 2 decision to adopt
+    this live.
     """
     if equity <= 0:
         raise ValueError(f"equity must be positive, got {equity}")
@@ -70,6 +90,8 @@ def compute_lot_size(
         raise ValueError(f"risk_per_trade_pct must be positive, got {risk_per_trade_pct}")
     if point_value <= 0:
         raise ValueError(f"point_value must be positive, got {point_value}")
+    if min_lot_risk_cap_pct is not None and min_lot_risk_cap_pct <= 0:
+        raise ValueError(f"min_lot_risk_cap_pct must be positive, got {min_lot_risk_cap_pct}")
 
     stop_distance = abs(entry - stop_loss)
     if stop_distance <= 0:
@@ -91,5 +113,9 @@ def compute_lot_size(
     lot = min(lot, volume_max)
 
     if lot < volume_min:
+        if min_lot_risk_cap_pct is not None:
+            min_lot_risk = stop_distance * point_value * volume_min
+            if min_lot_risk <= (min_lot_risk_cap_pct / 100) * equity:
+                return min(volume_min, volume_max)
         return None
     return lot

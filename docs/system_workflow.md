@@ -167,9 +167,12 @@ lot_size = risk_amount / (stop_distance × point_value)
 | `daily_loss_limit_pct` | 2.0 | ขาดทุนสะสมวันนี้ ≥ 2% → หยุดเทรด (circuit breaker) |
 | `max_consecutive_losses` | 3 | แพ้ 3 ไม้ติดกัน → หยุด 24 ชั่วโมง |
 | `max_drawdown_halt_pct` | 8.0 | Drawdown (ขาดทุนสูงสุดจาก peak) ≥ 8% → **ระบบหยุด​** ต้อง restart ด้วยมือ |
+| `min_lot_risk_cap_pct` | **1.5** | ถ้า lot ที่คำนวณได้ต่ำกว่าขั้นต่ำ broker (0.01) แต่เทรด 0.01 lot จะเสี่ยงไม่เกิน 1.5% ของ equity → เทรด 0.01 lot แทนการข้ามสัญญาณ (default ของโค้ดคือ `None`/ปิด — นี่คือทางเลือกที่ตั้งใจเปิดใช้กับบัญชีเล็ก ไม่ใช่พฤติกรรมมาตรฐานตามสเปค §3.1) |
 
 ### ที่มา/ประวัติการปรับจูน
-- **ADOPTED (2026-07-22)**: ปรับจาก 0.5% → **1.0%** แล้ว (`config/base.yaml` ปัจจุบัน) หลังจากเจอเหตุการณ์จริงที่สัญญาณ Council ผ่านทุกด่านแล้วถูกทิ้งเพราะคำนวณ lot ได้ต่ำกว่าขั้นต่ำของ broker (0.01 lot) — การวัดผล (บันทึกใน experiments_log.md เป็น informational note ไม่ใช่ EXP-### เพราะเป็นแค่การวัดผลกระทบของ position-sizing ไม่ใช่การหา edge ใหม่) พบว่าที่ 0.5% สัญญาณที่ผ่านทุกด่านถูกทิ้งไปถึง ~72% เพราะบัญชี demo $3,000 เล็กเกินไปเทียบกับ stop distance ของทองคำ ที่ 1.0% อัตราการถูกทิ้งลดลงเหลือ ~52% โดย worst-case ต่อไม้/ต่อรอบแพ้ติดยังอยู่ในระดับที่รับได้ (~$60 / ~$307) การวัดผลเดียวกันนี้ยัง flag ไว้ว่าการเพิ่มเงินฝากในบัญชี demo (เช่น $10,000) จะแก้ปัญหานี้ได้ตรงจุดกว่าการดัน risk% ขึ้นอีก
+- **ADOPTED (2026-07-22)**: ปรับจาก 0.5% → **1.0%** แล้ว (`config/base.yaml` ปัจจุบัน) หลังจากเจอเหตุการณ์จริงที่สัญญาณ Council ผ่านทุกด่านแล้วถูกทิ้งเพราะคำนวณ lot ได้ต่ำกว่าขั้นต่ำของ broker (0.01 lot) — การวัดผล (บันทึกใน experiments_log.md เป็น informational note ไม่ใช่ EXP-### เพราะเป็นแค่การวัดผลกระทบของ position-sizing ไม่ใช่การหา edge ใหม่) พบว่าที่ 0.5% สัญญาณที่ผ่านทุกด่านถูกทิ้งไปถึง ~72% เพราะบัญชี demo $3,000 เล็กเกินไปเทียบกับ stop distance ของทองคำ ที่ 1.0% อัตราการถูกทิ้งลดลงเหลือ ~52% (**ตัวเลขนี้วัดตอน `breakeven_enabled`/`trail_enabled` ยังเป็น `true` — ล้าสมัยแล้ว**) การวัดผลเดียวกันนี้ยัง flag ไว้ว่าการเพิ่มเงินฝากในบัญชี demo (เช่น $10,000) จะแก้ปัญหานี้ได้ตรงจุดกว่าการดัน risk% ขึ้นอีก — แต่ผู้ใช้ยืนยันปรัชญาโปรเจกต์ว่าห้ามใช้ทางแก้นี้ ต้องใช้งานได้จริงบนบัญชีเล็ก
+- **Re-measured (2026-07-22, หลัง EXP-008 adopted):** ที่ risk 1.0% + be/trail ปิดแล้ว อัตราการถูกทิ้งจริงตอนนี้คือ **~31.6%** (ต่ำกว่าตัวเลขเดิมมาก เพราะปิด be/trail ทำให้ถือไม้นานขึ้นถึง 2R เป้าหมาย แท่งที่ว่างสำหรับสัญญาณใหม่จึงน้อยลง) — ยังถือว่าสูงอยู่ นำไปสู่การทดสอบ **min-lot risk-cap fallback** (ดูรายละเอียดเต็มใน `experiments/experiments_log.md`'s NOTE ล่าสุด และหัวข้อประวัติการปรับจูนด้านล่าง)
+- **ADOPTED (2026-07-22, Stage 2 decision) — `min_lot_risk_cap_pct: 1.5`:** เพิ่ม fallback ที่เบี่ยงเบนจากสเปค §3.1 ("อย่าฝืนเสี่ยงเกินแผน") แบบตั้งใจและเปิด/ปิดได้ด้วย config (`risk/sizing.py::compute_lot_size`'s default ในโค้ดยังเป็น `None`/ปิดเสมอ — `config/base.yaml` เป็นจุดเดียวที่ตั้งใจเปิดใช้จริง). Stage 1 measurement (`experiments/experiments_log.md`'s NOTE วันเดียวกัน "small-account sizing REFRESH + min-lot-fallback measurement", full history 2021–2026 ~29,500 H1 bars) พบว่าที่ risk=1.0% ยังมีสัญญาณ ~31.6% ถูกทิ้งเพราะ lot ต่ำกว่าขั้นต่ำ broker — เปิด fallback ที่ cap=1.5% กู้สัญญาณกลับมาได้ 63 ไม้ (จากทั้งหมด 1257 ไม้ในช่วงทดสอบ), PF รวมขยับจาก 1.0496 → 1.1244, net$ จาก $1049 → $2808 และที่สำคัญคือ **ไม้ที่กู้กลับมาเองมี PF 1.60 แยกต่างหาก** ไม่ใช่ไม้ขยะ แม้ maxSingleLoss ต่อไม้จะขยับขึ้นได้ถึง ~3.5% ของ equity (เดิม ~1.9% ที่ risk 1.0% ปกติ) เมื่อ fallback ทำงานจริง — trade-off นี้ถูกยอมรับอย่างมีข้อมูลรองรับ ไม่ใช่การเดา
 
 ---
 
@@ -345,6 +348,7 @@ cfo:
   daily_loss_limit_pct: 2.0
   max_consecutive_losses: 3
   max_drawdown_halt_pct: 8.0
+  min_lot_risk_cap_pct: 1.5    # ADOPTED 2026-07-22 — see CFO section above
 
 watchman:
   breakeven_at_r: 1.0
@@ -409,5 +413,5 @@ auditor:
 ---
 
 **Document Date:** 2026-07-22  
-**Config Version:** `config/base.yaml` (post-EXP-003 session-gate change, pre-EXP-008/009 application)  
-**Last Major Change:** EXP-003 adopted (session all-24h); EXP-008/009 Test-confirmed but awaiting user approval
+**Config Version:** `config/base.yaml` (post-EXP-003 session-gate change, post-EXP-008 Watchman breakeven/trail adoption)  
+**Last Major Change:** EXP-008 ADOPTED 2026-07-22 (`watchman.breakeven_enabled`/`trail_enabled: false`, live restarted); EXP-009's `pivot_bars=4` superseded by the same joint re-verification -- `global.swing_pivot_bars` stays 3 by deliberate choice, not a pending decision

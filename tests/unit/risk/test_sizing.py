@@ -248,3 +248,136 @@ def test_sell_direction_stop_above_entry_uses_absolute_distance():
         volume_step=0.01,
     )
     assert lot == pytest.approx(0.05)
+
+
+# --- min_lot_risk_cap_pct fallback (2026-07-22, deliberate §3.1 deviation) --
+
+
+def test_min_lot_risk_cap_pct_default_none_behaves_exactly_as_before():
+    # Regression/backward-compat: the exact same below-min-lot case as
+    # test_below_min_lot_returns_none_no_trade, with min_lot_risk_cap_pct
+    # left at its default -- must still return None, unchanged.
+    lot = compute_lot_size(
+        equity=100,
+        risk_per_trade_pct=0.1,
+        entry=100,
+        stop_loss=90,
+        point_value=100,
+        volume_min=0.01,
+        volume_max=50,
+        volume_step=0.01,
+    )
+    assert lot is None
+
+
+def test_min_lot_risk_cap_pct_rescues_lot_when_min_lot_risk_within_cap():
+    # Same below-min-lot setup: raw lot rounds to 0.0 (below volume_min).
+    # min_lot_risk = stop_distance(10) * point_value(100) * volume_min(0.01)
+    # = 10.0, which is 10% of equity(100) -- within a 15% cap, so the
+    # fallback rescues this to volume_min instead of returning None.
+    lot = compute_lot_size(
+        equity=100,
+        risk_per_trade_pct=0.1,
+        entry=100,
+        stop_loss=90,
+        point_value=100,
+        volume_min=0.01,
+        volume_max=50,
+        volume_step=0.01,
+        min_lot_risk_cap_pct=15.0,
+    )
+    assert lot == pytest.approx(0.01)
+
+
+def test_min_lot_risk_cap_pct_still_skips_when_min_lot_risk_exceeds_cap():
+    # Same setup, min_lot_risk is 10% of equity but the cap is only 5% --
+    # still returns None, exactly like today's spec-exact behavior.
+    lot = compute_lot_size(
+        equity=100,
+        risk_per_trade_pct=0.1,
+        entry=100,
+        stop_loss=90,
+        point_value=100,
+        volume_min=0.01,
+        volume_max=50,
+        volume_step=0.01,
+        min_lot_risk_cap_pct=5.0,
+    )
+    assert lot is None
+
+
+def test_min_lot_risk_cap_pct_exact_boundary_is_accepted_not_rejected():
+    # min_lot_risk = 10.0, exactly 10% of equity(100) -- the cap check is
+    # "<=", not "<", so an exact match at cap=10.0 must still rescue the lot.
+    lot = compute_lot_size(
+        equity=100,
+        risk_per_trade_pct=0.1,
+        entry=100,
+        stop_loss=90,
+        point_value=100,
+        volume_min=0.01,
+        volume_max=50,
+        volume_step=0.01,
+        min_lot_risk_cap_pct=10.0,
+    )
+    assert lot == pytest.approx(0.01)
+
+
+def test_min_lot_risk_cap_pct_does_not_affect_normal_sizing_path():
+    # When the risk-based lot already meets volume_min, setting a cap must
+    # not change the result at all -- same known-inputs case as
+    # test_known_inputs_known_output, with a cap set but never consulted.
+    lot = compute_lot_size(
+        equity=10000,
+        risk_per_trade_pct=0.5,
+        entry=2000,
+        stop_loss=1990,
+        point_value=100,
+        volume_min=0.01,
+        volume_max=50,
+        volume_step=0.01,
+        min_lot_risk_cap_pct=1.5,
+    )
+    assert lot == pytest.approx(0.05)
+
+
+def test_min_lot_risk_cap_pct_check_uses_full_equity_not_the_atr_halved_budget():
+    # High volatility halves risk_per_trade (10000*0.005=50 instead of 100),
+    # which alone would make the risk-based lot round down below volume_min:
+    # lot = 50 / (10000*100) = 0.00005 -> floors to 0.0 < volume_min. The cap
+    # check itself must use FULL equity (100000), not that halved budget --
+    # min_lot_risk = stop_distance(10000) * point_value(100) * volume_min(0.01)
+    # = 10000, which is exactly 10% of the FULL equity(100000), within a 10%
+    # cap -- so this must rescue to volume_min. If the cap check incorrectly
+    # used the halved risk_amount/budget instead of equity, this would not
+    # be comparable to a %-of-equity cap at all and this assertion pins the
+    # correct (full-equity) behavior.
+    lot = compute_lot_size(
+        equity=100000,
+        risk_per_trade_pct=0.1,
+        entry=20000,
+        stop_loss=10000,
+        point_value=100,
+        volume_min=0.01,
+        volume_max=50,
+        volume_step=0.01,
+        current_atr=16,
+        avg_atr_20d=10,  # ratio 1.6 > 1.5 threshold -- halving triggered
+        min_lot_risk_cap_pct=10.0,
+    )
+    assert lot == pytest.approx(0.01)
+
+
+def test_min_lot_risk_cap_pct_negative_raises_value_error():
+    with pytest.raises(ValueError):
+        compute_lot_size(
+            equity=10000,
+            risk_per_trade_pct=0.5,
+            entry=2000,
+            stop_loss=1990,
+            point_value=100,
+            volume_min=0.01,
+            volume_max=50,
+            volume_step=0.01,
+            min_lot_risk_cap_pct=-1.0,
+        )
