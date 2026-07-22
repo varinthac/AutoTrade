@@ -309,7 +309,7 @@ lot_size = risk_amount / (stop_distance × point_value)
 8. **Historical spread=0 floored (data-integrity fix, 2026-07-22)** — ⚠️ มี gotcha ประจำ
    - **ปัญหา:** MT5 ไม่ retro-populate spread ของ bars เก่า → `spread=0` ~50% ของไฟล์ H1 = backtest คิดต้นทุนต่ำเกินจริงมาตลอด
    - **แก้แล้ว:** แทนเฉพาะแถว `spread==0` (ค่าจริง 1–4 pts ไม่แตะ): XAUUSD ทุก TF → 5 pts, EURUSD → 10, GBPUSD → 13, USDJPY → 10 (ที่มาเต็มใน experiments_log.md NOTE "Historical `spread` zero-value floor")
-   - **⚠️ Gotcha:** ไฟล์ `data/historical/*` เป็น gitignored และ `feed/historical.py` ไม่ post-process spread — **download ข้อมูลใหม่เมื่อไหร่ zeros กลับมา ต้อง re-apply floor ทุกครั้ง** จนกว่าจะแก้ถาวรใน feed/historical.py (งานค้าง มอบหมายแล้ว) — GBPUSD/USDJPY ข้อมูล spread ที่มีอยู่ก็ไม่น่าเชื่อถือ ต้อง re-download ก่อน FX go-live
+   - **✅ แก้ถาวรแล้ว (commit `5be62c8`, 2026-07-22):** `feed/historical.py` ตอนนี้ floor spread==0 ให้อัตโนมัติทุกครั้งที่ download (per-symbol, ทุก TF, raise ดังๆ ถ้าเจอ symbol ที่ไม่รู้จัก) — download ใหม่ไม่ทำให้ zeros กลับมาอีกแล้ว ข้อยกเว้นเดียวที่ยังค้าง: GBPUSD/USDJPY ข้อมูล spread ที่*มีค่าอยู่แล้ว*ไม่น่าเชื่อถือ (1pt = 0.1 pip ไม่สมจริง) ต้อง re-download ก่อน FX go-live
 
 ---
 

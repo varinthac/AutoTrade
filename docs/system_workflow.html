@@ -787,7 +787,7 @@
       <dl class="history-grid">
         <dt>อ้างอิง</dt><dd>EXP-010 (pre-registered, 22 ก.ค. 2026)</dd>
         <dt>สมมติฐาน</dt><dd>ใช้สัญญาณ H1 Council แต่จับเวลาเข้าไม้ด้วย M30 pullback-then-resume trigger + M30-structure stop → ได้ entry ที่ดีกว่า stop ที่แคบกว่า lot ที่ใหญ่กว่า ใช้สิ่งที่เก็บเกี่ยวได้ → น้อยสัญญาณที่ถูกทิ้งเพราะ lot ขั้นต่ำ</dd>
-        <dt>ก่อนเงื่อนไข</dt><dd>(a) แก้ spread=0 ในข้อมูล historical — <b>✅ เคลียร์แล้ว 22 ก.ค. 2026</b> (floor เฉพาะแถวที่เป็น 0: XAUUSD → 5 pts ทุก TF; <b>ระวัง:</b> ไฟล์เป็น gitignored และโค้ด download ไม่ floor ให้ — download ใหม่เมื่อไหร่ต้อง re-apply ทุกครั้ง); (b) re-baseline H1/M30 ด้วยข้อมูลที่แก้แล้ว + commission 0 (บัญชี Standard); (c) สร้าง two-TF bridge harness</dd>
+        <dt>ก่อนเงื่อนไข</dt><dd>(a) แก้ spread=0 ในข้อมูล historical — <b>✅ เคลียร์แล้ว 22 ก.ค. 2026</b> (floor เฉพาะแถวที่เป็น 0: XAUUSD → 5 pts ทุก TF; และตั้งแต่ commit <code>5be62c8</code> โค้ด download floor ให้อัตโนมัติแล้ว — download ใหม่ไม่ทำให้ปัญหากลับมา); (b) re-baseline H1/M30 ด้วยข้อมูลที่แก้แล้ว + commission 0 (บัญชี Standard); (c) สร้าง two-TF bridge harness</dd>
         <dt>สถานะ</dt><dd>🔄 <b>PRE-REGISTERED</b> — spread fix เคลียร์แล้ว พร้อมเริ่มเมื่อ re-baseline + harness เสร็จ (rule 1: rigor in cost model)</dd>
       </dl>
     </div>
