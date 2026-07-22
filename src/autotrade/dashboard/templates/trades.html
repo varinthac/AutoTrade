@@ -97,4 +97,25 @@
   <p>No trades recorded yet.</p>
 </div>
 {% endif %}
+<script>
+  // Auto-refresh so "Current price"/"Floating P&L" above never sit stale --
+  // this page is server-rendered, so a fixed page load otherwise shows
+  // whatever price MT5 returned at that one moment forever. Paused while the
+  // date-filter inputs have focus so a reload never wipes out an in-progress
+  // edit.
+  (function () {
+    var REFRESH_SECONDS = 15;
+    function scheduleReload() {
+      setTimeout(function () {
+        var active = document.activeElement;
+        if (active && active.closest('.filter-form')) {
+          scheduleReload();
+          return;
+        }
+        window.location.reload();
+      }, REFRESH_SECONDS * 1000);
+    }
+    scheduleReload();
+  })();
+</script>
 {% endblock %}
