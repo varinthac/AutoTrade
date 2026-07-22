@@ -2043,8 +2043,122 @@ candidate vs H1-as-is on the exact Test window — touched once.
   change. This pre-registration flags that — it does NOT amend the spec and does NOT modify config
   (rule 10 / analysis-only). Auditor gate thresholds NOT touched (rule 8).
 
-**Status: PRE-REGISTERED, NOT RUN — BLOCKED on §6 prerequisites (spread-zero fix + bridge harness).
-No results section exists yet; results may only be appended AFTER §6(a) clears (rule 1).**
+**Status (superseded): PRE-REGISTERED, then RUN 2026-07-22 after §6 prerequisites cleared. See §9–§12 RESULTS below.**
+
+---
+
+## EXP-010 RESULTS (run 2026-07-22) — VERDICT: REJECT (H1-as-is stands); 10b NOT triggered
+
+Analysis-only: `config/base.yaml`, `council/`, `backtest/engine.py`, `feed/`, `risk/`, `watchman/`
+NOT modified. New code lives only in `experiments/exp010_h1_m30_hybrid_harness.py` (bridge harness,
+production pure-functions reused verbatim; driver/caching in scratchpad). Test one-touch budget for
+this NEW family: **UNSPENT** (no candidate survived Train+Val → §5(h) never invoked; Test not touched).
+
+### §9. Corrections applied vs the pre-registration (both flagged before running)
+1. **Commission = $0/lot** (IC Markets **Standard**), NOT the $7 in §6(b)'s note (a Raw-Spread
+   assumption since corrected). This makes F1 (cost/R erosion) *EASIER* to clear than the
+   pre-registration assumed — honestly noted; and as the results show, F1 is not even the binding
+   falsifier, so the cheaper cost does not rescue the hybrid.
+2. **§4 baseline re-computed fresh** on floored data at comm $0 (NOT the stale EXP-008 Test PF 1.304).
+   Fresh H1-as-is per-year table (current-LIVE config: Watchman struct+time ON / be+trail OFF, pivot 3,
+   all-24h, tp 2.0; equity $10k; RV all-24h ON; comm $0) — reproduces the RE-VERIFICATION P1 BOTH-OFF
+   column to the cent:
+
+| Year | H1-as-is PF | net $ | trades | avgR | DD% |
+|------|-------------|-------|--------|------|-----|
+| Y1 2021-22 (Train) | **1.001** | +20  | 277 | 0.010 | 14.3 |
+| Y2 2022-23 (Train) | 0.967 | −548 | 256 | −0.022 | 28.9 |
+| Y3 2023-24 (Train) | 1.199 | +2935 | 234 | 0.123 | 15.2 |
+| Y4 2024-25 (Val)   | 1.101 | +1557 | 262 | 0.068 | 10.4 |
+
+### §10. Fidelity check (REQUIRED before the sweep, §6(b)) — PASSED
+Degenerate config (N=1, "enter at first M30 open, H1-ATR stop") on the M30 clock, Watchman OFF +
+M30-recheck OFF (the H1-as-is baseline has neither an M30 re-check nor — for this check — Watchman),
+vs the STOCK H1 engine (`run_backtest`, Watchman OFF, RV all-24h, comm $0). Both SL/TP-only:
+
+| Year | H1 engine (SL/TP) tr / PF / net | Degenerate M30 twin tr / PF / net |
+|------|----------------------------------|-----------------------------------|
+| Y1 | 198 / 1.052 / +656  | 210 / 1.085 / +1174 |
+| Y2 | 210 / 0.940 / −892  | 207 / 0.992 / −128  |
+| Y3 | 179 / 1.181 / +2406 | 188 / 1.292 / +4494 |
+| Val| 223 / 1.129 / +1925 | 235 / 1.118 / +1857 |
+
+Same net **sign every year**, trade counts within ~6% (198↔210, 210↔207, 179↔188, 223↔235). The
+twin runs a touch HOTTER (PF +0.03…+0.11) because M30 exits resolve intrabar SL/TP more finely than
+the engine's *pessimistic* "SL-priority on an H1 same-bar double-touch" — an expected, directionally-
+sensible modelling difference (largest in Y3, the most large-range/trending year), NOT a harness bug.
+**Honesty caveat carried forward (the "M30-granularity premium"):** because the hybrid is simulated on
+M30 while the H1-as-is baseline is on H1, a hybrid PF ~0.03–0.11 above the H1 baseline could be pure
+simulation granularity, not entry-timing edge. The hybrid must clear the baseline by MORE than that to
+be real — and (see §11) it does not clear it at all; it fails badly, so this caveat only makes the
+REJECT more secure. RV M30-recheck decoupled via `--m30-recheck` (docstring: an H1-scale stop checked
+against the smaller M30-ATR spuriously vetoes ~84% in degenerate mode; irrelevant to the real
+pullback mode, whose stop IS M30-ATR-scaled).
+
+### §11. 10a sweep — arming window N × M30 pivot depth (12 cells), per-year PF (trades)
+Pullback-then-resume, Watchman struct+time ON / be+trail OFF, RV all-24h + M30 entry-bar re-check ON,
+tp 2.0, time_stop 48h, dead-band 0.3, equity $10k, comm $0. Stop = M30 pullback pivot − 0.2·ATR_M30,
+clamped to [0.8, 2.5]·ATR_M30 (M30-ATR units, §2). Mechanism/ambiguity calls documented in the harness
+docstring (pb-anchor = left-side fractal pullback pivot of depth `pivot`; entry = resume close→next
+M30 open). **PF per year (trades in parens); bold = beats the H1-as-is baseline PF that year:**
+
+| cell | Y1 (base 1.001) | Y2 (0.967) | Y3 (1.199) | Val (1.101) |
+|------|-----------------|------------|------------|-------------|
+| N2·p2 | 0.702 (116) | **1.105** (111) | 0.938 (109) | **1.265** (116) |
+| N2·p3 | 0.656 (88❌) | **1.060** (93❌) | 0.943 (91❌) | **1.201** (99❌) |
+| N2·p4 | 0.674 (74❌) | **1.122** (81❌) | 0.968 (77❌) | **1.324** (85❌) |
+| N4·p2 | 0.770 (228) | 0.948 (227) | 0.912 (227) | 1.018 (220) |
+| N4·p3 | 0.767 (195) | 0.892 (196) | 0.973 (199) | 1.021 (179) |
+| N4·p4 | 0.734 (173) | 0.947 (171) | 1.032 (166) | 1.016 (154) |
+| N6·p2 | 0.877 (279) | 0.872 (301) | 0.894 (266) | 1.081 (275) |
+| N6·p3 | 0.801 (253) | 0.919 (264) | 0.965 (235) | 1.099 (231) |
+| N6·p4 | 0.782 (235) | 0.948 (243) | 0.991 (208) | 1.023 (211) |
+| N8·p2 | **0.943** (313) | **0.971** (319) | 0.889 (306) | 1.084 (313) |
+| N8·p3 | 0.902 (274) | **0.976** (289) | 0.957 (278) | 1.063 (264) |
+| N8·p4 | 0.817 (262) | **1.019** (271) | 0.973 (241) | **1.092** (239) |
+
+(❌ = fails the ≥100-trade/year floor, §5(a). N2·p3 and N2·p4 are INSUFFICIENT DATA on that ground
+alone. Val PF figures are exact from the run: N6·p2 1.081, N8·p2 1.084.)
+
+### §12. Acceptance-criteria scoring (§5) and VERDICT — REJECT
+- **(e) Mandatory Y1 (2021-22 chop, F5): FAIL — every one of the 12 cells.** Baseline Y1 is
+  net-POSITIVE (PF 1.001 / +$20). EVERY hybrid cell has Y1 PF < 1.0 and is net-NEGATIVE; the best is
+  N8·p2 at 0.943 / −$1,018 (worst-case cells reach −$3,020). The tighter M30 stop + pullback entry is
+  whipsawed in the choppy 2021-22 regime — the F2 (whipsaw) × F5 (regime) failure the pre-registration
+  explicitly flagged, confirmed decisively.
+- **(c) No sign flip: FAIL.** Every cell turns the H1-positive Y1 net-negative; MOST cells also turn
+  Y3 (baseline's best year, +$2,935 / PF 1.199) net-negative or marginal (Y3 hybrid 0.89–1.03) — the
+  tight M30 stop gives back the wide-H1-stop's trend capture in the 2023-24 uptrend.
+- **(b) vs H1 per-year: FAIL.** No cell beats the H1 baseline PF in a MAJORITY of Y1–Y4 without a
+  material (>0.03) regression somewhere; every cell is materially worse in BOTH Y1 and Y3. Cells win
+  on Y2 (a baseline losing year anyway) and Val, but never on the two years that carry the strategy.
+- **(a) Trade floor: N2·p3 / N2·p4 fail (<100/yr) → INSUFFICIENT.** Others clear it.
+- **(d) Plateau: moot** — there is no passing region to be on a plateau of. (Response surface: larger
+  N mitigates Y1 damage — N8·p2 is the least-bad Y1 — but never enough to pass, and larger N erodes
+  Val; no stable good cell exists.)
+- **(g) Cost honesty: satisfied and STRENGTHENS the reject.** Run on floored data at the correct
+  comm $0 (F1 made easier than the pre-reg's $7). The hybrid still fails — so cost/R erosion (F1) is
+  NOT the binding constraint; whipsaw (F2) and regime (F5) are. F4 (min-clamp defeats tight stop) was
+  NOT reached — the M30 stop stayed genuinely tighter (see §5(f)).
+- **(f) Small-account tradability (secondary, must-not-regress): confirmed mechanically but marginal
+  and moot.** At $3,000 / 1.0% / live `min_lot_cap=1.5`, the tighter M30 stop cuts sizing-skips
+  0.5%→0.0% (motivation holds directionally) — BUT the H1 baseline skip is ALREADY ~0.5% because the
+  adopted `min_lot_risk_cap_pct=1.5` fallback already solved the skip problem, and the pullback trigger
+  EXPIRES in ~82% of arming windows (F3 trade-count starvation; e.g. N4·p3 filled 769 vs expired
+  3495 across Train+Val). Per §5(f), tradability never overrides the edge/robustness bar → REJECTED
+  regardless.
+- **Multiple-testing (rule 7): 12 cells this NEW family (<20)** → standard bar; moot (nothing passes).
+- **10b NOT triggered** (§3: runs only if 10a yields a §5-clearing candidate — none did). The Watchman
+  time_stop×dead_band re-scale is not explored, correctly, since it cannot rescue a mechanism that
+  fails on entry/stop structure in the two decisive years.
+
+**VERDICT — REJECT. H1-as-is entry stands; the H1→M30 pullback-entry hybrid is NOT adopted.** Falsifiers
+F2 (whipsaw), F3 (expiry starvation) and especially F5 (Y1 regime) all fire; F1 is not binding; F4 not
+reached. The hybrid's tighter M30 stop trades away exactly what the H1 wide-ATR stop earns — riding the
+2021-22 chop without over-tightening (Y1) and riding the 2023-24 trend (Y3). Adopting it would require a
+spec amendment for the NEW parameter `N` (§8) — MOOT, since there is no candidate to adopt. **Test set
+(2025-07-21→2026-07-21) NOT touched — this family's one-touch budget remains UNSPENT/preserved** (rule 2).
+`config/base.yaml` NOT modified (analysis-only). Auditor gate thresholds NOT touched (rule 8).
 
 ---
 
@@ -2343,3 +2457,107 @@ config change (already live all-24h); Test NOT re-touched.
 - P3: session family Test remains CONSUMED (EXP-003); no re-touch here.
 `config/base.yaml`, `src/`, `tests/` UNCHANGED. Auditor promotion-gate thresholds NOT touched (rule 8) —
 the P1 Gate note REPORTS a threshold shortfall, it does not relax the gate.
+
+---
+
+## NOTE (not an EXP) 2026-07-22 — min-lot fallback Stage-1 REFRESH at HONEST cost (comm $0 + spread-floor)
+
+Closes the gap the P1/P2/P3 cost-re-verification entry (above) explicitly flagged: the Stage-1 tables in
+the earlier "small-account sizing REFRESH + min-lot-fallback measurement" NOTE were taken with
+`--commission-per-lot 7.0` (the superseded "Raw Spread" assumption) AND on the pre-fix `spread` column
+(zero-value defect, now floored per-symbol). The account is confirmed IC Markets **Standard** (commission
+`$0`, cost recovered via spread). `cfo.min_lot_risk_cap_pct: 1.5` is **already LIVE** (adopted Stage-2,
+commit `7ee51bc`). This refresh re-runs both sweeps at `--commission-per-lot 0.0` on the floored data to
+confirm/refute that the LIVE `cap=1.5` is still the right choice under honest costs. NOT an EXP: pure
+position-sizing scalars, no predictive-edge search, full history by design, no Train/Val/Test split (same
+protocol as the superseded NOTE and the P1/P2/P3 passes). Test one-touch budget UNSPENT/NA.
+
+Method: read-only. Harness `experiments/sizing_smallacct_harness.py` REUSED UNCHANGED (RiskVoice+Watchman
+built with every field from `config/base.yaml`, be/trail OFF genuinely in effect). Full history
+(29,543 H1 bars, 2021-07-22→2026-07-21), `--starting-equity 3000`, `--commission-per-lot 0.0`. Cost model
+stays fully ON (spread + slippage=1×bar-spread still charged; $0 commission is the honest Standard-account
+value, not a disabled cost model). Cells were driven one-at-a-time via a resume-able wrapper
+(`scratchpad/driver.py`, imports `H.run_cell` unchanged) that fsyncs each cell to disk, because under heavy
+concurrent-session CPU contention a single full-history cell costs ~950–2050 s and the environment reaped
+the multi-cell background task ~3× mid-sweep; completed cells survived each reap.
+
+### Table 2 — FALLBACK (fixed risk=1.0%, sweep min_lot_risk_cap_pct), full history, $3,000, comm $0  [COMPLETE]
+```
+cap%  | sig->size | skips | skip% | trades |  PF    | PF_ex5 |  net$   | avgR   | DD%   |  DD$     | maxSingleLoss$ | worstStreak$
+None  |    1754   |  478  | 27.25 |  1276  | 1.0914 | 1.0694 | 2127.04 | 0.0542 | 25.95 | -1000.56 |     -71.86     |   -364.36   <- fidelity twin of riskgrid risk=1.0
+1.25  |    1477   |  207  | 14.01 |  1270  | 1.1207 | 1.0935 | 2808.89 | 0.0636 | 25.95 | -1000.56 |     -72.15     |   -364.36
+1.50  |    1357   |   79  |  5.82 |  1278  | 1.1294 | 1.0958 | 3061.44 | 0.0649 | 25.95 | -1000.56 |     -76.37     |   -364.36
+2.00  |    1318   |   41  |  3.11 |  1277  | 1.1018 | 1.0657 | 2428.05 | 0.0586 | 25.95 | -1000.56 |    -107.94     |   -364.36
+```
+Aggregate net and PF both PEAK at **cap=1.5** (net inverted-U None 2127 < 1.25 2809 < **1.5 3061** > 2.0 2428;
+PF likewise peaks at 1.5 = 1.1294) — same shape as the superseded comm-$7 Table 2, and every cap is a bit
+better than its comm-$7 twin (cap=1.5 PF 1.1244→1.1294, net 2807→3061). Aggregate DD is constant
+25.95%/−$1000.56 across all caps (the drawdown-diagnostic fact from the original still holds: rescued trades
+are all post-trough 2025–26, so the fallback provably cannot touch the measured DD trough).
+
+### Table 3 — FALLBACK-SUBSET in isolation (rescued trades ONLY), comm $0  [COMPLETE]
+```
+cap%  | rescued | %of executed |  subset net$ | subset PF | subset winrate | subset maxSingleLoss$
+1.25  |    39   |    3.07%     |    +382.23   |   1.3487  |     53.85%     |       -72.15
+1.50  |    51   |    3.99%     |    +828.38   |   1.5384  |     45.10%     |       -76.37
+2.00  |    66   |    5.17%     |    +270.15   |   1.1195  |     42.42%     |      -107.94
+```
+Attribution verified (harness gotcha #2: ordered non-None sizing calls zipped 1:1 vs trades with a lot-equality
+assert). The rescued subset KEEPS a genuine edge at cap=1.5 (**PF 1.5384**, well above the ~1.13 aggregate) —
+rescued trades are still better-than-average, not dead weight. Marginal-trade read (rescue set is nested
+2.0⊇1.5⊇1.25): the +12 trades from cap=1.25→1.5 add +$446 (good); the +15 from 1.5→2.0 collectively LOSE
+~$558 (subset net falls 828→270, subset PF collapses 1.54→1.12) — the widest-stop marginal signals are
+net-negative. So the plateau/degradation edge sits exactly at **cap≤1.5, junk starting at 2.0** — the SAME
+qualitative verdict as comm-$7, and cap=1.5 is the plateau edge.
+
+### FIDELITY CHECK — PASSED (genuine cross-invocation)
+Fallback cap=None (measured in one driver run) reproduces riskgrid risk=1.0 (measured in a SEPARATE driver
+run) byte-for-byte on all 11 metrics: trades 1276, PF 1.0914, PF_ex5 1.0694, net $2127.04, avgR 0.0542,
+DD 25.95%/−$1000.56, maxSingleLoss −$71.86, worstStreak −$364.36, signals 1754, skips 478. ✓ (deterministic
+engine; cap=None wrapper is a transparent pass-through, `if cap_pct is not None` guards the rescue branch.)
+
+### Table 1 — RISKGRID (fallback OFF, cap=None), full history, $3,000, comm $0  [PARTIAL — 3/6 rows]
+```
+risk% | sig->size | skips | skip% | trades |  PF    | PF_ex5 |  net$   | avgR   | DD%   |  DD$     | maxSingleLoss$ | worstStreak$
+0.50  |   (pending — not yet computed)
+0.75  |   (pending — not yet computed)
+1.00  |    1754   |  478  | 27.25 |  1276  | 1.0914 | 1.0694 | 2127.04 | 0.0542 | 25.95 | -1000.56 |     -71.86     |   -364.36
+1.25  |    1420   |  149  | 10.49 |  1271  | 1.1182 | 1.0929 | 3590.08 | 0.0648 | 32.40 | -1314.53 |     -82.83     |   -482.07
+1.50  |    1343   |   66  |  4.91 |  1277  | 1.0924 | 1.0680 | 3376.40 | 0.0610 | 40.26 | -1633.77 |    -143.72     |   -579.51
+2.00  |   (pending — not yet computed)
+```
+Rows 1.0/1.25/1.5 refresh the doubly-stale comm-$7 table (all PFs up modestly vs their comm-$7 twins; skip%
+at risk=1.0 is now 27.25% vs the comm-$7 refresh's 31.6% — the spread floor changes which bars pass the
+RiskVoice spread veto). Raising risk% still monotonically cuts skip% at escalating DD (1.0%→25.95%,
+1.5%→40.26%). The **3 low-risk rows (0.5, 0.75, 2.0) are NOT YET COMPUTED** — the background task was reaped
+by the environment ~3× under concurrent CPU contention before finishing; each remaining cell is ~1000–2000 s.
+They are PENDING, not failed. Riskgrid is secondary context here (its decision-relevant anchor, risk=1.0, is
+done and is the fidelity twin); the fallback tables — the deliverable that confirms the LIVE cap — are COMPLETE.
+
+### VERDICT — LIVE `cap=1.5` STILL JUSTIFIED under honest ($0) cost. Config UNCHANGED, no user action needed.
+The picture does NOT change adversely. cap=1.5 is the aggregate net peak ($3061) AND aggregate PF peak
+(1.1294), has the strongest rescued-subset PF (1.5384 ≫ 1.13 baseline), and the marginal-trade analysis shows
+trades beyond 1.5 turn net-negative — so cap=1.5 is the plateau edge, exactly as the comm-$7 tables found. The
+mandate's expected DIRECTION is confirmed: aggregate net/PF are better than the comm-$7 twins.
+
+Honest nuance (task item #4/#5, reported not buried): the mandate's stated MECHANISM — "rescued trades no
+longer pay a phantom $7/lot commission dragging their P&L" — is technically near-zero for THIS subset, because
+rescued trades are all 0.01-lot, so their commission was only $7 × 0.01 = **$0.07/round-trip** (~$3.6 total
+across 51 trades). The real driver of the changed subset numbers is the SPREAD-FLOOR data fix reshaping the
+trade set: it CUT the rescued count 63→51 (fewer wide-stop signals pass the spread veto in the high-ATR
+2025–26 regime) and consequently subset net fell $1089→$828 and subset PF eased 1.60→1.54. So the subset's
+absolute edge is slightly SMALLER than the phantom-comm table showed — but it remains clearly genuine (PF 1.54)
+and cap=1.5 remains unambiguously the best cap. This is a refinement of the numbers, NOT a reversal: nothing
+here contradicts the live config or warrants changing `min_lot_risk_cap_pct` off 1.5.
+
+CAVEATS (carried over, still apply): (1) circuit breakers NOT modeled — the 25.95% aggregate DD would have
+tripped the 8% halt live. (2) Fallback raises single-trade risk above the 1.0% plan BY DESIGN (maxSingleLoss
+−$71→−$76 at cap=1.5, −$108 at cap=2.0); the cap bounds it, doesn't eliminate it. (3) Aggregate net overstates
+the fallback's own edge (reshuffle × `max_positions_per_symbol=1`); Table 3's subset P&L is the clean signal.
+(4) Rescued trades are regime-concentrated (2025–26 only), small sample (39–66).
+
+Config UNCHANGED (`config/base.yaml`, `risk/sizing.py`, `backtest/engine.py`, `src/`, `tests/` all untouched —
+this was read-only). Auditor gates untouched (rule 8). Test budget UNSPENT/NA. pytest was NOT re-run (nothing
+under `src/`/`tests/` was touched, so the suite is unaffected — last recorded 1059 passed stands; deliberately
+not re-run to avoid adding CPU load to an already-contended measurement). Harness reused:
+`experiments/sizing_smallacct_harness.py`; durable results: `scratchpad/sizing_comm0_results.jsonl` (7 cells).
