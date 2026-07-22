@@ -8,6 +8,48 @@
   <button type="submit">Filter</button>
   <a class="export-link" href="{{ url_for('trades_export', start=start_param, end=end_param) }}">Export to Excel</a>
 </form>
+<h2>Open positions</h2>
+{% if open_positions is none %}
+<div class="card empty-state">
+  <p>Open positions unavailable (MT5 not reachable).</p>
+</div>
+{% elif not open_positions %}
+<div class="card empty-state">
+  <p>No open positions.</p>
+</div>
+{% else %}
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Direction</th>
+        <th>Volume</th>
+        <th>Entry price</th>
+        <th>Current price</th>
+        <th>SL</th>
+        <th>TP</th>
+        <th>Floating P&amp;L</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for position in open_positions %}
+      <tr>
+        <td>{{ position.symbol }}</td>
+        <td><span class="badge {{ 'badge-buy' if position.direction == 'BUY' else 'badge-sell' }}">{{ position.direction }}</span></td>
+        <td>{{ position.volume }}</td>
+        <td>{{ position.price_open }}</td>
+        <td>{{ position.price_current }}</td>
+        <td>{{ position.sl }}</td>
+        <td>{{ position.tp }}</td>
+        <td class="{{ 'pnl-positive' if position.profit > 0 else ('pnl-negative' if position.profit < 0 else '') }}">{{ position.profit }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+<h2>Closed trades</h2>
 {% if rows %}
 <div class="card">
   <table>

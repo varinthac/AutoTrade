@@ -103,6 +103,62 @@ def newest_first(trades: list[TradeRecord]) -> list[TradeRecord]:
     return list(reversed(trades))
 
 
+@dataclass(frozen=True)
+class OpenPositionData:
+    """Plain, MT5-free input shape for `to_open_position_row` -- `app.py`'s
+    `get_open_positions_display()` builds one of these per position returned
+    by `mt5.positions_get()` (after resolving the broker symbol back to its
+    canonical name), so this module never has to import MetaTrader5 or see a
+    raw MT5 named tuple, same "domain object, not a raw row" boundary
+    `to_trade_row`'s `TradeRecord` param already uses."""
+    ticket: int
+    symbol: str
+    direction: str
+    volume: float
+    price_open: float
+    price_current: float
+    sl: float
+    tp: float
+    profit: float
+
+
+@dataclass(frozen=True)
+class OpenPositionRow:
+    ticket: int
+    symbol: str
+    direction: str
+    volume: float
+    price_open: float
+    price_current: float
+    sl: float
+    tp: float
+    profit: float
+
+
+def to_open_position_row(position: OpenPositionData) -> OpenPositionRow:
+    return OpenPositionRow(
+        ticket=position.ticket,
+        symbol=position.symbol,
+        direction=position.direction,
+        volume=position.volume,
+        price_open=position.price_open,
+        price_current=position.price_current,
+        sl=position.sl,
+        tp=position.tp,
+        profit=position.profit,
+    )
+
+
+def sort_open_positions(positions: list[OpenPositionRow]) -> list[OpenPositionRow]:
+    """Sorted by ticket for a stable, deterministic display order -- unlike
+    closed trades there is no natural "newest first" axis to sort by (no
+    exit_time yet), and at this project's current single-symbol scale there
+    are rarely more than 1-3 open positions at once, so sort order here is
+    low-stakes; ticket ascension (roughly open order) is simplest and stable
+    across repeated page loads."""
+    return sorted(positions, key=lambda p: p.ticket)
+
+
 def paginate(trades: list[TradeRecord], page: int, per_page: int = TRADES_PER_PAGE) -> list[TradeRecord]:
     """Slices an already-fetched list in Python -- `store/journal.py` has no
     `limit`/`offset` param today and this dashboard should NOT add one; if

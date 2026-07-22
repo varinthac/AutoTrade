@@ -7,7 +7,10 @@ logic lives here. Same framework-shell-vs-pure-logic split as
 Entirely read-only: nothing in this whole `dashboard/` package ever calls
 `session.add`/`.commit()` or otherwise writes -- safe to run continuously
 alongside a live trading loop, and never exposed off `127.0.0.1` (see
-`scripts/run_dashboard.py`).
+`scripts/run_dashboard.py`). Two accepted MT5-touching exceptions to this
+package's otherwise MT5-free design, both display-only: `get_current_server_time()`
+(current broker server time) and `get_open_positions_display()` (currently
+open positions) -- see each function's own docstring.
 """
 from __future__ import annotations
 
@@ -16,6 +19,7 @@ import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import MetaTrader5 as mt5
 import pandas as pd
 from flask import Flask, redirect, render_template, request, send_file, url_for
 
@@ -73,6 +77,55 @@ def get_current_server_time() -> datetime | None:
         return None
 
 
+def get_open_positions_display() -> list[views.OpenPositionRow] | None:
+    """A second brief, best-effort MT5 connection for display only -- the
+    same accepted exception to this dashboard's otherwise MT5-free design as
+    `get_current_server_time()` (module docstring), and following its exact
+    philosophy: never let an MT5 failure break a page render. Returns `None`
+    when MT5 itself is unavailable (session/connection raises, or
+    `mt5.positions_get()` itself returns `None` on failure) -- distinct from
+    `[]`, which means the connection succeeded and there are genuinely zero
+    open positions right now. A caller must be able to tell these two cases
+    apart (a `None` "MT5 unreachable" must never look like an empty "no
+    trades open").
+
+    Calls `mt5.positions_get()`/`mt5.account_info()` directly rather than
+    constructing a full `ThrottledDemoAdapter` (`execution/demo_adapter.py`):
+    that class needs a `Clock`, `order_cfg`, `journal_db_path`, etc. this
+    read-only display has no other reason to construct, and its own
+    `get_open_positions()` bakes in a Shield-specific `risk_pct`
+    approximation this display doesn't need.
+    """
+    try:
+        symbol_map = load_yaml_config("base")["symbols"]
+        broker_to_canonical = {broker: canonical for canonical, broker in symbol_map.items()}
+        creds = load_mt5_credentials()
+        with mt5_session(creds, timeout_ms=_SERVER_TIME_MT5_TIMEOUT_MS):
+            positions = mt5.positions_get()
+            if positions is None:
+                return None
+
+            result: list[views.OpenPositionRow] = []
+            for pos in positions:
+                canonical = broker_to_canonical.get(pos.symbol)
+                if canonical is None:
+                    logger.warning(
+                        "get_open_positions_display(): broker symbol %r has no canonical mapping "
+                        "in config/base.yaml symbols -- skipping", pos.symbol,
+                    )
+                    continue
+                direction = "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"
+                result.append(views.to_open_position_row(views.OpenPositionData(
+                    ticket=pos.ticket, symbol=canonical, direction=direction, volume=pos.volume,
+                    price_open=pos.price_open, price_current=pos.price_current,
+                    sl=pos.sl, tp=pos.tp, profit=pos.profit,
+                )))
+            return views.sort_open_positions(result)
+    except Exception:
+        logger.warning("get_open_positions_display: could not fetch open positions", exc_info=True)
+        return None
+
+
 def create_app(db_path: Path | None = None) -> Flask:
     app = Flask(__name__)
     resolved_db_path = db_path if db_path is not None else DEFAULT_PAPER_DB_PATH
@@ -102,6 +155,7 @@ def create_app(db_path: Path | None = None) -> Flask:
 
         all_trades = views.newest_first(journal.get_trades_in_range(start, end, db_path=resolved_db_path))
         rows = [views.to_trade_row(t) for t in views.paginate(all_trades, page)]
+        open_positions = get_open_positions_display()
 
         return render_template(
             "trades.html",
@@ -112,6 +166,7 @@ def create_app(db_path: Path | None = None) -> Flask:
             total_count=len(all_trades),
             start_param=start_param,
             end_param=end_param,
+            open_positions=open_positions,
         )
 
     @app.route("/trades/export")

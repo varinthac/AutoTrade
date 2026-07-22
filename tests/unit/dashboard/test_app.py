@@ -3,16 +3,18 @@ dashboard/views.py's pure logic -- same seeded-tmp_path DB convention as
 tests/unit/store/test_journal.py / tests/unit/test_run_auditor.py."""
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from datetime import date, datetime
 
+import MetaTrader5 as mt5
 import pandas as pd
 import pytest
 
 from autotrade.auditor.daily_report import build_daily_report
 from autotrade.dashboard import views
 from autotrade.dashboard import app as dashboard_app
-from autotrade.dashboard.app import create_app, get_current_server_time
+from autotrade.dashboard.app import create_app, get_current_server_time, get_open_positions_display
 from autotrade.store import journal
 
 
@@ -152,6 +154,181 @@ def test_page_still_renders_200_when_mt5_session_raises(db_path, monkeypatch):
 
     assert resp.status_code == 200
     assert "unavailable" in resp.get_data(as_text=True).lower()
+
+
+# --- get_open_positions_display / open positions on /trades (Feature B) ---
+
+
+class _FakeOpenPosition:
+    def __init__(self, symbol, type_, volume, price_open, price_current, sl, tp, profit, ticket=1):
+        self.symbol = symbol
+        self.type = type_
+        self.volume = volume
+        self.price_open = price_open
+        self.price_current = price_current
+        self.sl = sl
+        self.tp = tp
+        self.profit = profit
+        self.ticket = ticket
+
+
+def test_get_open_positions_display_returns_none_when_mt5_session_raises(monkeypatch):
+    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
+    monkeypatch.setattr(dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a"}})
+
+    def _raise(creds, **kwargs):
+        raise RuntimeError("MT5 terminal not running")
+
+    monkeypatch.setattr(dashboard_app, "mt5_session", _raise)
+
+    assert get_open_positions_display() is None
+
+
+def test_get_open_positions_display_returns_none_when_positions_get_returns_none(monkeypatch):
+    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
+    monkeypatch.setattr(dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a"}})
+
+    @contextmanager
+    def _fake_session(creds, **kwargs):
+        yield
+
+    monkeypatch.setattr(dashboard_app, "mt5_session", _fake_session)
+    monkeypatch.setattr(dashboard_app.mt5, "positions_get", lambda: None)
+
+    assert get_open_positions_display() is None
+
+
+def test_get_open_positions_display_returns_empty_list_for_genuinely_zero_positions(monkeypatch):
+    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
+    monkeypatch.setattr(dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a"}})
+
+    @contextmanager
+    def _fake_session(creds, **kwargs):
+        yield
+
+    monkeypatch.setattr(dashboard_app, "mt5_session", _fake_session)
+    monkeypatch.setattr(dashboard_app.mt5, "positions_get", lambda: ())
+
+    result = get_open_positions_display()
+
+    assert result == []
+    assert result is not None
+
+
+def test_get_open_positions_display_maps_broker_symbol_and_skips_unmapped(monkeypatch, caplog):
+    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
+    monkeypatch.setattr(
+        dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a", "EURUSD": "EURUSD.a"}},
+    )
+
+    @contextmanager
+    def _fake_session(creds, **kwargs):
+        yield
+
+    monkeypatch.setattr(dashboard_app, "mt5_session", _fake_session)
+    monkeypatch.setattr(
+        dashboard_app.mt5, "positions_get",
+        lambda: (
+            _FakeOpenPosition(
+                symbol="XAUUSD.a", type_=mt5.POSITION_TYPE_BUY, volume=0.1, price_open=2400.0,
+                price_current=2410.0, sl=2390.0, tp=2420.0, profit=10.0, ticket=1,
+            ),
+            _FakeOpenPosition(
+                symbol="UNKNOWNSYMBOL", type_=mt5.POSITION_TYPE_BUY, volume=0.1, price_open=1.0,
+                price_current=1.1, sl=0.9, tp=1.2, profit=1.0, ticket=2,
+            ),
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = get_open_positions_display()
+
+    assert len(result) == 1
+    assert result[0].symbol == "XAUUSD"
+    assert result[0].direction == "BUY"
+    assert any("no canonical mapping" in record.message for record in caplog.records)
+
+
+def test_get_open_positions_display_maps_sell_type_to_sell_direction(monkeypatch):
+    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
+    monkeypatch.setattr(dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a"}})
+
+    @contextmanager
+    def _fake_session(creds, **kwargs):
+        yield
+
+    monkeypatch.setattr(dashboard_app, "mt5_session", _fake_session)
+    monkeypatch.setattr(
+        dashboard_app.mt5, "positions_get",
+        lambda: (
+            _FakeOpenPosition(
+                symbol="XAUUSD.a", type_=mt5.POSITION_TYPE_SELL, volume=0.2, price_open=2410.0,
+                price_current=2405.0, sl=2420.0, tp=2390.0, profit=-5.0, ticket=1,
+            ),
+        ),
+    )
+
+    result = get_open_positions_display()
+
+    assert result[0].direction == "SELL"
+    assert result[0].profit == -5.0
+
+
+def test_get_open_positions_display_passes_a_short_timeout_ms_to_mt5_session(monkeypatch):
+    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
+    monkeypatch.setattr(dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a"}})
+    captured = {}
+
+    @contextmanager
+    def _fake_session(creds, **kwargs):
+        captured.update(kwargs)
+        yield
+
+    monkeypatch.setattr(dashboard_app, "mt5_session", _fake_session)
+    monkeypatch.setattr(dashboard_app.mt5, "positions_get", lambda: ())
+
+    get_open_positions_display()
+
+    assert captured.get("timeout_ms") is not None
+    assert captured["timeout_ms"] <= 5000
+
+
+def test_trades_page_shows_open_positions_when_available(db_path, monkeypatch):
+    monkeypatch.setattr(
+        dashboard_app, "get_open_positions_display",
+        lambda: [
+            views.OpenPositionRow(
+                ticket=1, symbol="XAUUSD", direction="BUY", volume=0.1, price_open=2400.0,
+                price_current=2410.0, sl=2390.0, tp=2420.0, profit=10.0,
+            ),
+        ],
+    )
+    client = create_app(db_path=db_path).test_client()
+    body = client.get("/trades").get_data(as_text=True)
+
+    assert "XAUUSD" in body
+    assert "BUY" in body
+    assert "2400.0" in body
+    assert "2410.0" in body
+    assert "10.0" in body
+    assert "No open positions" not in body
+
+
+def test_trades_page_shows_no_open_positions_message_for_empty_list(db_path, monkeypatch):
+    monkeypatch.setattr(dashboard_app, "get_open_positions_display", lambda: [])
+    client = create_app(db_path=db_path).test_client()
+    body = client.get("/trades").get_data(as_text=True)
+
+    assert "No open positions" in body
+
+
+def test_trades_page_shows_unavailable_message_and_returns_200_when_positions_unavailable(db_path, monkeypatch):
+    monkeypatch.setattr(dashboard_app, "get_open_positions_display", lambda: None)
+    client = create_app(db_path=db_path).test_client()
+    resp = client.get("/trades")
+
+    assert resp.status_code == 200
+    assert "Open positions unavailable" in resp.get_data(as_text=True)
 
 
 # --- /trades/export --------------------------------------------------------
@@ -344,6 +521,39 @@ def test_newest_first_reverses_ascending_order():
     reversed_trades = views.newest_first(trades)
     assert reversed_trades[0].exit_time == datetime(2026, 7, 19, 15, 0)
     assert reversed_trades[1].exit_time == datetime(2026, 7, 19, 9, 0)
+
+
+def test_to_open_position_row_buy_with_positive_pnl():
+    data = views.OpenPositionData(
+        ticket=1, symbol="XAUUSD", direction="BUY", volume=0.1, price_open=2400.0,
+        price_current=2410.0, sl=2390.0, tp=2420.0, profit=10.0,
+    )
+    row = views.to_open_position_row(data)
+    assert row == views.OpenPositionRow(
+        ticket=1, symbol="XAUUSD", direction="BUY", volume=0.1, price_open=2400.0,
+        price_current=2410.0, sl=2390.0, tp=2420.0, profit=10.0,
+    )
+
+
+def test_to_open_position_row_sell_with_negative_pnl():
+    data = views.OpenPositionData(
+        ticket=2, symbol="EURUSD", direction="SELL", volume=0.2, price_open=1.10,
+        price_current=1.11, sl=1.12, tp=1.05, profit=-20.0,
+    )
+    row = views.to_open_position_row(data)
+    assert row.direction == "SELL"
+    assert row.profit == -20.0
+
+
+def test_sort_open_positions_sorts_by_ticket_ascending():
+    unsorted_rows = [
+        views.OpenPositionRow(ticket=3, symbol="A", direction="BUY", volume=0.1, price_open=1.0,
+                               price_current=1.0, sl=0.0, tp=0.0, profit=0.0),
+        views.OpenPositionRow(ticket=1, symbol="B", direction="SELL", volume=0.1, price_open=1.0,
+                               price_current=1.0, sl=0.0, tp=0.0, profit=0.0),
+    ]
+    sorted_rows = views.sort_open_positions(unsorted_rows)
+    assert [r.ticket for r in sorted_rows] == [1, 3]
 
 
 def test_paginate_slices_by_page():

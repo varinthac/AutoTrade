@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1099 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1111 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1099 (including all parametrized variants)
+- **Total Test Count**: 1111 (including all parametrized variants)
 - **Test Files**: ~55 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -37,8 +37,8 @@ This document provides a comprehensive list of all 1099 test cases in the AutoTr
 | | test_scoring.py | 25 |
 | | test_trivial_signal.py | 6 |
 | **Council Subtotal** | | **155** |
-| Dashboard | test_app.py | 33 |
-| **Dashboard Subtotal** | | **33** |
+| Dashboard | test_app.py | 45 |
+| **Dashboard Subtotal** | | **45** |
 | Execution | test_demo_adapter.py | 65 |
 | | test_noop_adapter.py | 8 |
 | **Execution Subtotal** | | **73** |
@@ -92,7 +92,7 @@ This document provides a comprehensive list of all 1099 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **257** |
 | | | |
-| **GRAND TOTAL** | | **1099** |
+| **GRAND TOTAL** | | **1111** |
 
 ---
 
@@ -475,6 +475,15 @@ This document provides a comprehensive list of all 1099 test cases in the AutoTr
 - test_get_current_server_time_returns_none_when_mt5_session_raises
 - test_get_current_server_time_passes_a_short_timeout_ms_to_mt5_session
 - test_page_still_renders_200_when_mt5_session_raises
+- test_get_open_positions_display_returns_none_when_mt5_session_raises
+- test_get_open_positions_display_returns_none_when_positions_get_returns_none
+- test_get_open_positions_display_returns_empty_list_for_genuinely_zero_positions
+- test_get_open_positions_display_maps_broker_symbol_and_skips_unmapped
+- test_get_open_positions_display_maps_sell_type_to_sell_direction
+- test_get_open_positions_display_passes_a_short_timeout_ms_to_mt5_session
+- test_trades_page_shows_open_positions_when_available
+- test_trades_page_shows_no_open_positions_message_for_empty_list
+- test_trades_page_shows_unavailable_message_and_returns_200_when_positions_unavailable
 - test_trades_export_returns_valid_xlsx_with_seeded_trade_values
 - test_trades_export_respects_date_range_filter
 - test_trades_export_empty_db_returns_valid_header_only_xlsx
@@ -490,6 +499,9 @@ This document provides a comprehensive list of all 1099 test cases in the AutoTr
 - test_daily_malformed_date_param_does_not_500
 - test_trades_negative_page_clamped_not_shown_raw
 - test_newest_first_reverses_ascending_order
+- test_to_open_position_row_buy_with_positive_pnl
+- test_to_open_position_row_sell_with_negative_pnl
+- test_sort_open_positions_sorts_by_ticket_ascending
 - test_paginate_slices_by_page
 - test_paginate_clamps_below_page_one
 - test_parse_date_param_none_and_valid
