@@ -52,6 +52,15 @@ class BacktestReportEnvelope:
     param-tuner finding that first confirmed this gap) -- same "don't
     silently count an incomplete simulation" philosophy as
     `cost_model_complete`/`risk_voice_modeled`."""
+    shield_modeled: bool
+    """True iff this run's `BacktestConfig.shield_cfg` was set (not `None`)
+    -- see `backtest/engine.py`'s module docstring. A run without Shield
+    modeled never exercised the duplicate-signal cooldown, the one Shield
+    rule that has real effect in the single-position backtest engine (the
+    other 5 are structurally inert there regardless -- see
+    `experiments/experiments_log.md`'s 2026-07-22 Shield NOTE) -- same "don't
+    silently count an incomplete simulation" philosophy as
+    `cost_model_complete`/`risk_voice_modeled`/`watchman_exits_modeled`."""
     min_lot_risk_cap_pct: float | None
     """This run's `BacktestConfig.min_lot_risk_cap_pct`, recorded for
     auditability -- `None` means `risk/sizing.py::compute_lot_size`'s
@@ -71,7 +80,7 @@ _REPORT_FIELDS = (
 )
 _TOP_LEVEL_FIELDS = (
     "symbol", "bar_range", "starting_equity", "cost_model", "cost_model_complete",
-    "is_out_of_sample", "risk_voice_modeled", "watchman_exits_modeled",
+    "is_out_of_sample", "risk_voice_modeled", "watchman_exits_modeled", "shield_modeled",
     "min_lot_risk_cap_pct", "report",
 )
 
@@ -112,6 +121,7 @@ def load_backtest_report_envelope(path: Path) -> BacktestReportEnvelope:
             is_out_of_sample=data["is_out_of_sample"],
             risk_voice_modeled=data["risk_voice_modeled"],
             watchman_exits_modeled=data["watchman_exits_modeled"],
+            shield_modeled=data["shield_modeled"],
             min_lot_risk_cap_pct=data["min_lot_risk_cap_pct"],
             report=BacktestReport(**{k: data["report"][k] for k in _REPORT_FIELDS}),
         )

@@ -28,6 +28,12 @@ Watchman's exit management (breakeven/trail/structure-invalidation/time-stop)
 is likewise always modeled, using `config/base.yaml`'s `watchman:` block --
 see `backtest/engine.py`'s module docstring for the exact per-bar ordering
 convention and the one sub-condition (news protection) still unmodeled.
+
+Shield's duplicate-signal cooldown is likewise always modeled, using
+`config/base.yaml`'s `shield:` block -- see `backtest/engine.py`'s module
+docstring for exactly which of Shield's 6 rules have real effect in this
+single-position engine (only the cooldown does; the other 5 are structurally
+inert here).
 """
 from __future__ import annotations
 
@@ -50,6 +56,7 @@ from autotrade.common.symbol_spec import SymbolSpec
 from autotrade.common.symbols import get_symbol_spec
 from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.feed.historical import HISTORICAL_DIR
+from autotrade.shield.checkpoint import ShieldConfig
 from autotrade.watchman.evaluate import WatchmanConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -67,6 +74,7 @@ def build_envelope(
     is_out_of_sample: bool,
     risk_voice_modeled: bool,
     watchman_exits_modeled: bool,
+    shield_modeled: bool,
     min_lot_risk_cap_pct: float | None,
 ) -> dict:
     """The JSON-serializable envelope written to disk -- see
@@ -82,10 +90,11 @@ def build_envelope(
     safeguard instead lives in `main()`'s CLI: `--commission-per-lot` is a
     required argument, so this function is never reached with an
     un-considered commission value in the normal CLI path.
-    `risk_voice_modeled`/`watchman_exits_modeled` mirror that same "don't
-    silently count an incomplete simulation" philosophy for Risk Voice and
-    Watchman's exit management respectively -- see `backtest/engine.py`'s
-    module docstring. `min_lot_risk_cap_pct` records this run's
+    `risk_voice_modeled`/`watchman_exits_modeled`/`shield_modeled` mirror
+    that same "don't silently count an incomplete simulation" philosophy for
+    Risk Voice, Watchman's exit management, and Shield's cooldown
+    respectively -- see `backtest/engine.py`'s module docstring.
+    `min_lot_risk_cap_pct` records this run's
     `BacktestConfig.min_lot_risk_cap_pct` for auditability (`None` when the
     min-lot risk-cap fallback was disabled) -- see `risk/sizing.py`'s
     `compute_lot_size` docstring.
@@ -100,6 +109,7 @@ def build_envelope(
         "is_out_of_sample": is_out_of_sample,
         "risk_voice_modeled": risk_voice_modeled,
         "watchman_exits_modeled": watchman_exits_modeled,
+        "shield_modeled": shield_modeled,
         "min_lot_risk_cap_pct": min_lot_risk_cap_pct,
         "report": asdict(report),
     }
@@ -116,26 +126,27 @@ def run_and_persist(
     output_dir: Path,
     risk_voice_cfg: RiskVoiceConfig | None = None,
     watchman_cfg: WatchmanConfig | None = None,
+    shield_cfg: ShieldConfig | None = None,
     pivot_bars: int = 3,
     min_lot_risk_cap_pct: float | None = None,
 ) -> Path:
-    """`risk_voice_cfg=None`/`watchman_cfg=None` (the defaults) mean Risk
-    Voice / Watchman's exit management are NOT modeled in this run -- an
-    explicit, honest placeholder (see `backtest/engine.py`'s module
-    docstring), not a silent equivalent to passing one. `scripts/
-    run_backtest.py`'s CLI (`main()`, below) always constructs real ones
-    from `config/base.yaml`'s `risk_voice:`/`watchman:` blocks; leaving
-    either `None` is only appropriate for tests/tooling that don't need
-    that veto/exit behavior. `pivot_bars` defaults to `BacktestConfig`'s own
-    default (3); `main()` always passes `config/base.yaml`'s
-    `global.swing_pivot_bars` instead of relying on that default.
-    `min_lot_risk_cap_pct=None` (the default) disables `risk/sizing.py`'s
-    min-lot risk-cap fallback -- spec-exact behavior; `main()` passes
-    `config/base.yaml`'s `cfo.min_lot_risk_cap_pct` (the adopted 1.5 value)
-    unless overridden by `--min-lot-risk-cap-pct`."""
+    """`risk_voice_cfg=None`/`watchman_cfg=None`/`shield_cfg=None` (the
+    defaults) mean Risk Voice / Watchman's exit management / Shield's
+    cooldown are NOT modeled in this run -- an explicit, honest placeholder
+    (see `backtest/engine.py`'s module docstring), not a silent equivalent to
+    passing one. `scripts/run_backtest.py`'s CLI (`main()`, below) always
+    constructs real ones from `config/base.yaml`'s `risk_voice:`/`watchman:`/
+    `shield:` blocks; leaving any `None` is only appropriate for
+    tests/tooling that don't need that veto/exit/cooldown behavior.
+    `pivot_bars` defaults to `BacktestConfig`'s own default (3); `main()`
+    always passes `config/base.yaml`'s `global.swing_pivot_bars` instead of
+    relying on that default. `min_lot_risk_cap_pct=None` (the default)
+    disables `risk/sizing.py`'s min-lot risk-cap fallback -- spec-exact
+    behavior; `main()` passes `config/base.yaml`'s `cfo.min_lot_risk_cap_pct`
+    (the adopted 1.5 value) unless overridden by `--min-lot-risk-cap-pct`."""
     config = BacktestConfig(
         starting_equity=starting_equity, risk_per_trade_pct=risk_per_trade_pct, cost_model=cost_model,
-        risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg, pivot_bars=pivot_bars,
+        risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg, shield_cfg=shield_cfg, pivot_bars=pivot_bars,
         min_lot_risk_cap_pct=min_lot_risk_cap_pct,
     )
     trades = run_backtest(df, symbol, symbol_spec, config)
@@ -144,6 +155,7 @@ def run_and_persist(
         symbol, df, report, cost_model, starting_equity, is_out_of_sample,
         risk_voice_modeled=risk_voice_cfg is not None,
         watchman_exits_modeled=watchman_cfg is not None,
+        shield_modeled=shield_cfg is not None,
         min_lot_risk_cap_pct=min_lot_risk_cap_pct,
     )
 
@@ -255,6 +267,16 @@ def main() -> int:
         breakeven_enabled=cfg["watchman"]["breakeven_enabled"],
         trail_enabled=cfg["watchman"]["trail_enabled"],
     )
+    # Always model Shield's cooldown from config/base.yaml's real thresholds
+    # -- same "no opt-out" convention as risk_voice_cfg/watchman_cfg above.
+    shield_cfg = ShieldConfig(
+        min_rr=cfg["shield"]["min_rr"],
+        max_correlation=cfg["shield"]["max_correlation"],
+        max_positions_per_symbol=cfg["shield"]["max_positions_per_symbol"],
+        max_positions_total=cfg["shield"]["max_positions_total"],
+        total_risk_ceiling_pct=cfg["shield"]["total_risk_ceiling_pct"],
+        duplicate_signal_cooldown_hours=cfg["shield"]["duplicate_signal_cooldown_hours"],
+    )
 
     creds = load_mt5_credentials()
     with mt5_session(creds):
@@ -267,7 +289,7 @@ def main() -> int:
     run_and_persist(
         args.symbol, df, symbol_spec, args.starting_equity, risk_per_trade_pct,
         cost_model, args.out_of_sample, args.output_dir,
-        risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg,
+        risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg, shield_cfg=shield_cfg,
         pivot_bars=cfg["global"]["swing_pivot_bars"],
         min_lot_risk_cap_pct=min_lot_risk_cap_pct,
     )

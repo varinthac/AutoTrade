@@ -19,6 +19,7 @@ from autotrade.common.symbol_spec import SymbolSpec
 from autotrade.council.order_construction import OrderPlan
 from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.council.scoring import BullBearScore
+from autotrade.shield.checkpoint import ShieldConfig
 from autotrade.watchman.evaluate import WatchmanConfig
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "run_backtest.py"
@@ -118,7 +119,7 @@ def test_build_envelope_cost_model_complete_true_when_commission_set_and_min_spr
     envelope = run_backtest_script.build_envelope(
         "XAUUSD", df, report, CostModelConfig(commission_per_lot=3.5, slippage_points=None),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
-        min_lot_risk_cap_pct=None,
+        shield_modeled=True, min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is True
 
@@ -134,7 +135,7 @@ def test_build_envelope_cost_model_complete_true_when_commission_zero_and_min_sp
     envelope = run_backtest_script.build_envelope(
         "XAUUSD", df, report, CostModelConfig(commission_per_lot=0.0, slippage_points=None),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
-        min_lot_risk_cap_pct=None,
+        shield_modeled=True, min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is True
 
@@ -147,7 +148,7 @@ def test_build_envelope_cost_model_complete_false_when_slippage_explicitly_overr
     envelope = run_backtest_script.build_envelope(
         "XAUUSD", df, report, CostModelConfig(commission_per_lot=3.5, slippage_points=2.0),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
-        min_lot_risk_cap_pct=None,
+        shield_modeled=True, min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is False
 
@@ -171,6 +172,7 @@ def test_run_and_persist_writes_a_loadable_envelope(tmp_path, monkeypatch):
     assert envelope.cost_model_complete is True
     assert envelope.risk_voice_modeled is False  # risk_voice_cfg omitted -> not modeled
     assert envelope.watchman_exits_modeled is False  # watchman_cfg omitted -> not modeled
+    assert envelope.shield_modeled is False  # shield_cfg omitted -> not modeled
     assert envelope.min_lot_risk_cap_pct is None  # min_lot_risk_cap_pct omitted -> fallback disabled
 
     raw = json.loads(out_path.read_text(encoding="utf-8"))
@@ -213,6 +215,22 @@ def test_run_and_persist_watchman_cfg_marks_envelope_as_modeled(tmp_path, monkey
 
     envelope = load_backtest_report_envelope(out_path)
     assert envelope.watchman_exits_modeled is True
+
+
+def test_run_and_persist_shield_cfg_marks_envelope_as_modeled(tmp_path, monkeypatch):
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    output_dir = tmp_path / "backtest_reports"
+
+    out_path = run_backtest_script.run_and_persist(
+        "XAUUSD", df, SYMBOL, 10_000.0, 1.0,
+        CostModelConfig(commission_per_lot=2.0, slippage_points=None),
+        False, output_dir, shield_cfg=ShieldConfig(),
+    )
+
+    envelope = load_backtest_report_envelope(out_path)
+    assert envelope.shield_modeled is True
 
 
 def test_run_and_persist_threads_pivot_bars_into_backtest_config(tmp_path, monkeypatch):
@@ -300,6 +318,11 @@ _FAKE_MAIN_CFG = {
         "time_stop_hours": 36.0, "dead_trade_r_band": 0.25,
         "breakeven_enabled": False, "trail_enabled": False,
     },
+    "shield": {
+        "min_rr": 1.8, "max_correlation": 0.6, "max_positions_per_symbol": 2,
+        "max_positions_total": 5, "total_risk_ceiling_pct": 4.5,
+        "duplicate_signal_cooldown_hours": 6.0,
+    },
 }
 
 
@@ -385,6 +408,34 @@ def test_main_constructs_watchman_cfg_from_config_with_every_field_mapped_correc
     assert wc.trail_enabled is False
 
 
+def test_main_constructs_shield_cfg_from_config_with_every_field_mapped_correctly(monkeypatch, tmp_path):
+    _patch_main_wiring(monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}]))
+    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0"])
+
+    captured = {}
+
+    def _fake_run_and_persist(*args, **kwargs):
+        captured["shield_cfg"] = kwargs.get("shield_cfg")
+        return tmp_path / "envelope.json"
+
+    monkeypatch.setattr(run_backtest_script, "run_and_persist", _fake_run_and_persist)
+
+    exit_code = run_backtest_script.main()
+
+    assert exit_code == 0
+    sc = captured["shield_cfg"]
+    assert sc is not None
+    # Every field checked individually against a DISTINCT fake config value --
+    # a KeyError, a swapped/misassigned field, or a silently-ignored one would
+    # fail at least one of these, not just "did it run without error".
+    assert sc.min_rr == 1.8
+    assert sc.max_correlation == 0.6
+    assert sc.max_positions_per_symbol == 2
+    assert sc.max_positions_total == 5
+    assert sc.total_risk_ceiling_pct == 4.5
+    assert sc.duplicate_signal_cooldown_hours == 6.0
+
+
 def test_main_threads_pivot_bars_from_config_into_run_and_persist(monkeypatch, tmp_path):
     # A KeyError, a swapped field, or silently relying on run_and_persist's/
     # BacktestConfig's own pivot_bars=3 default (regardless of config) would
@@ -465,6 +516,7 @@ def test_main_writes_an_envelope_with_risk_voice_modeled_true(monkeypatch, tmp_p
     envelope = load_backtest_report_envelope(out_path)
     assert envelope.risk_voice_modeled is True
     assert envelope.watchman_exits_modeled is True
+    assert envelope.shield_modeled is True
     assert envelope.min_lot_risk_cap_pct == 1.25  # _FAKE_MAIN_CFG's cfo.min_lot_risk_cap_pct
 
 

@@ -50,6 +50,27 @@ in a backtest) that lives only for that trade's lifetime.
 (`watchman/news_protection.py`) -- same missing-historical-news-calendar gap
 as Risk Voice's news veto above, and for the same reason not attempted here.
 
+Shield's duplicate-signal cooldown (rule 6, `shield/checkpoint.py`) is ALSO
+wired in, via an OPTIONAL `shield_cfg: ShieldConfig | None` on
+`BacktestConfig` (default `None`, same placeholder convention as
+`risk_voice_cfg`/`watchman_cfg` above). A fresh `Shield` is instantiated once
+per `run_backtest` call and consulted right after `config.signal_fn` returns
+a plan, using the same swing-index re-derivation `_build_watchman_metadata`
+uses at fill time (here done at SIGNAL time instead, matching
+`orchestrator/shadow_loop.py`'s live ordering: check before the order is
+placed, `record_trade_opened` only once it actually fills). Shield's other 5
+rules are exercised too (never reimplemented, the real `Shield.check()` is
+called) but are structurally inert in this single-position engine: `min_rr`
+is always satisfied because `tp_r_multiple` fixes R:R at exactly 2.0, and
+`open_positions` passed to `check()` is always `[]` (this engine only ever
+holds one position, so correlation/max-positions/risk-ceiling can never
+evaluate against a second one) -- see `experiments/experiments_log.md`'s
+2026-07-22 Shield NOTE for the full analysis of why only the cooldown was a
+consequential live/backtest divergence today. Defensively (same "should not
+normally happen" fallback as `_build_watchman_metadata`), a signal with no
+re-derivable confirmed swing at signal time skips the Shield check entirely
+rather than crashing.
+
 **Per-bar ordering/timing convention (a real backtest-methodology decision,
 documented here rather than left implicit)**: for every bar an already-open
 position is still open, the existing fixed SL/TP exit (`check_exit`) is
@@ -128,6 +149,7 @@ from autotrade.council.risk_voice import RiskVoiceConfig, check_risk_voice
 from autotrade.features.indicators import atr, rolling_average
 from autotrade.features.swing import latest_confirmed_swing_high, latest_confirmed_swing_low
 from autotrade.risk.sizing import compute_lot_size
+from autotrade.shield.checkpoint import Shield, ShieldConfig
 from autotrade.watchman.evaluate import WatchmanConfig, evaluate_watchman
 from autotrade.watchman.position_metadata import PositionMetadata
 
@@ -298,6 +320,13 @@ class BacktestConfig:
     change. See that function's docstring for the exact deliberate-deviation
     mechanics; `config/base.yaml`'s `cfo.min_lot_risk_cap_pct: 1.5` is the
     adopted live value, threaded through by `scripts/run_backtest.py`."""
+    shield_cfg: ShieldConfig | None = None
+    """`None` (the default) means Shield's duplicate-signal cooldown is NOT
+    modeled in this run -- an explicit placeholder, not silently-equivalent-
+    to-passing (see module docstring's Shield paragraph). `scripts/
+    run_backtest.py` always passes a real `ShieldConfig` loaded from
+    `config/base.yaml`'s `shield:` block; leaving this `None` is only
+    appropriate for tests/tooling that don't need the cooldown gate."""
 
 
 @dataclass
@@ -308,6 +337,12 @@ class _PendingOrder:
     """The bar index `config.signal_fn` was called with when this order was
     decided -- needed at fill time to re-derive `PositionMetadata.
     entry_swing_index` (see module docstring's Watchman section)."""
+    swing_index: int | None
+    """The swing index Shield's rule 6 checked this signal against, re-
+    derived at SIGNAL time (see module docstring's Shield paragraph) --
+    carried forward so `record_trade_opened` can be told the same value once
+    this order actually fills. `None` when `config.shield_cfg` is not set,
+    or (defensively) when no confirmed swing existed at signal time."""
 
 
 @dataclass
@@ -358,6 +393,22 @@ def _watchman_current_atr(df: pd.DataFrame, as_of_index: int, period: int = 14) 
     highs = df["high"].iloc[: as_of_index + 1]
     lows = df["low"].iloc[: as_of_index + 1]
     return float(atr(highs, lows, closes, period=period).iloc[-1])
+
+
+def _swing_index_at(
+    df: pd.DataFrame, as_of_index: int, direction: Literal["BUY", "SELL"], pivot_bars: int,
+) -> int | None:
+    """The confirmed swing Shield's rule 6 keys its cooldown state on for a
+    signal firing at `as_of_index` -- same `latest_confirmed_swing_low`/
+    `latest_confirmed_swing_high` call `_build_watchman_metadata` makes at
+    fill time, and `orchestrator/shadow_loop.py`'s live loop makes at signal
+    time, `None` if no confirmed swing exists yet (see module docstring)."""
+    swing = (
+        latest_confirmed_swing_low(df, as_of_index, pivot_bars=pivot_bars)
+        if direction == "BUY"
+        else latest_confirmed_swing_high(df, as_of_index, pivot_bars=pivot_bars)
+    )
+    return swing[0] if swing is not None else None
 
 
 def _build_watchman_metadata(
@@ -502,6 +553,14 @@ def run_backtest(
     point_value = symbol_spec.tick_value / symbol_spec.tick_size
     equity = config.starting_equity
     clock = SimulatedClock(pd.Timestamp(df["time"].iloc[0]).to_pydatetime())
+    shield = Shield(
+        min_rr=config.shield_cfg.min_rr,
+        max_correlation=config.shield_cfg.max_correlation,
+        max_positions_per_symbol=config.shield_cfg.max_positions_per_symbol,
+        max_positions_total=config.shield_cfg.max_positions_total,
+        total_risk_ceiling_pct=config.shield_cfg.total_risk_ceiling_pct,
+        duplicate_signal_cooldown_hours=config.shield_cfg.duplicate_signal_cooldown_hours,
+    ) if config.shield_cfg is not None else None
 
     pending: _PendingOrder | None = None
     position: _OpenPosition | None = None
@@ -516,6 +575,11 @@ def run_backtest(
                 pending.plan.direction, bar["open"], bar["spread"], symbol_spec, config.cost_model
             )
             entry_time = pd.Timestamp(bar["time"])
+            if shield is not None and pending.swing_index is not None:
+                shield.record_trade_opened(
+                    symbol=symbol, direction=pending.plan.direction,
+                    opened_at=entry_time.to_pydatetime(), swing_index=pending.swing_index,
+                )
             metadata = None
             if config.watchman_cfg is not None:
                 metadata = _build_watchman_metadata(
@@ -577,6 +641,16 @@ def run_backtest(
                 bear_threshold=config.bear_threshold, conflict_threshold=config.conflict_threshold,
                 risk_voice_cfg=config.risk_voice_cfg, clock=clock,
             )
+            swing_index = None
+            if plan is not None and shield is not None:
+                swing_index = _swing_index_at(df, i, plan.direction, config.pivot_bars)
+                if swing_index is not None:
+                    shield_decision = shield.check(
+                        order_plan=plan, symbol=symbol, open_positions=[],
+                        new_trade_risk_pct=config.risk_per_trade_pct, swing_index=swing_index, clock=clock,
+                    )
+                    if shield_decision.blocked:
+                        plan = None
             if plan is not None:
                 lot = compute_lot_size(
                     equity=equity, risk_per_trade_pct=config.risk_per_trade_pct,
@@ -586,7 +660,7 @@ def run_backtest(
                     min_lot_risk_cap_pct=config.min_lot_risk_cap_pct,
                 )
                 if lot is not None and i + 1 < len(df):
-                    pending = _PendingOrder(plan=plan, lot_size=lot, signal_index=i)
+                    pending = _PendingOrder(plan=plan, lot_size=lot, signal_index=i, swing_index=swing_index)
                 # else: below broker minimum, or no next bar to fill on --
                 # never becomes a trade, consistent with "not filled" rather
                 # than a silently-wrong same-bar fill.

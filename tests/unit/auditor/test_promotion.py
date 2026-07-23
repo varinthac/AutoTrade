@@ -24,7 +24,7 @@ THRESHOLDS = PromotionThresholds()
 def _envelope(
     profit_factor=1.35, max_drawdown_pct=10.0, trade_count=210,
     profit_factor_excluding_top_5=1.1, cost_model_complete=True, is_out_of_sample=True,
-    risk_voice_modeled=True, watchman_exits_modeled=True,
+    risk_voice_modeled=True, watchman_exits_modeled=True, shield_modeled=True,
 ) -> BacktestReportEnvelope:
     report = BacktestReport(
         trade_count=trade_count, win_count=120, loss_count=trade_count - 120,
@@ -37,7 +37,7 @@ def _envelope(
         starting_equity=10_000.0, cost_model=CostModelConfig(commission_per_lot=3.5, slippage_points=None),
         cost_model_complete=cost_model_complete, is_out_of_sample=is_out_of_sample,
         risk_voice_modeled=risk_voice_modeled, watchman_exits_modeled=watchman_exits_modeled,
-        min_lot_risk_cap_pct=1.5, report=report,
+        shield_modeled=shield_modeled, min_lot_risk_cap_pct=1.5, report=report,
     )
 
 
@@ -93,17 +93,29 @@ def test_gate1_fails_outright_when_watchman_exits_not_modeled_regardless_of_othe
     assert result.criteria[0].passed is False
 
 
-def test_gate1_fails_outright_reporting_all_four_hard_fail_criteria_when_all_missing():
+def test_gate1_fails_outright_when_shield_not_modeled_regardless_of_otherwise_passing_numbers():
+    # Every number here would otherwise pass -- only shield_modeled=False.
+    result = evaluate_backtest_to_paper_gate(_envelope(shield_modeled=False), THRESHOLDS)
+    assert result.passed is False
+    assert len(result.criteria) == 1
+    assert result.criteria[0].name == "shield_modeled"
+    assert result.criteria[0].passed is False
+
+
+def test_gate1_fails_outright_reporting_all_five_hard_fail_criteria_when_all_missing():
     result = evaluate_backtest_to_paper_gate(
         _envelope(
             is_out_of_sample=False, cost_model_complete=False,
-            risk_voice_modeled=False, watchman_exits_modeled=False,
+            risk_voice_modeled=False, watchman_exits_modeled=False, shield_modeled=False,
         ),
         THRESHOLDS,
     )
     assert result.passed is False
     names = {c.name for c in result.criteria}
-    assert names == {"is_out_of_sample", "cost_model_complete", "risk_voice_modeled", "watchman_exits_modeled"}
+    assert names == {
+        "is_out_of_sample", "cost_model_complete", "risk_voice_modeled",
+        "watchman_exits_modeled", "shield_modeled",
+    }
 
 
 def test_gate1_profit_factor_boundary_1_30_passes_1_29_fails():

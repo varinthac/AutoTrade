@@ -25,6 +25,7 @@ from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.council.scoring import BullBearScore
 from autotrade.features.indicators import atr
 from autotrade.features.swing import latest_confirmed_swing_low
+from autotrade.shield.checkpoint import ShieldConfig
 from autotrade.watchman.evaluate import WatchmanConfig, evaluate_watchman
 from autotrade.watchman.position_metadata import PositionMetadata
 
@@ -50,6 +51,16 @@ def _fixed_signal_at(index: int, plan: OrderPlan, calls: list[int]):
     def _signal_fn(df, as_of_index, **kwargs):
         calls.append(as_of_index)
         return plan if as_of_index == index else None
+    return _signal_fn
+
+
+def _signal_at_indices(plan_by_index: dict[int, OrderPlan]):
+    """Like `_fixed_signal_at` but fires a (possibly different) plan at
+    several distinct indices -- needed for the Shield cooldown tests below,
+    which fire two same-direction BUY signals at different bars to exercise
+    rule 6."""
+    def _signal_fn(df, as_of_index, **kwargs):
+        return plan_by_index.get(as_of_index)
     return _signal_fn
 
 
@@ -1353,3 +1364,98 @@ def test_watchman_metadata_none_fallback_when_no_confirmed_swing_exists_at_entry
     assert trade.exit_reason == "take_profit"
     assert trade.exit_price == pytest.approx(120.0)  # nominal TP, fixed-SL/TP fallback behavior intact
     assert trade.net_pnl == pytest.approx(200.0)
+
+
+# --- Shield's duplicate-signal cooldown (rule 6), wired into the engine via
+# `BacktestConfig.shield_cfg` -- reuses `_swing_setup_rows()`/`SIGNAL_INDEX`
+# (confirmed swing low at index 3, first signal fires at index 6) from the
+# Watchman fixtures above. A second same-direction BUY signal is fired later
+# at index 9, close enough in time to the first trade's entry (index 7) to
+# fall inside a 4h cooldown window (elapsed = 2h) -- these tests prove the
+# gate is wired, not Shield's own rule-6 correctness (already exhaustively
+# covered by tests/unit/shield/test_checkpoint.py). -------------------------
+
+_COOLDOWN_PLAN = OrderPlan(direction="BUY", entry=100.0, stop_loss=95.0, take_profit=1000.0, stop_distance=5.0)
+
+
+def _cooldown_rows() -> list[dict]:
+    return _swing_setup_rows() + [
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 7: fill bar 1
+        {"open": 100.0, "high": 100, "low": 90, "close": 94, "spread": 0},     # 8: SL(95) touched -> trade 1 closes
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 9: signal bar 2 (as_of_index=9)
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 10: fill bar 2 (last bar)
+    ]
+
+
+def _cooldown_backtest_config(shield_cfg: ShieldConfig | None) -> BacktestConfig:
+    return BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        signal_fn=_signal_at_indices({SIGNAL_INDEX: _COOLDOWN_PLAN, 9: _COOLDOWN_PLAN}),
+        shield_cfg=shield_cfg,
+    )
+
+
+def test_cooldown_blocks_a_same_swing_signal_fired_within_the_window():
+    df = _bars(_cooldown_rows())
+    config = _cooldown_backtest_config(ShieldConfig(duplicate_signal_cooldown_hours=4.0))
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    # Trade 1 (stop_loss @ index 8) opens; the index-9 signal re-derives the
+    # same swing_index=3 shield.check() was told about trade 1, only 2h
+    # after trade 1's entry (index7 -> index9) -- inside the 4h cooldown, so
+    # it never becomes a second trade.
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "stop_loss"
+
+
+def test_cooldown_approved_once_the_window_has_elapsed():
+    df = _bars(_cooldown_rows())
+    # Same 2h gap as above, but the cooldown itself is shorter than that gap.
+    config = _cooldown_backtest_config(ShieldConfig(duplicate_signal_cooldown_hours=1.5))
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 2
+    assert trades[0].exit_reason == "stop_loss"
+    assert trades[1].exit_reason == "end_of_data"  # trade 2 fills at bar 10, the last bar
+
+
+def test_shield_cfg_none_never_gates_even_within_the_cooldown_window():
+    # Same fixture as the blocking test above -- proves the gate is strictly
+    # opt-in (matches risk_voice_cfg/watchman_cfg's own None-means-not-
+    # modeled convention), not silently on-by-default.
+    df = _bars(_cooldown_rows())
+    config = _cooldown_backtest_config(None)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 2
+    assert trades[1].exit_reason == "end_of_data"
+
+
+def test_shield_check_skipped_without_crashing_when_no_confirmed_swing_exists_at_signal_time():
+    # Same defensive premise as
+    # test_watchman_metadata_none_fallback_when_no_confirmed_swing_exists_at_entry_still_exits_via_fixed_sl_tp
+    # above: a signal firing at as_of_index=0 can never have a confirmed
+    # swing yet, so `_swing_index_at` returns None and the Shield check must
+    # be skipped rather than crash trying to call `shield.check()` with a
+    # swing_index of None.
+    plan = OrderPlan(direction="BUY", entry=100.0, stop_loss=90.0, take_profit=120.0, stop_distance=10.0)
+    df = _bars([
+        {"open": 99, "high": 100, "low": 98, "close": 100, "spread": 0},        # 0: signal bar (as_of_index=0)
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.5, "spread": 0},   # 1: fill bar
+        {"open": 116, "high": 125, "low": 115, "close": 118, "spread": 0},      # 2: TP(120) touched
+    ])
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        signal_fn=_fixed_signal_at(0, plan, []),
+        shield_cfg=ShieldConfig(),
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "take_profit"

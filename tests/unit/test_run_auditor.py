@@ -50,6 +50,7 @@ def _write_envelope(path: Path, **overrides) -> Path:
         "is_out_of_sample": True,
         "risk_voice_modeled": True,
         "watchman_exits_modeled": True,
+        "shield_modeled": True,
         "min_lot_risk_cap_pct": 1.5,
         "report": report,
     }

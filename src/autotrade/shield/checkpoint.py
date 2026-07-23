@@ -39,6 +39,23 @@ from autotrade.shield.correlation import get_correlation
 
 
 @dataclass(frozen=True)
+class ShieldConfig:
+    """`config/base.yaml`'s `shield:` block (trading_system_summary_v2.md
+    Appendix A §2 / §6), bundled the same way `council.risk_voice.
+    RiskVoiceConfig`/`watchman.evaluate.WatchmanConfig` bundle their own
+    config blocks -- lets a caller (e.g. `backtest/engine.py`) build a
+    `Shield` from one object instead of threading 6 scalars through
+    individually. All values `[adjustable]` per the spec."""
+
+    min_rr: float = 1.5
+    max_correlation: float = 0.7
+    max_positions_per_symbol: int = 1
+    max_positions_total: int = 3
+    total_risk_ceiling_pct: float = 3.0
+    duplicate_signal_cooldown_hours: float = 4.0
+
+
+@dataclass(frozen=True)
 class OpenPositionInfo:
     """An open position, from Shield's point of view. `risk_pct` is "how
     much of current equity this position has at risk" -- computing that from

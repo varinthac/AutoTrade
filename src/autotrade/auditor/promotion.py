@@ -156,6 +156,17 @@ def evaluate_backtest_to_paper_gate(
                 "now wired in by default) before this gate can be evaluated."
             ),
         ))
+    if not report_envelope.shield_modeled:
+        hard_fail_criteria.append(CriterionResult(
+            name="shield_modeled", passed=False, actual=False, threshold="True",
+            note=(
+                "Backtest without Shield modeled never exercised the duplicate-signal cooldown "
+                "(rule 6), the one Shield rule with real effect in this single-position engine "
+                "(experiments/experiments_log.md's 2026-07-22 Shield NOTE) -- its trade count is "
+                "not representative. Re-run scripts/run_backtest.py (shield_cfg is now wired in "
+                "by default) before this gate can be evaluated."
+            ),
+        ))
     if hard_fail_criteria:
         return GateResult(
             passed=False, criteria=hard_fail_criteria,
