@@ -62,6 +62,19 @@ A PARTIAL close (news protection's `CLOSE_HALF_AND_BREAKEVEN`) deliberately
 does NOT remove metadata and does NOT write a trade-journal record -- the
 position is still open (just smaller), so neither path applies until it is
 later fully closed (by either path).
+
+**2026-07-23 fix: `CircuitBreaker.record_trade_close()` is now called from
+`_write_trade_record()`** (the single choke point both close paths above
+funnel through). Before this, it was never called anywhere in the live
+loop -- `orchestrator/shadow_loop.py` only ever called `record_equity()`,
+so the consecutive-loss and realized-daily-P&L gates silently never fired
+regardless of actual trade outcomes (only the equity-based drawdown gate
+worked, since that's fed by `record_equity()` separately). Found by
+inspecting `circuit_breaker_state.json` after two real consecutive losing
+trades showed `consecutive_losses: 0`. `ThrottledDemoAdapter`'s separate
+abnormal-slippage self-close path (`execution/demo_adapter.py`) is wired
+the same way, since it is a third, independent trade-closing path that
+also needs to feed the same counters.
 """
 from __future__ import annotations
 
@@ -78,6 +91,7 @@ from autotrade.council.news_calendar import NewsCalendarProvider
 from autotrade.execution.adapter import BrokerAdapter, BrokerPosition, OrderResult
 from autotrade.features.indicators import atr
 from autotrade.notify.telegram import notify
+from autotrade.risk.circuit_breaker import CircuitBreaker
 from autotrade.store import journal
 from autotrade.watchman.connectivity_watchdog import ConnectivityWatchdog
 from autotrade.watchman.evaluate import WatchmanConfig, WatchmanDecision, evaluate_watchman
@@ -163,6 +177,7 @@ class WatchmanLoop:
         news_provider: NewsCalendarProvider,
         news_protection_config: NewsProtectionConfig,
         connectivity_watchdog: ConnectivityWatchdog,
+        circuit_breaker: CircuitBreaker,
         resolve_symbol_spec: Callable[[str], SymbolSpec] | None = None,
         symbol_map: dict[str, str] | None = None,
         state_path: Path | None = None,
@@ -173,6 +188,7 @@ class WatchmanLoop:
         self._news_provider = news_provider
         self._news_protection_config = news_protection_config
         self._connectivity_watchdog = connectivity_watchdog
+        self._circuit_breaker = circuit_breaker
         self._resolve_symbol_spec = resolve_symbol_spec or (
             lambda symbol: get_symbol_spec(symbol, symbol_map)
         )
@@ -308,6 +324,14 @@ class WatchmanLoop:
         )
         if not inserted:
             return  # swallowed duplicate write (see record_closed_trade docstring) -- do not double-notify
+        # Feeds the circuit breaker's consecutive-loss/daily-realized-P&L
+        # gates (2026-07-23 fix: this was never wired up anywhere in the live
+        # loop -- both gates silently never fired regardless of real trade
+        # outcomes; only the equity-based drawdown gate worked). Both close
+        # paths funnel through this one method, so this is the single choke
+        # point that sees every genuine close exactly once (the `inserted`
+        # guard above already de-dupes).
+        self._circuit_breaker.record_trade_close(pnl=net_pnl, closed_at=exit_time)
         notify(
             f"[AutoTrade] Trade CLOSED {symbol} {direction} entry={entry_price:.5f} "
             f"exit={exit_price:.5f} reason={exit_reason} net_pnl={net_pnl:.2f} R={r_multiple:.2f}"

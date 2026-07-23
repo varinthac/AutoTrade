@@ -4,6 +4,7 @@ CorruptPositionMetadataError's explicit handling), and acting on both
 evaluate_watchman's and news_protection's decisions via the adapter."""
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -12,6 +13,7 @@ import pytest
 
 from autotrade.common.symbol_spec import SymbolSpec
 from autotrade.execution.adapter import BrokerAdapter, BrokerPosition, ClosedTradeInfo, OrderResult
+from autotrade.risk.circuit_breaker import CircuitBreaker
 from autotrade.store import journal
 from autotrade.watchman import loop as loop_module
 from autotrade.watchman import position_metadata
@@ -100,13 +102,21 @@ def _history(n=5):
     })
 
 
-def _loop(adapter, tmp_path, watchdog=None, news_provider=None) -> WatchmanLoop:
+def _circuit_breaker(tmp_path) -> CircuitBreaker:
+    return CircuitBreaker(
+        daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0,
+        state_path=tmp_path / "circuit_breaker_state.json",
+    )
+
+
+def _loop(adapter, tmp_path, watchdog=None, news_provider=None, circuit_breaker=None) -> WatchmanLoop:
     return WatchmanLoop(
         adapter=adapter,
         watchman_config=WatchmanConfig(),
         news_provider=news_provider or _AllClearNewsProvider(),
         news_protection_config=NewsProtectionConfig(),
         connectivity_watchdog=watchdog or ConnectivityWatchdog(FakeClock(NOW)),
+        circuit_breaker=circuit_breaker or _circuit_breaker(tmp_path),
         resolve_symbol_spec=lambda symbol: _symbol_spec(symbol),
         state_path=tmp_path / "position_metadata.json",
         journal_db_path=tmp_path / "trade_journal.sqlite",
@@ -921,6 +931,162 @@ def test_reconciliation_close_notifies_once_with_key_trade_facts(tmp_path, monke
     assert len(calls) == 1
     assert "XAUUSD" in calls[0]
     assert "take_profit" in calls[0]
+
+
+# --- circuit breaker feed (2026-07-23 fix) ---------------------------------
+#
+# Real incident: two consecutive live losing trades in one day still showed
+# circuit_breaker_state.json's consecutive_losses=0 / realized_pnl_today=0.0
+# -- record_trade_close() was never called anywhere in the live loop. These
+# tests assert the real CircuitBreaker's persisted state directly (same
+# read-the-real-file convention as journal.get_trades_for_day above), not a
+# mock, so a regression back to "never called" would show up as a state
+# file that just never changes from its all-zero defaults.
+
+
+def _cb_state(tmp_path) -> dict:
+    return json.loads((tmp_path / "circuit_breaker_state.json").read_text(encoding="utf-8"))
+
+
+def test_explicit_close_losing_trade_feeds_circuit_breaker(tmp_path, monkeypatch):
+    _record_metadata(tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0)
+    adapter = SpyAdapter([_position(ticket=1, symbol="XAUUSD", direction="BUY")])
+    adapter.close_result = OrderResult(
+        success=True, broker_ticket=1, filled_price=2390.0, filled_volume=0.1,  # below entry -- a loss
+        retcode=None, message="closed",
+    )
+    wl = _loop(adapter, tmp_path)
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(
+            action="CLOSE", new_stop_loss=None,
+            reason="structure invalidation: entry swing has been violated by a closed-bar close",
+        ),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    trade = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")[0]
+    assert trade.net_pnl < 0  # confirms the premise: this really is a losing trade
+    state = _cb_state(tmp_path)
+    assert state["consecutive_losses"] == 1
+    assert state["realized_pnl_today"] == pytest.approx(trade.net_pnl)
+
+
+def test_explicit_close_winning_trade_resets_consecutive_losses(tmp_path, monkeypatch):
+    _record_metadata(tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0)
+    adapter = SpyAdapter([_position(ticket=1, symbol="XAUUSD", direction="BUY")])
+    adapter.close_result = OrderResult(
+        success=True, broker_ticket=1, filled_price=2410.0, filled_volume=0.1,  # above entry -- a win
+        retcode=None, message="closed",
+    )
+    wl = _loop(adapter, tmp_path)
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(
+            action="CLOSE", new_stop_loss=None,
+            reason="structure invalidation: entry swing has been violated by a closed-bar close",
+        ),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    trade = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")[0]
+    assert trade.net_pnl > 0
+    state = _cb_state(tmp_path)
+    assert state["consecutive_losses"] == 0
+    assert state["realized_pnl_today"] == pytest.approx(trade.net_pnl)
+
+
+def test_reconciliation_close_feeds_circuit_breaker(tmp_path):
+    _record_metadata(tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0)
+    adapter = SpyAdapter([])  # ticket=1 no longer open -- broker-side close
+    adapter.closed_trade_info[1] = ClosedTradeInfo(
+        close_price=2380.0, close_time=NOW, closed_volume=0.1,  # a loss
+        gross_pnl=-150.0, cost=3.0, exit_reason="stop_loss",
+    )
+    wl = _loop(adapter, tmp_path)
+
+    wl.run_cycle({}, NOW)
+
+    trade = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")[0]
+    state = _cb_state(tmp_path)
+    assert state["consecutive_losses"] == 1
+    assert state["realized_pnl_today"] == pytest.approx(trade.net_pnl)
+
+
+def test_three_consecutive_losses_across_cycles_trips_the_halt(tmp_path):
+    # End-to-end proof this fix actually restores the safety gate the
+    # incident found silently dead: max_consecutive_losses=3 (the fixture's
+    # own _circuit_breaker default) must genuinely halt after the 3rd real
+    # loss in a row, reconciled one at a time across separate tickets/cycles
+    # -- exactly the "3 losing trades in a day" shape the live incident was
+    # one trade short of.
+    adapter = SpyAdapter([])
+    cb = _circuit_breaker(tmp_path)
+    wl = _loop(adapter, tmp_path, circuit_breaker=cb)
+
+    for ticket in (1, 2, 3):
+        _record_metadata(tmp_path, ticket=ticket, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0)
+        adapter.closed_trade_info[ticket] = ClosedTradeInfo(
+            close_price=2380.0, close_time=NOW, closed_volume=0.1, gross_pnl=-150.0, cost=3.0,
+            exit_reason="stop_loss",
+        )
+        wl.run_cycle({}, NOW)
+
+    state = _cb_state(tmp_path)
+    assert state["consecutive_losses"] == 3
+    assert state["consecutive_loss_halt_until"] is not None  # the halt actually tripped
+    assert cb.check(FakeClock(NOW)).blocks_new_entries is True
+
+
+def test_duplicate_close_write_does_not_double_count_circuit_breaker(tmp_path, monkeypatch, caplog):
+    # Same crash-then-duplicate-write race as
+    # test_duplicate_trade_record_write_does_not_also_double_notify -- the
+    # circuit breaker must see this real-world close exactly once, same as
+    # the TradeRecord/notify() guarantees it piggybacks on.
+    _record_metadata(tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0)
+    adapter = SpyAdapter([_position(ticket=1, symbol="XAUUSD", direction="BUY")])
+    adapter.close_result = OrderResult(
+        success=True, broker_ticket=1, filled_price=2390.0, filled_volume=0.1,  # a loss
+        retcode=None, message="closed",
+    )
+    wl = _loop(adapter, tmp_path)
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(
+            action="CLOSE", new_stop_loss=None,
+            reason="structure invalidation: entry swing has been violated by a closed-bar close",
+        ),
+    )
+
+    real_remove_position_metadata = position_metadata.remove_position_metadata
+
+    def _simulate_crash_after_explicit_close_write(ticket, state_path=None):
+        raise RuntimeError("simulated crash between explicit-close write and metadata removal")
+
+    monkeypatch.setattr(loop_module, "remove_position_metadata", _simulate_crash_after_explicit_close_write)
+
+    with caplog.at_level(logging.ERROR):
+        wl.run_cycle({"XAUUSD": _history()}, NOW)  # must not raise
+
+    state_after_first = _cb_state(tmp_path)
+    assert state_after_first["consecutive_losses"] == 1
+
+    # A later cycle: reconciliation re-observes the still-tracked ticket and
+    # attempts to record the SAME close again -- swallowed as a duplicate.
+    monkeypatch.setattr(loop_module, "remove_position_metadata", real_remove_position_metadata)
+    adapter._open_positions = []
+    adapter.closed_trade_info[1] = ClosedTradeInfo(
+        close_price=2390.0, close_time=NOW, closed_volume=0.1, gross_pnl=-50.0, cost=0.0,
+        exit_reason="stop_loss",
+    )
+
+    wl.run_cycle({}, NOW)  # must not raise despite the duplicate broker_ticket
+
+    state_after_duplicate = _cb_state(tmp_path)
+    assert state_after_duplicate["consecutive_losses"] == 1  # unchanged -- not double-counted
+    assert state_after_duplicate["realized_pnl_today"] == state_after_first["realized_pnl_today"]
 
     trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
     assert len(trades) == 1

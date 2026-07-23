@@ -114,6 +114,7 @@ from autotrade.execution.adapter import (
     TradeRequest,
 )
 from autotrade.notify.telegram import notify
+from autotrade.risk.circuit_breaker import CircuitBreaker
 from autotrade.store import journal
 
 logger = logging.getLogger(__name__)
@@ -319,6 +320,7 @@ class ThrottledDemoAdapter(BrokerAdapter):
         max_entry_slippage_atr: float = 0.3,
         min_rr_after_slippage: float = 1.3,
         journal_db_path: str | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
     ) -> None:
         self._creds = creds
         self._clock = clock
@@ -333,6 +335,14 @@ class ThrottledDemoAdapter(BrokerAdapter):
         self._max_entry_slippage_atr = max_entry_slippage_atr
         self._min_rr_after_slippage = min_rr_after_slippage
         self._journal_db_path = journal_db_path
+        # `None` (the default) means this adapter's rare abnormal-slippage
+        # self-close path does not feed the circuit breaker's consecutive-
+        # loss/daily-P&L gates -- explicit placeholder, not silently-
+        # equivalent-to-tracking (see watchman/loop.py's 2026-07-23 module
+        # docstring note for the incident this convention comes from).
+        # scripts/run_shadow_loop.py always passes a real one; tests that
+        # don't need this path's gate feed can omit it.
+        self._circuit_breaker = circuit_breaker
         self._last_placed_at: datetime | None = None
         # Tickets already attributed to a place_order() call via
         # `_resolve_ambiguous_place`'s ground-truth re-query -- once a ticket
@@ -393,6 +403,8 @@ class ThrottledDemoAdapter(BrokerAdapter):
         )
         if not inserted:
             return  # swallowed duplicate write (see record_closed_trade docstring) -- do not double-notify
+        if self._circuit_breaker is not None:
+            self._circuit_breaker.record_trade_close(pnl=net_pnl, closed_at=info.close_time)
         notify(
             f"[AutoTrade] Trade CLOSED {request.symbol} {request.direction} entry={entry_price:.5f} "
             f"exit={info.close_price:.5f} reason=abnormal_slippage net_pnl={net_pnl:.2f} R={r_multiple:.2f}"

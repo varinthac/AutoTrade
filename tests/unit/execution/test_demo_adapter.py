@@ -3,6 +3,7 @@ is mocked (same pattern as test_mt5_connection.py/test_poller.py); no live
 terminal needed."""
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime, timedelta, timezone
 
@@ -13,6 +14,7 @@ from autotrade.council.order_construction import OrderPlan
 from autotrade.execution.adapter import TradeRequest
 from autotrade.execution import demo_adapter as demo_adapter_module
 from autotrade.execution.demo_adapter import ThrottledDemoAdapter, mt5
+from autotrade.risk.circuit_breaker import CircuitBreaker
 from autotrade.shield.checkpoint import OpenPositionInfo, Shield
 from autotrade.store import journal
 
@@ -844,6 +846,57 @@ def test_abnormal_slippage_self_close_writes_trade_record(monkeypatch, caplog):
 
     events = journal.get_anomaly_events_for_day(date(2026, 7, 19))
     assert any(e.event_type == "abnormal_slippage" for e in events)
+
+
+def test_abnormal_slippage_self_close_feeds_circuit_breaker_when_given_one(monkeypatch, caplog, tmp_path):
+    # 2026-07-23 fix companion to watchman/loop.py's own circuit-breaker
+    # wiring: this adapter's independent abnormal-slippage self-close path
+    # is a third, real P&L-bearing close that must feed the SAME gates, not
+    # just the trade journal -- but only when the caller actually supplies
+    # one (`circuit_breaker=None`, the default, is a legitimate placeholder
+    # for tests/tooling that don't need this, same convention as
+    # risk_voice_cfg/watchman_cfg elsewhere).
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2401.9, ask=2402.0))
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2402.0, volume=0.1,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=77, tp=2405.0),
+        ) if kwargs.get("ticket") == 77 else (),
+    )
+
+    def routed_order_send(request):
+        if "position" in request:
+            return _FakeSendResult(retcode=mt5.TRADE_RETCODE_DONE, order=77, price=2402.0, volume=0.1)
+        return _FakeSendResult(retcode=mt5.TRADE_RETCODE_DONE, order=77, price=2402.0, volume=0.1)
+
+    monkeypatch.setattr(mt5, "order_send", routed_order_send)
+
+    deals = (
+        _FakeDeal(entry=mt5.DEAL_ENTRY_IN, reason=mt5.DEAL_REASON_CLIENT, profit=0.0,
+                  price=2402.0, time=1_784_455_200, volume=0.1),
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_CLIENT, profit=-5.0,
+                  commission=-1.0, swap=0.0, price=2401.5, time=1_784_455_260, volume=0.1),
+    )
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals if kwargs.get("position") == 77 else ())
+
+    request = TradeRequest(
+        symbol="XAUUSD", direction="BUY", lot_size=0.1,
+        entry=2400.0, stop_loss=2395.0, take_profit=2401.5,
+    )
+    clock = FakeClock(datetime(2026, 7, 19, 10, 0))
+    circuit_breaker = CircuitBreaker(
+        daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0,
+        state_path=tmp_path / "circuit_breaker_state.json",
+    )
+    adapter = _adapter(clock=clock, circuit_breaker=circuit_breaker)
+    with caplog.at_level(logging.ERROR):
+        adapter.place_order(request, current_atr=5.0)
+
+    state = json.loads((tmp_path / "circuit_breaker_state.json").read_text(encoding="utf-8"))
+    assert state["consecutive_losses"] == 1
+    assert state["realized_pnl_today"] == pytest.approx(-6.0)  # net_pnl = gross(-5.0) - cost(1.0)
 
 
 def test_abnormal_slippage_self_close_sends_trade_closed_notify(monkeypatch, caplog):

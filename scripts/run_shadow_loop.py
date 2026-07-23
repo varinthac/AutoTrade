@@ -109,7 +109,7 @@ def _read_autotrading_state() -> bool | None:
 
 def build_adapter(
     name: str, creds: MT5Credentials, clock: RealClock, order_cfg: dict | None = None,
-    journal_db_path=None,
+    journal_db_path=None, circuit_breaker: CircuitBreaker | None = None,
 ) -> BrokerAdapter:
     if name == "noop":
         return NoOpBrokerAdapter()
@@ -122,6 +122,7 @@ def build_adapter(
             max_entry_slippage_atr=order_cfg.get("max_entry_slippage_atr", 0.3),
             min_rr_after_slippage=order_cfg.get("min_rr_after_slippage", 1.3),
             journal_db_path=journal_db_path,
+            circuit_breaker=circuit_breaker,
         )
     raise ValueError(f"unknown --adapter {name!r}")
 
@@ -266,19 +267,14 @@ def main() -> int:
     symbol_map = cfg["symbols"]
     timeframe = cfg["global"]["timeframe"]
 
-    # Adapter throttle timing only needs a monotonically-advancing clock, not
-    # server time specifically -- RealClock is fine here and avoids an extra
-    # MT5 round-trip per place_order() call.
-    adapter_clock = RealClock()
-    adapter = build_adapter(args.adapter, creds, adapter_clock, order_cfg=cfg["order"], journal_db_path=journal_db_path)
-    if args.adapter == "noop":
-        logger.info("Using NoOpBrokerAdapter -- dry run, no orders will be sent to any broker.")
-    else:
-        logger.warning("Using ThrottledDemoAdapter -- REAL orders will be sent to the MT5 demo account.")
-
     # CircuitBreaker/ShadowLoop need MT5 broker server time, not wall-clock
     # UTC -- server_now()'s daily-loss reset boundary is server-day-based
-    # (see risk/circuit_breaker.py's module docstring).
+    # (see risk/circuit_breaker.py's module docstring). Built before
+    # build_adapter() below (moved up from its original position) so the
+    # same instance can be threaded into ThrottledDemoAdapter's own rare
+    # abnormal-slippage self-close path, not just WatchmanLoop -- both need
+    # to feed the SAME circuit breaker so consecutive-loss/daily-P&L state
+    # isn't split across two separate trackers.
     reference_symbol_broker_name = to_broker_name(symbols[0], symbol_map)
     loop_clock = ServerClock(reference_symbol_broker_name)
 
@@ -288,6 +284,20 @@ def main() -> int:
         max_drawdown_halt_pct=cfg["cfo"]["max_drawdown_halt_pct"],
         state_path=DEFAULT_STATE_PATH,
     )
+
+    # Adapter throttle timing only needs a monotonically-advancing clock, not
+    # server time specifically -- RealClock is fine here and avoids an extra
+    # MT5 round-trip per place_order() call.
+    adapter_clock = RealClock()
+    adapter = build_adapter(
+        args.adapter, creds, adapter_clock, order_cfg=cfg["order"], journal_db_path=journal_db_path,
+        circuit_breaker=circuit_breaker,
+    )
+    if args.adapter == "noop":
+        logger.info("Using NoOpBrokerAdapter -- dry run, no orders will be sent to any broker.")
+    else:
+        logger.warning("Using ThrottledDemoAdapter -- REAL orders will be sent to the MT5 demo account.")
+
     shield = Shield(
         min_rr=cfg["shield"]["min_rr"],
         max_correlation=cfg["shield"]["max_correlation"],
@@ -389,6 +399,7 @@ def main() -> int:
             watchman_loop = WatchmanLoop(
                 adapter=adapter, watchman_config=watchman_config, news_provider=news_provider,
                 news_protection_config=news_protection_cfg, connectivity_watchdog=connectivity_watchdog,
+                circuit_breaker=circuit_breaker,
                 symbol_map=symbol_map, state_path=DEFAULT_POSITION_METADATA_PATH,
                 journal_db_path=journal_db_path,
             )

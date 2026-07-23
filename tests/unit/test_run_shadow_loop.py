@@ -26,6 +26,7 @@ from autotrade.common.config import MT5Credentials
 from autotrade.common.mt5_time import ServerClock
 from autotrade.execution.demo_adapter import ThrottledDemoAdapter
 from autotrade.execution.noop_adapter import NoOpBrokerAdapter
+from autotrade.risk.circuit_breaker import CircuitBreaker
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "run_shadow_loop.py"
 _spec = importlib.util.spec_from_file_location("run_shadow_loop_script", SCRIPT_PATH)
@@ -53,6 +54,20 @@ def test_build_adapter_demo_returns_throttled_demo_adapter():
 def test_build_adapter_demo_threads_journal_db_path_through():
     adapter = run_shadow_loop.build_adapter("demo", CREDS, RealClock(), journal_db_path="some/path.sqlite")
     assert adapter._journal_db_path == "some/path.sqlite"
+
+
+def test_build_adapter_demo_threads_circuit_breaker_through():
+    # 2026-07-23 fix: ThrottledDemoAdapter's own abnormal-slippage self-close
+    # path needs the circuit breaker too (a third real P&L-bearing close
+    # path, alongside WatchmanLoop's two) -- must not be silently dropped.
+    cb = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    adapter = run_shadow_loop.build_adapter("demo", CREDS, RealClock(), circuit_breaker=cb)
+    assert adapter._circuit_breaker is cb
+
+
+def test_build_adapter_demo_circuit_breaker_defaults_to_none():
+    adapter = run_shadow_loop.build_adapter("demo", CREDS, RealClock())
+    assert adapter._circuit_breaker is None
 
 
 def test_build_adapter_unknown_name_raises_value_error():
@@ -225,6 +240,11 @@ def test_main_wires_noop_adapter_and_runs_shadow_loop_for_configured_symbols(mon
     assert isinstance(run_calls["init_kwargs"]["clock"], ServerClock)
     assert run_calls["init_kwargs"]["clock"]._reference_symbol_broker_name == "XAUUSD"
     assert run_calls["init_kwargs"]["circuit_breaker"]._state_path == run_shadow_loop.DEFAULT_STATE_PATH
+    # 2026-07-23 fix: WatchmanLoop must be wired to the SAME CircuitBreaker
+    # instance ShadowLoop itself uses (not a second, separately-tracked one)
+    # -- otherwise consecutive-loss/daily-P&L state would silently split
+    # across two trackers that never agree.
+    assert run_calls["init_kwargs"]["watchman_loop"]._circuit_breaker is run_calls["init_kwargs"]["circuit_breaker"]
     assert isinstance(run_calls["init_kwargs"]["shield"], run_shadow_loop.Shield)
     # Phase 6b: news_provider/risk_voice_cfg are wired in too -- with no
     # FINNHUB_API_KEY configured (mocked as None above), build_news_provider()
@@ -315,6 +335,12 @@ def test_main_mode_demo_adapter_also_gets_the_resolved_journal_db_path(monkeypat
 
     assert exit_code == 0
     assert run_calls["init_kwargs"]["adapter"]._journal_db_path == run_shadow_loop.DEFAULT_LIVE_DB_PATH
+    # 2026-07-23 fix: the real ThrottledDemoAdapter (--adapter demo) must be
+    # wired to the SAME CircuitBreaker instance as WatchmanLoop and ShadowLoop
+    # itself -- not a second, separately-tracked one (same identity guarantee
+    # already checked for the noop-adapter case above).
+    assert run_calls["init_kwargs"]["adapter"]._circuit_breaker is run_calls["init_kwargs"]["circuit_breaker"]
+    assert run_calls["init_kwargs"]["watchman_loop"]._circuit_breaker is run_calls["init_kwargs"]["circuit_breaker"]
 
 
 def test_main_uses_finnhub_provider_when_api_key_configured(monkeypatch, tmp_path):
