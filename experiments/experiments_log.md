@@ -3182,3 +3182,756 @@ one-touch Test budget remains UNSPENT/pristine (rule 2; ground rule 5). `config/
 EURUSD stays commented-out in symbols (ground rule 6). Auditor gate thresholds NOT touched (rule 8).
 Harness `experiments/exp014_eurusd_tf_harness.py` (committable; EURUSD SymbolSpec twin of exp011's,
 reusable for any future FX native-TF sweep).
+
+---
+
+## NOTE (not an EXP) 2026-07-23 — Shield's duplicate-signal cooldown wired into the backtest engine
+
+NOT a predictive-edge search — a code-level parity fix, following through on the ONE actionable item
+the 2026-07-22 Shield NOTE above left open ("RECOMMENDED as the one worthwhile parity fix ... user's
+call"). No Train/Val/Test split, no config values changed, Test budget UNSPENT/untouched.
+
+**What changed:** `backtest/engine.py` now instantiates the real `shield/checkpoint.Shield` (never
+reimplemented) and consults it right after `signal_fn` returns a plan, gated by an optional
+`BacktestConfig.shield_cfg: ShieldConfig | None` (default `None`, same explicit-placeholder convention
+as `risk_voice_cfg`/`watchman_cfg`). The swing index rule 6 keys its cooldown state on is re-derived at
+SIGNAL time (`_swing_index_at`, mirroring `_build_watchman_metadata`'s fill-time re-derivation and
+`orchestrator/shadow_loop.py`'s live ordering) — a signal Shield blocks never becomes a `_PendingOrder`;
+`shield.record_trade_opened()` fires only once a shield-approved signal actually FILLS, not merely when
+approved, matching live's "only after the broker confirms placement" semantics exactly. Defensively
+(same "should not normally happen" fallback `_build_watchman_metadata` already uses), a signal with no
+re-derivable confirmed swing at signal time skips the Shield check rather than crashing.
+
+**Scope, as the prior NOTE specified:** only rule 6 (cooldown) has real effect in this single-position
+engine. The other 5 rules ARE exercised too (the real `Shield.check()` is called, never a hand-rolled
+subset) but are structurally inert here: `min_rr` always passes because `tp_r_multiple` fixes R:R at
+exactly 2.0, and `open_positions` passed to `check()` is always `[]` (this engine only ever holds one
+position, so correlation/max-positions/risk-ceiling can never evaluate against a second one) — the
+correlation/multi-position architecture gap stays DEFERRED until multi-symbol, exactly as scoped before.
+
+**Wiring completed end-to-end, matching the existing Risk Voice/Watchman precedent exactly** (not scope
+creep — completing an established 3-file pattern): `scripts/run_backtest.py`'s CLI now always builds a
+real `ShieldConfig` from `config/base.yaml`'s `shield:` block (no opt-out, same as `risk_voice_cfg`/
+`watchman_cfg`) and records `shield_modeled` in the report envelope;
+`auditor/backtest_results.BacktestReportEnvelope` gained the `shield_modeled` field;
+`auditor/promotion.evaluate_backtest_to_paper_gate` (Gate 1) gained a `shield_modeled` hard-fail
+criterion alongside the existing `risk_voice_modeled`/`watchman_exits_modeled` ones — a backtest run
+that didn't model Shield's cooldown now can't silently feed a Backtest→Paper promotion decision, same
+"don't count an incomplete simulation" philosophy as the other two.
+
+**Verification:** 15 new/updated tests (`tests/unit/backtest/test_engine.py`: cooldown blocks a same-
+swing signal within the window / approved once elapsed / `shield_cfg=None` never gates / defensive no-
+swing-at-signal-time doesn't crash; `tests/unit/test_run_backtest.py`: `ShieldConfig` field-by-field
+mapping from config, envelope `shield_modeled` flag; `tests/unit/auditor/test_backtest_results.py` +
+`test_promotion.py`: schema/gate coverage). Full suite: 1141 passed, 0 failed. No re-run of any
+promotion-gate-feeding backtest was needed or performed — this is a modeling-completeness fix, not a
+strategy change, and does not alter what any PAST config-driven run measured.
+
+`config/base.yaml` UNCHANGED (no threshold touched). Auditor gate THRESHOLDS untouched (only a new
+hard-fail CRITERION was added, rule 8's "don't touch gate thresholds" is about the numeric bars, not
+about adding a completeness check already precedented twice). Files touched: `shield/checkpoint.py`
+(new `ShieldConfig`), `backtest/engine.py`, `scripts/run_backtest.py`, `auditor/backtest_results.py`,
+`auditor/promotion.py`, plus the test files listed above.
+
+---
+
+## NOTE (not an EXP) 2026-07-23 — MEASURED impact of the now-wired Shield cooldown on the CURRENT adopted config (does it overturn any adopted decision?)
+
+NOT a predictive-edge search — a modeling-parity DIAGNOSTIC that turns yesterday's ~8% UPPER-bound
+ESTIMATE (the 2026-07-22 Shield NOTE above) into a REAL measured before/after now that rule 6 is
+actually wired (2026-07-23 NOTE directly above). No Train/Val/Test pre-registration, no config touched,
+Test one-touch budget NOT spent/consumed (this is the same "informational NOTE" convention as the two
+Shield NOTEs above and the TF-probe / sizing NOTEs). Read-only: `config/base.yaml`, `shield/`,
+`backtest/engine.py` UNCHANGED. Auditor gates untouched (rule 8).
+
+### Method
+Standalone script (`scratchpad/shield_impact2.py`, NOT a change to `scripts/run_backtest.py`) calls
+`backtest.engine.run_backtest` TWICE over the FULL `data/historical/XAUUSD_H1.csv` (29,543 bars,
+2021-07-22→2026-07-21): once with a real `ShieldConfig` from `config/base.yaml`'s `shield:` block (the
+new default), once with `shield_cfg=None` (the OLD behaviour every prior EXP/NOTE measured under) —
+everything else IDENTICAL and equal to the adopted live config: pivot_bars=3, tp=2.0, all-24h Risk
+Voice, be/trail OFF (EXP-008), risk 1.0% / min_lot_cap 1.5, commission 0.0 (IC Standard), $10k equity,
+Risk Voice + Watchman both modeled. MT5 session hung on connect, so the run used the real IC Markets
+XAUUSD spec directly (tick_value 1.0 @ tick_size 0.01, vmin/step 0.01) — this only scales absolute $;
+PF/DD%/trade-count are ratios/counts, and BOTH runs use the identical spec, so the ON-vs-OFF DELTA (the
+whole point here) is exact regardless. Per-window metrics sliced from the two full runs by entry_time.
+
+### Result — full history (2021-07-22→2026-07-21)
+| mode | trades | winrate | PF | net $ | DD% | avgR | PF-excl-top5 |
+|---|---|---|---|---|---|---|---|
+| shield OFF (old, every prior EXP) | 1277 | 0.387 | 1.104 | 8,864.71 | 28.92 | 0.059 | 1.082 |
+| shield ON  (new default)          | 1246 | 0.389 | 1.112 | 9,870.71 | 29.66 | 0.067 | 1.090 |
+
+NET trade delta = **−31 (−2.4%)**, NOT −8%. 104 specific OFF-run entries (8.1%) are absent from the ON
+run — that 8.1% matches yesterday's 8.3% blocked-pairs upper bound almost exactly — but because a
+cooldown-blocked re-entry leaves the single-position engine FLAT and thus eligible for later signals it
+would otherwise have sat through, ~73 substitute entries re-enter the count, so the NET reduction is
+only 2.4% (yesterday's NOTE predicted the true rate is "lower once the new-swing-bypass is accounted
+for" — confirmed, and the slot-refill dynamic makes the NET effect on trade COUNT smaller still).
+
+### Result — per window (trades / PF / net$, ON vs OFF)
+| window | trades ON/OFF | PF ON/OFF | net$ ON/OFF |
+|---|---|---|---|
+| Train 2021-07-22→2024-07-21 | 755 / 773 | 1.083 / 1.059 | 3929.9 / 2754.6 |
+| Val   2024-07-21→2025-07-21 | 251 / 260 | 1.049 / 1.080 |  986.0 / 1512.1 |
+| Test  2025-07-21→2026-07-21 | 238 / 242 | 1.242 / 1.240 | 4959.6 / 4602.8 |
+
+All windows stay well above the 100-trade floor (rule 6) both ways — no sample concern. |ΔPF| ≤ 0.031
+on any window, and the SIGN is non-systematic: shield HELPS Train (+0.024) and full-history PF (+0.008),
+slightly HURTS Val (−0.031), is NEUTRAL on Test (+0.002). That is noise-level, not a directional bias.
+
+### Does this overturn any adopted decision? — NO.
+- **EXP-008 (be/trail disabled)** was decided by a Test-window PF gap of ~0.05–0.11 between two configs
+  BOTH measured shield-unmodeled. Shield perturbs the Test window by +0.002 PF (1.240→1.242) — an order
+  of magnitude smaller than that gap — and shifts BOTH compared configs the same tiny direction, so the
+  DELTA that drove the verdict is essentially invariant. Its headline numbers (measured shield-off)
+  would move by ≤ noise; the conclusion (disabling be/trail beats enabling) is unaffected.
+- **Session gate EXP-003, tp=2.0 EXP-002/009, pivot=3 EXP-009** — each decided by margins far larger
+  than shield's ≤0.03 PF / ≤2.4%-trade wobble (EXP-003 alone flipped a year +$297→−$518; EXP-009's
+  pivot=4 was rejected on a clear multi-method agreement). None is within reach of this perturbation.
+- **Direction of bias is reassuring, not alarming:** on the full history modeling Shield RAISES PF
+  (1.104→1.112) and expectancy (avgR 0.059→0.067, net +$1,006) — the intended anti-whipsaw effect of
+  dropping some fast-stop same-swing re-entries. So the prior shield-UNMODELED runs were, in aggregate,
+  if anything marginally PESSIMISTIC on PF, not optimistic — no adopted decision was FLATTERED by the
+  omission (the failure mode that would demand a retest). PF-excl-top5 stays >1.0 both ways (1.082→1.090).
+
+### Recommendation
+**NO retest / re-verification of any adopted decision is warranted.** The real measured effect (net
+−2.4% trades, |ΔPF| ≤ 0.03 per window, non-systematic in sign, aggregate PF/expectancy slightly
+IMPROVED) is comfortably inside the noise the adopted decision margins already clear, and lands where
+yesterday's ~8% upper bound predicted once new-swing-bypass + single-position slot-refill are accounted
+for. Adopted config stands as-is; `config/base.yaml` UNCHANGED. Going FORWARD, new promotion-gate-feeding
+backtests SHOULD (and now do by default) model Shield — but no historical conclusion needs re-running.
+Script: `scratchpad/shield_impact2.py` (diagnostic only, not committed to `scripts/`).
+
+---
+
+## NOTE (not an EXP) 2026-07-23 — Council Bull/Bear SCORING-FORMULA component audit (base rates + outcome discrimination; NEVER-touched surface)
+
+NOT a predictive-edge search / no Train-Val-Test pre-registration and no Test one-touch budget spent —
+this is a component-level diagnostic of the Council's OWN scoring formula (`council/scoring.py`
+`score_bull_voice`/`score_bear_voice` + `decision_matrix.py`'s 70/40/55 rows), same "informational NOTE"
+convention as the Shield/sizing/TF-probe NOTEs above. Grep confirmed this scoring formula (the 5 point
+components, EMA/RSI/MACD periods, and the 70/55/40 thresholds) has NEVER been touched by any prior EXP —
+EXP-012/013's "confluence" are a DIFFERENT thing (a cross-TF confirmation FILTER, both rejected), not this
+module's internal `confluence` component. Read-only: `config/base.yaml`, `council/`, `features/` UNCHANGED.
+Auditor gates untouched (rule 8). Question answered: should any scoring condition/weight be adjusted,
+added, or removed?
+
+### Method
+`scratchpad/council_diag.py` + `council_diag2.py`. The four EWM-based components (trend/RSI/MACD, all
+`adjust=False` EWM → causal, so full-series value at i EQUALS the module's per-slice `.iloc[-1]`) are
+vectorised exactly; swings precomputed once (`detect_swings`, offline == confirmed for the market-structure
+component). VALIDATED against the REAL `score_bull_voice`/`score_bear_voice` on 150 random bars: **150/150
+match to the point, every component** — numbers below are the production scorer's, not an approximation.
+Full XAUUSD H1 history (29,543 bars) + Train slice; trade-outcome link uses the STOCK engine (999 trades,
+tp2.0, pivot3, be/trail OFF, commission 0, all-24h — the adopted live-equivalent config), scoring each
+trade's SIGNAL bar (entry_idx−1, the bar Council actually scored) on its winning voice.
+
+### 1. Component BASE RATES (full history; Train nearly identical, so stable) — bull / bear
+| component (pts) | bull fire % | bear fire % | reading |
+|---|---|---|---|
+| trend_alignment full (30) | 42.3 | 30.5 | healthy, discriminating |
+| trend_alignment partial (15) | 12.3 | 14.8 | small tier |
+| momentum_rsi (20) | 46.4 | 40.8 | ~half the time |
+| momentum_macd (15) | 25.7 | 26.1 | strict-expand fires ~1/4 — NOT dead, NOT always |
+| market_structure (20) | 44.8 | 38.9 | fires ~2/5 |
+| **confluence (15)** | **100.0** | **100.0** | **CONSTANT — fires on EVERY bar** |
+
+**Confluence is a dead component.** Breakdown: `near_round` fires 100.0%, `near_pivot` only 18.5%. Mechanism
+(and it is structural, not a data fluke): `nearest_round_number` uses a 0.50 granularity for gold, so the
+distance from any price to its nearest round level is ≤ 0.25, while the gate is `≤ 0.5×ATR` and gold H1 ATR
+is ~$3–15 → `0.5×ATR ≥ 1.5 ≫ 0.25` on essentially every bar. So the `+15` is a CONSTANT added to every Bull
+and Bear score — it does zero discriminating work; it merely shifts the effective scale so `bull≥70` really
+means "the other four components sum to ≥55 (of their 85 possible)", and `conflict 55` means "others ≥40".
+
+### 2. OUTCOME discrimination (999 trades, overall avgR +0.084, win 36.6%)
+Component present-vs-absent avg R AMONG FIRED trades (heavy selection/collinearity caveat: a trade only
+fires at score≥70, so "component OFF" trades bought their 70 elsewhere — "OFF did better" can be compensation,
+not proof of harm; the unconfounded reads are confluence-is-constant and the trend three-way):
+- **trend three-way (cleanest):** full(30) avgR **+0.125** (win 38.0%, n637) / partial(15) **−0.022** (win
+  33.1%, n302, net LOSER) / none(0) +0.192 (n60, tiny). The **partial-alignment tier earns points on trades
+  that lose money** — the single most interesting lead here.
+- **macd: pulls POSITIVE weight** — ON +0.119 vs OFF +0.037. The strict "expanding vs prior bar" requirement
+  is NOT redundant with trend and NOT dead weight; keep it.
+- **market_structure: no discrimination** — ON +0.085 ≈ OFF +0.083 (identical). Contributes 20 pts but does
+  not separate winners from losers in the fired set (confounded, but flat).
+- **rsi: weak/negative in-set** — ON +0.064 vs OFF +0.169 (selection-confounded; not clearly harmful).
+- **confluence: no signal, and its ONE selective sub-part is NEGATIVE** — `near_pivot=True` trades avgR
+  **−0.038** (win 32.5%, n123) vs `near_pivot=False` **+0.101** (n876). So even repairing the round-number
+  granularity to make confluence selective is contraindicated: price-near-a-key-level correlates with WORSE
+  gold trades (mean-reversion zones), not better. There is no edge to recover here.
+
+### 3. Is the 70 threshold doing real gatekeeping? — partly, but score is a WEAK, NON-MONOTONE predictor
+Fired-trade score at the signal bar: min 70, p25 70, median 80, p75 85. 25.7% of trades sit right at [70,74]
+(the cliff does bind on ~a quarter), but 41% clear it to ≥85. Crucially, higher score does NOT mean better
+trade — outcome by bucket: **[70,75) +0.075 · [75,85) +0.132 · [85,101) +0.051**. Hump-shaped: the
+HIGHEST-conviction signals (85+, "almost everything fired", n410) are the WEAKEST, a classic
+"all-aligned = late in the move" effect. Implication: **raising** bull/bear_threshold above 70 cannot improve
+edge (it preferentially keeps the weakest 85+ bucket and drops the middling [70,75) one); **lowering** it only
+adds still-lower-conviction volume. The threshold is essentially a TRADE-COUNT knob, not a quality knob, and
+70 is a defensible compromise. This is also the project's declared highest-overfitting-risk knob (interacts
+with everything) — the non-monotone curve says there is no quality gradient to exploit by moving it.
+
+### 4. Add / remove / reweight verdict
+- **REMOVE candidate — confluence:** it is inert (a literal +15 constant). But removing it is NOT a free edge:
+  behaviour-neutral removal requires simultaneously dropping all three thresholds by 15 (identical trade set,
+  pure cosmetic simplification, expected ΔPF = 0); removing it WITHOUT rescaling = silently raising the
+  effective bar (fewer trades, and §3 shows the high-conviction survivors are the weakest slice — a net
+  negative for both PF and the 200-trade gate). And repairing it to be selective is contraindicated by the
+  negative `near_pivot` read (§2). So: confluence is a genuine mis-specification but a BENIGN one; no
+  edge-positive action exists. Flag it, don't chase it.
+- **ADD candidate:** none. No observed gap motivates a new indicator; the existing four non-constant
+  components already span trend/momentum/structure, and "more agreement" (85+) is empirically worse, so
+  piling on another confirmation component would push further into the weak high-conviction regime.
+- **KEEP:** momentum_macd (positive discriminator), the full-trend(30) tier (best single discriminator),
+  bull/bear_threshold 70 & conflict 55 (no quality gradient to move along), EMA 20/50/200, RSI 14, MACD
+  12/26/9 (standard; RSI/struct are confounded-flat, not clearly mis-set).
+
+### 5. Recommendation — NO sweep is compelling right now; ONE optional, well-motivated lead exists
+(a) **Nothing here is mis-set in an edge-positive way that warrants spending Test budget.** The one
+unambiguous defect (confluence-is-constant) has zero-or-negative expected payoff to "fix". thresholds are
+demonstrably on a flat/non-monotone response surface — the classic "default is already fine" (rules 5/9),
+and they are the declared last-priority, highest-overfit knob.
+(b) **The single lead with a real mechanism** is the **trend partial-alignment (15-pt) tier**, which awards
+points to a subset that is net-LOSING (−0.022R, §2). A SCOPED, pre-registerable EXP would be: one parameter —
+the partial-tier weight — candidate values {15 (baseline), 0 (drop it → require full alignment for any trend
+credit)}, possibly {7} as a midpoint; deciding metric avgR + PF on Validation with the standard 60/20/20
+split; ADOPT only if 0 beats 15 on BOTH Train and Validation, per-year consistent (no single-regime owe),
+top-5-robust, and plateau-stable. CAVEATS to pre-register honestly: it is a `scoring.py` module-constant
+CODE change (not a `config/base.yaml` knob — outside a pure config-tuning mandate), the −0.022R read is
+selection-confounded (must be re-measured as an actual trade-set change, not just a conditional split), and
+dropping the tier reduces trades (gate-count cost). Expected payoff: modest and uncertain. Given the
+project's "default is fine unless overwhelming" culture and that this is the highest-overfit family, this
+lead is OPTIONAL, not urgent.
+(c) **If nothing is pursued, that is the correct call.** The scoring formula is running soundly; confluence
+is inert-but-harmless; the thresholds sit on a flat surface; macd/full-trend are doing real work. Clean,
+evidence-backed "not worth a sweep" — same spirit as EXP-011/014 and the confluence-FILTER EXP-012/013.
+
+`config/base.yaml`, `council/`, `features/` UNCHANGED. Test one-touch budget UNSPENT for this (new) scoring
+family. Scripts: `scratchpad/council_diag.py`, `scratchpad/council_diag2.py` (diagnostic only).
+
+---
+
+## EXP-015 2026-07-23 — Council scoring WEIGHT-REALLOCATION: confluence's dead +15 → discriminating components (scoring-formula family)
+Status: REJECTED (all 3 candidates lose to baseline on Train, per-year-consistent) — Train-only pass; Validation NOT reached, Test NOT touched.
+
+### 0. Relation to the 2026-07-23 scoring NOTE + why this is a real EXP now
+Direct follow-up to the Council scoring-formula NOTE above. That NOTE found `confluence` (+15) is a structural
+CONSTANT (fires 100% of bars: `nearest_round_number`'s 0.5 gold granularity keeps price ≤0.25 from a round
+level, always inside the ≤0.5×ATR gate) doing zero gatekeeping, and concluded pure removal only makes sense
+paired with rescaling all 3 thresholds down by 15 (behaviourally identical, ΔPF≈0). It did NOT test
+REDISTRIBUTING those 15 pts to the components that DO discriminate (macd, full-trend) — the confounded
+present-vs-absent reads (macd ON +0.119/OFF +0.037; full-trend +0.125) suggested that might help. This EXP
+tests exactly that, and (per the user's "don't conflate two knobs" instruction) keeps it ISOLATED from the
+separate trend-partial-tier lead (§4b of the NOTE — untouched here).
+
+### 1. Hypothesis / mechanism
+Confluence's +15 is inert. If it is reallocated to a component that separates winners from losers, and the
+score max is kept at 100 (so bull/bear_threshold 70 & conflict 55 keep their exact meaning), the fired trade
+set should tilt toward higher-quality signals → higher PF/avgR. KEY mechanical subtlety making this a genuine
+test and not a relabeling: confluence being CONSTANT means "remove 15 const + add 15 to a CONDITIONAL
+component" is NOT neutral — a bar where that component FIRES is unchanged (loses 15 const, gains 15 cond ⇒
+net 0), but a bar where it does NOT fire scores 15 LOWER. So each candidate effectively RAISES the effective
+bar for all bars lacking that component ⇒ a different fired set. Failure mode to watch (flagged in the NOTE):
+the +0.119/+0.125 reads are SELECTION-CONFOUNDED (a trade only fires at score≥70, so "component OFF" trades
+bought their 70 elsewhere), so the conditional edge may not survive as an actual trade-set change.
+
+### 2. Splits / config
+Reuse the standard chronological 60/20/20 (Train 2021-07-22→2024-07-21 by year Y1/Y2/Y3; Val Y4; Test Y5).
+THIS PASS = TRAIN ONLY (per-year Y1/Y2/Y3 + full-Train aggregate). Config = the diagnostic's adopted
+live-equivalent: commission 0, all-24h (risk_voice=None), tp 2.0, sl 0.2/0.8/2.5, pivot 3, thresholds
+70/70/55, Watchman/Shield OFF, cost model on (slippage = bar's own spread). Harness
+`experiments/exp015_reweight_harness.py` (vectorised reweighted scorer, monkeypatched into the
+decision_matrix namespace; STOCK engine + STOCK decision matrix + STOCK order construction otherwise).
+
+### 3. Candidates (all keep score-max = 100; confluence dropped to 0 in every candidate)
+| id | trend_full | trend_partial | rsi | macd | struct | confluence | max |
+|----|-----------|---------------|-----|------|--------|-----------|-----|
+| BASE (live) | 30 | 15 | 20 | 15 | 20 | 15 (const) | 100 |
+| C1_macd30   | 30 | 15 | 20 | **30** | 20 | 0 | 100 |
+| C2_trend45  | **45** | 15 | 20 | 15 | 20 | 0 | 100 |
+| C3_split    | **38** | 15 | 20 | **22** | 20 | 0 | 100 |
+Configs evaluated (this exp / cumulative for scoring family): 4 (BASE+3) / 4 — well under N>20.
+
+### 4. Fidelity (harness validated BEFORE trusting any candidate)
+- **Score exactness:** fast reweighted BASE scorer == real `score_bull_voice`/`score_bear_voice` on 300 random
+  Train bars → **600/600 component-exact** (bull+bear), mismatch 0.
+- **Engine integration:** fast-BASE backtest == STOCK backtest on 2022-01-01→2022-05-01, trade-for-trade
+  (both 81 tr, PF 1.108, net +246.1, DD 3.40, PF_ex5 0.8918) — the vectorisation reproduces the production
+  path byte-for-byte, so candidate deltas are the WEIGHT change and nothing else.
+- **Independent 2nd-implementation cross-check (unplanned but decisive):** an earlier SLOW harness variant
+  computed every candidate via the real per-slice path (recomputing `_confluence_score`,
+  `is_higher_low`/`is_lower_high`, and all EWM indicators on `.iloc[:as_of_index+1]` each bar — a wholly
+  different implementation from the fast vectorised arrays) and produced results IDENTICAL to the cent across
+  ALL 16 window×weight cells below, and confirmed slow-reweighted-BASE == stock on the FULL Train window
+  (587 tr / PF 1.086 / +1587.7). Two independent scorers agreeing exactly ⇒ the §5 numbers are not an
+  artifact of the vectorisation.
+
+### 5. Results — Train per-year PF / net$ (trades) + full-Train aggregate
+| Year | BASE | C1_macd30 | C2_trend45 | C3_split |
+|------|------|-----------|------------|----------|
+| Y1 21-22 | **1.047 / +278 (197)** | 1.014 / +88 (216) | 0.991 / −45 (183) | 0.972 / −145 (182) |
+| Y2 22-23 | **0.998 / −16 (202)** | 0.921 / −504 (209) | 0.951 / −300 (196) | 0.951 / −300 (196) |
+| Y3 23-24 | **1.230 / +1324 (183)** | 1.134 / +737 (179) | 1.137 / +743 (178) | 1.148 / +796 (177) |
+| **Full Train** | **PF 1.086 / avgR 0.052 / +1588 / DD 11.2 / 587 tr / PF_ex5 1.055** | PF 1.007 / avgR 0.007 / +133 / DD 12.5 / 605 tr | PF 1.017 / avgR 0.004 / +272 / DD 13.5 / 559 tr | PF 1.015 / avgR 0.002 / +237 / DD 13.3 / 557 tr |
+
+### 6. Robustness / verdict evaluation
+- **BASE dominates EVERY candidate in EVERY year AND on the full-Train aggregate** — PF, avgR, net$, and DD
+  (each candidate also raises Train drawdown to 12.5–13.5% vs baseline's 11.2%). This is not an aggregate
+  fluke: the rejection is per-year-consistent (Y1, Y2, Y3 all favour BASE), so it PASSES the same per-year bar
+  that caught EXP-002's tp-2.5 regime artifact — here it caps the losers, not a winner.
+- **Sign flips against the candidates:** C2/C3 turn Y1 net-NEGATIVE (−45/−145) where BASE is +278; all three
+  roughly TRIPLE the Y2 loss (−300…−504 vs −16); all three roughly HALVE the Y3 profit (+737…+796 vs +1324).
+- **Mechanism confirmed:** the confounded conditional reads did NOT translate into a real edge. Making 15 pts
+  conditional (rather than a constant floor) raises the effective conviction bar; per the NOTE's §3 finding
+  that the HIGHEST-conviction (85+) signals are the WEAKEST (hump-shaped response), tilting the fired set that
+  way is edge-NEGATIVE. C1 even admits MORE trades (605 vs 587) yet earns less — lower-quality volume.
+- neighborhood/plateau: n.a. (no winner to defend). per-year: ✓ (rejection consistent). top-5: candidates'
+  Train PF_ex5 all drop below BASE (0.979/0.986/0.984 vs 1.055). walk-forward: n.a. (per-year IS the check).
+
+### 7. VERDICT — REJECT all three; keep live weights (confluence stays as the benign inert +15)
+No candidate is Train-positive vs baseline — every one is uniformly worse across all three Train years and the
+aggregate. A candidate must clear Train before earning a Validation look; none does, so **Validation is NOT
+run and the Test one-touch budget stays UNSPENT** for the scoring family. This closes the "redistribute
+confluence's 15 pts" question: the reweighting is not just neutral but actively harmful, because the
+component reads that motivated it were selection-confounded (exactly the caveat pre-registered in §1). The
+NOTE's original recommendation stands unchanged: confluence is a genuine mis-specification but a BENIGN one —
+the only edge-neutral action is remove-15-and-rescale-all-3-thresholds-down-15 (cosmetic, ΔPF≈0), NOT
+redistribution.
+
+**"Find a replacement parameter?" — NO (reaffirmed).** This pass surfaced no hole a new feature would fill; it
+showed the four live non-constant components cannot be productively UP-weighted using confluence's dead points,
+and the NOTE already argued a fresh confirmation component would push further into the empirically-weak
+high-conviction regime (higher overfitting risk, out of pure-reweighting scope). No speculative indicator is
+warranted. The separate, still-open lead is the trend PARTIAL-tier (15pt) net-loser question (NOTE §4b/§5b) —
+untouched here by design; a joint test with any reweighting is now moot since no reweighting survives, so that
+lead (if pursued) should be run on its own.
+
+`config/base.yaml`, `council/scoring.py`, `decision_matrix.py`, `engine.py` UNCHANGED (monkeypatch lived only
+in-process). Auditor gate thresholds NOT touched (rule 8). Harness: `experiments/exp015_reweight_harness.py`.
+
+---
+
+## EXP-016 2026-07-23 — Council scoring: trend_alignment PARTIAL-tier point value (scoring-formula family)
+Status: REJECTED (both candidates lose to baseline on Train, per-year-consistent) — Train-only pass; Validation NOT reached, Test NOT touched.
+
+### 0. Relation to the 2026-07-23 scoring NOTE + EXP-015 (why this is the right isolated EXP)
+Follow-up to the scoring NOTE §4b/§5b — the one still-open lead after EXP-015. `trend_alignment` awards 30 pts
+for FULL EMA alignment (EMA20>EMA50>EMA200 bull / reversed bear) and 15 pts for PARTIAL (EMA20>EMA50 only,
+EMA200 not yet crossed). The NOTE's fired-trade three-way split found the partial(15) tier correlates with
+NET-LOSING trades (avgR **−0.022**, win 33.1%, n302) vs full(30) at +0.125 — but explicitly flagged this as
+SELECTION-CONFOUNDED (conditional on a trade already firing at score≥70) and said it must be re-measured as an
+actual trade-set change. EXP-015 just proved that caveat is not academic: confounded conditional reads
+(macd/full-trend "positive discriminators") evaporated once tested as real trade-set changes. This EXP isolates
+the partial-tier weight ONLY — confluence stays the live inert +15, every other component & all 3 thresholds
+held at live (NOT combined with EXP-015's already-rejected reweighting).
+
+### 1. Hypothesis / mechanism
+If the partial tier truly earns points on net-losing signals, cutting it (15→0, or →7) should raise the
+effective conviction bar for partial-alignment bars (those bars drop 15/8 pts; some fall below 70/55 and stop
+firing) → a genuinely NEW, smaller fired set tilted away from the losing subset → higher PF/avgR. Bars with
+FULL alignment (30) or none (0) are unchanged, so this is a clean single-tier test. Pre-registered failure
+mode (same as EXP-015): the −0.022R is selection-confounded — the partial-alignment bars removed may in fact
+be net-positive contributors once measured as an actual trade-set delta, in which case dropping them HURTS.
+
+### 2. Splits / config
+Standard chronological 60/20/20 (Train 2021-07-22→2024-07-21 by year Y1/Y2/Y3; Val Y4 2024-07-21→2025-07-21;
+Test Y5 2025-07-21→2026-07-21). THIS PASS = TRAIN ONLY (per-year + full-Train aggregate). Config = adopted
+live-equivalent: commission 0, all-24h (risk_voice=None), tp 2.0, sl 0.2/0.8/2.5, pivot 3, thresholds
+70/70/55, Watchman/Shield OFF, cost model on (slippage = bar's own spread). Harness
+`experiments/exp016_trend_partial_harness.py` (reuses EXP-015's vectorised scorer + fidelity machinery by
+import; only the WEIGHTS dict differs — trend_partial is the sole varied field, asserted in-code).
+
+### 3. Candidates (only trend_partial changes; every other component == live)
+| id | trend_full | **trend_partial** | rsi | macd | struct | confluence | max |
+|----|-----------|-------------------|-----|------|--------|-----------|-----|
+| BASE_p15 (live) | 30 | **15** | 20 | 15 | 20 | 15 (const) | 100 |
+| P0_drop     | 30 | **0** | 20 | 15 | 20 | 15 | 100 (partial→none) |
+| P7_mid      | 30 | **7** | 20 | 15 | 20 | 15 | 100 |
+Configs evaluated (this exp / cumulative for scoring family): 3 (BASE+2) / 7 (4 from EXP-015 + 3 here, BASE
+shared) — well under N>20.
+
+### 4. Fidelity (harness validated BEFORE trusting any candidate)
+- **Isolation guard:** in-code assert confirms all candidates differ from BASE only in `trend_partial`.
+- **Score exactness:** fast BASE_p15 scorer == real `score_bull_voice`/`score_bear_voice` on 300 random Train
+  bars → **600/600 component-exact** (bull+bear), mismatch 0.
+- **Engine integration:** fast-BASE backtest == STOCK backtest on 2022-01-01→2022-05-01, trade-for-trade
+  (both 81 tr, PF 1.108, net +246.1, DD 3.40, PF_ex5 0.8918) — byte-for-byte, so candidate deltas are the
+  trend_partial change and nothing else. (Same proven machinery cross-validated by two independent scorers in
+  EXP-015 §4.)
+
+### 5. Results — Train per-year PF / net$ (trades) + full-Train aggregate
+| Year | BASE_p15 (live) | P0_drop | P7_mid |
+|------|-----------------|---------|--------|
+| Y1 21-22 | **1.047 / +278 (197)** | 0.968 / **−181** (199) | 1.006 / +31 (195) |
+| Y2 22-23 | 0.998 / −16 (202) | 0.988 / −72 (194) | **1.013 / +77 (194)** |
+| Y3 23-24 | **1.230 / +1324 (183)** | 1.114 / +635 (180) | 1.157 / +848 (175) |
+| **Full Train** | **PF 1.086 / avgR 0.052 / +1588 / DD 11.2 / 587 tr / PF_ex5 1.055** | PF 1.014 / avgR 0.008 / +240 / DD 13.0 / 574 tr / PF_ex5 0.984 | PF 1.047 / avgR 0.030 / +809 / DD 12.3 / 565 tr / PF_ex5 1.016 |
+
+### 6. Robustness / verdict evaluation
+- **BASE dominates the full-Train aggregate on every metric** (PF, avgR, net$, DD, PF_ex5) vs BOTH candidates.
+  Cutting the partial tier RAISES Train drawdown (13.0 / 12.3 vs 11.2) — the opposite of a quality improvement.
+- **P0_drop (the a-priori favourite) is clearly harmful:** it turns Y1 net-NEGATIVE (−181 vs BASE +278),
+  roughly HALVES the Y3 profit (+635 vs +1324), and its Train PF_ex5 falls below 1.0 (0.984). Losing to BASE
+  in all three years → not an aggregate fluke; per-year-consistent rejection (same bar that caught EXP-002 /
+  EXP-015). This directly confirms the pre-registered confound: the partial-alignment bars are NET-POSITIVE
+  contributors as an actual trade-set, not the net-losers the conditional −0.022R read suggested.
+- **P7_mid is also rejected:** worse than BASE on the aggregate (PF 1.047 / +809 vs 1.086 / +1588) and in Y1 &
+  Y3. Its ONLY per-year edge is Y2 (+77 vs −16) — the ~breakeven year — which is NOT the "per-year consistent
+  across all 3 Train years" bar this protocol requires; a single marginal-year win on an otherwise-losing
+  candidate is exactly the regime-owed artifact the per-year check exists to reject.
+- neighborhood/plateau: n.a. (no winner to defend; if anything the response 0→7→15 is MONOTONE-increasing in
+  net$/PF over the tested range, i.e. the live value 15 sits at the good end, not on an isolated peak).
+  per-year: ✓ (rejection consistent for P0; P7's lone Y2 win insufficient). top-5: both candidates' Train
+  PF_ex5 ≤ BASE (0.984 / 1.016 vs 1.055). walk-forward: n.a. (per-year IS the check).
+
+### 7. VERDICT — REJECT both; keep live trend_partial = 15 (`council/scoring.py` UNCHANGED)
+Neither candidate clears Train — a candidate must beat baseline on Train (per-year-consistent) before earning a
+Validation look, and both are uniformly worse on the aggregate with no clean per-year win. Per protocol,
+**Validation is NOT run and the Test one-touch budget stays UNSPENT** for the scoring family. This closes the
+last open lead from the 2026-07-23 scoring NOTE: the partial-tier's −0.022R was a SELECTION-CONFOUND artifact,
+NOT a removable defect — dropping the tier is actively harmful (Y1 flips negative, Y3 halves, DD rises). Same
+lesson as EXP-015, now on the sibling lead: conditional present-vs-absent reads on the fired set do NOT survive
+as real trade-set changes. The scoring formula's trend_alignment tiering (30/15/0) is running soundly and the
+default is on the correct side of a monotone response — a textbook "default is already fine" (rules 5/9).
+
+**"Find a replacement / keep hunting?" — NO.** With EXP-015 (reweighting) and EXP-016 (partial tier) both
+rejected, the scoring-formula family has no remaining edge-positive lead: confluence is inert-but-benign,
+thresholds sit on a flat/non-monotone surface (NOTE §3, highest-overfit knob — leave alone), macd & full-trend
+are doing real work, and both plausible "fixes" to the two suspicious components proved harmful once measured
+honestly. The scoring family is closed as "sound, no change warranted."
+
+`config/base.yaml`, `council/scoring.py`, `decision_matrix.py`, `engine.py` UNCHANGED (monkeypatch in-process
+only). Auditor gate thresholds NOT touched (rule 8). Harness: `experiments/exp016_trend_partial_harness.py`
+(reuses `experiments/exp015_reweight_harness.py`).
+
+---
+
+## NOTE (not an EXP) 2026-07-23 — "add-to-a-loser" second position (martingale/averaging) feasibility @ $3,000
+
+Exploratory, TRAIN-ONLY (2021-07-22 → 2024-07-21, 17,737 H1 bars). Validation and Test DELIBERATELY
+NOT TOUCHED — this is a risk-first diagnostic for a genuinely NEW strategy family; the risk profile
+alone may disqualify it before any split-based tuning is warranted (same convention as EXP-010/the
+sizing NOTEs). User idea (verbatim TH): "หลัง order 1 ไม้ไปแล้ว ... Profit ติดลบ ...% อนุญาติให้บอท
+เปิดไม้เพิ่ม 1 ไม้ ... เผื่อเอากำไรมาถัวกับที่เสียไป" = after leg 1 is floating at a loss of X%, open
+ONE extra position to average out / offset the loss. This is a martingale/grid "add-to-a-loser" pattern.
+User explicitly waived the current Shield constraints (max_positions_per_symbol=1 etc.) for this probe;
+`config/base.yaml` and all src/ are UNCHANGED — standalone harness only.
+
+### 0. What was built
+`experiments/exp_martingale_secondleg_harness.py` — a two-slot simulation that REUSES production code
+verbatim (engine `_council_signal_fn`, `check_exit`, cost model, Watchman `evaluate_watchman`, Shield
+cooldown, `compute_lot_size`, `build_order_plan`) under the CURRENTLY-ADOPTED config (pivot 3, tp 2.0,
+all-24h [0,24), be/trail OFF + structure/time-stop ON, Shield cooldown ON, min_lot_risk_cap 1.5, risk
+1.0%). Start equity $3,000. Commission $0 (the user's REAL IC Markets **Standard** account, per memory);
+spread baked per-bar from the data's own spread column (min-1-spread). Trigger X is expressed as a
+fraction of leg-1's own initial risk R (regime-normalized; at 1% risk, −0.5R ≈ −0.5% to −0.75% of
+equity given the min-lot fallback). The council signal at each bar is identical across variants, so it
+is precomputed ONCE and reused (O(n) per variant). **FIDELITY PASSED**: harness baseline reproduces the
+stock `run_backtest` on a 5,000-bar slice to the cent (235 trades, PF 1.0511, net $180.6, both).
+
+Two readings of the ambiguous idea, tested separately:
+- (A) SAME-DIRECTION averaging/martingale: while leg 1 open and floating ≤ −X·R, open leg 2 SAME
+  direction (no fresh signal), leg-1 stop-distance as risk unit, own 2R TP, independent exit. Sizing
+  1.0x (pure averaging) and 2.0x (double-down).
+- (B) INDEPENDENT-SECOND-SLOT unlock: while leg 1 floating ≤ −X·R, unlock a 2nd slot for a genuinely
+  fresh Council/Risk-Voice-approved signal (any direction), sized normally. Not averaging the same trade.
+
+Concurrency capped at 2 legs; a fresh leg-1 signal only fires when fully flat. "Mark-to-market (MTM)"
+equity = realized + floating of both open legs, per bar — the honest curve for drawdown/ruin.
+
+### 1. Results (Train, $3,000, comm $0)
+```
+label                trades  PF      net$     MTM_maxDD%  worst_single  worst_streak  per-year PF (2021/22/23/24)
+B0_baseline (1 pos)    755   1.1019  +1309.9    25.54       -45.3        -276.1       0.963 / 1.187 / 1.123 / 1.059
+A1 same -0.5R 1x       963   1.0558   +922.6    31.47       -45.3        -371.4       1.138 / 1.169 / 0.989 / 0.944
+A2 same -0.5R 2x       963   1.0671  +1573.8    31.95      -113.0        -546.3       1.166 / 1.212 / 0.982 / 0.953
+A3 same -0.75R 2x      845   1.0844  +1205.2    28.92       -80.4        -276.2       0.926 / 1.163 / 1.164 / 0.990
+B1 fresh slot -0.5R    902   1.0916  +1419.1    23.06       -47.0        -273.8       0.987 / 1.104 / 1.167 / 1.041
+```
+Min MTM equity trough (worst point reached, from $3,000 start): B0 $2,810 / A1 $2,825 / A2 $2,813 /
+A3 $2,644 / B1 $2,684. NO variant busts the account (never near $0) in the Train history.
+
+### 2. Risk findings (the point of this probe)
+1. **Worst-case sequential drawdown / ruin @ $3,000.** No variant blows the account in the Train data —
+   but NOT because martingale is safe: it is because at $3,000 with 1% risk + the min-lot fallback,
+   positions are already pinned to the broker floor (0.01 lot; 0.02 at the 2x leg), so absolute
+   per-trade dollars are tiny ($45–$113). The min-lot floor MASKS the martingale tail while delivering
+   none of its upside — the account is too small to size the "recover faster" leg up meaningfully. The
+   danger it DOES add is visible in the tails: 2x (A2) roughly TRIPLES worst single loss (−$45 → −$113,
+   ≈3.8% of the account in one trade) and DOUBLES worst losing streak (−$276 → −$546, ≈18% of account),
+   and pushes MTM drawdown to ~32%. On a LARGER account where risk-sizing produces real lots, the same
+   2x double-down into a sustained adverse trend is the classic single-sequence ruin — the $3,000 floor
+   is the only thing hiding it here.
+2. **Circuit-breaker reality.** Even BASELINE MTM drawdown is 25.5% — already 3x past the 8%
+   `max_drawdown_halt_pct` (unmodeled in the engine, same caveat as every prior NOTE). Variant A makes
+   it strictly worse (29–32%). So A2's headline net "+$1,574" is FICTIONAL live: the halt would have
+   stopped trading long before, multiple times. Not a live-achievable number.
+3. **Margin feasibility @ $3,000: not the binding constraint.** A 0.02-lot XAUUSD position at 2026 gold
+   (~$3,300) is ~$6,600 notional → ~$13 margin at 1:500 (≈$66 even at 1:100). Trivially affordable on
+   $3,000. But this is cold comfort: the account CAN open the second leg, it just can't size it big
+   enough for the martingale premise ("bigger size recovers faster") to matter, while still eating the
+   fatter downside. Margin never saves or sinks this idea; sizing economics and tail risk do.
+
+### 3. Risk-adjusted verdict vs baseline
+- **Variant A (same-direction averaging / martingale) — REJECT.** It does NOT improve risk-adjusted
+  return; it degrades it. PF falls below baseline (1.056–1.084 vs 1.102), MTM drawdown rises
+  (29–32% vs 25.5%), tails fatten with the multiplier. Decisively, it BREAKS per-year robustness: the
+  baseline is PF≥1.06 in three of four years and 0.96 in the fourth, whereas A1/A2 FLIP the two most
+  RECENT years (2023 AND 2024) net-NEGATIVE. A2's higher aggregate net is a pure regime artifact —
+  it juices the single 2022 trending year (+$1,530 vs baseline +$710) while bleeding in the choppier
+  2023–24. This is the textbook martingale signature: same ~breakeven expectancy reshaped into a
+  lumpier, fatter-left-tailed distribution (more small averaging wins, offset by rarer bigger losses and
+  worse recent-regime behavior) — exactly the failure mode the user should NOT want on a small account.
+- **Variant B (independent 2nd slot on a fresh signal) — NEUTRAL, and not the user's idea.** Roughly
+  matches baseline (PF 1.092 vs 1.102 — marginally WORSE PF), slightly higher net (+$1,419), slightly
+  LOWER MTM drawdown (23.1%), per-year consistent (no year flipped hard negative). It is safe but
+  delivers no clear edge, and mechanically it is "allow 2 concurrent independent trades" — a
+  Shield `max_positions_per_symbol` question (spec: "raise to 2 only after 3 months live"), NOT the
+  averaging mechanic the user described. No basis to pursue it now over the spec's own guidance.
+
+### 4. Recommendation — DO NOT PURSUE (no promotion to a pre-registered EXP)
+The same-direction averaging idea (the user's actual intent) is a net-negative for a $3,000 account:
+worse PF, worse drawdown, fatter tails, and it converts the two most recent robust years into losers.
+At this account size it also can't even be sized to do what martingale is supposed to do. Nothing here
+survives the risk sanity-check, so no Validation/Test EXP is warranted (Test one-touch budget UNSPENT).
+`config/base.yaml` and all src/ UNCHANGED; Auditor gate thresholds NOT touched (rule 8). If the user
+still wants a "use the idle slot" behavior, the disciplined path is the DIFFERENT question of
+`max_positions_per_symbol: 1→2` after the spec's 3-months-live condition — evaluated on its own merits,
+not as loss-averaging. Cross-ref: a $7/lot Raw-Spread pass was not run (it lowers every variant's PF
+roughly uniformly and would not change this ranking). Harness: `experiments/exp_martingale_secondleg_harness.py`.
+
+---
+
+## NOTE (not an EXP) 2026-07-23 — OPPOSITE-DIRECTION "hedge" second position feasibility @ $3,000
+
+Exploratory, TRAIN-ONLY (2021-07-22 → 2024-07-21, 17,737 H1 bars). Validation and Test DELIBERATELY
+NOT TOUCHED — same risk-first convention as the martingale NOTE directly above (a genuinely NEW strategy
+family disqualified by its risk shape alone needs no split-based tuning). User idea (verbatim TH):
+"ในทางกลับกันถ้าทำ hedging ถ้า buy อยู่ แล้ว sell สวนมาอีกไม้จะเป็นยังไง ทำเฉพาะ Profile เริ่มติดลบมากๆ"
+= conversely to martingale, HEDGE — while leg 1 (say BUY) is open and floating heavily negative, open
+leg 2 in the OPPOSITE direction (SELL). This is a DIFFERENT mechanism from martingale (which doubled the
+SAME bet): a hedge is NET-FLAT while both legs are open — it caps further loss on leg 1 but also caps
+leg 1's recovery, and adds a fresh whipsaw + double-spread failure mode. Judged on its own merits.
+
+### 0. What was built
+`experiments/exp_hedge_secondleg_harness.py` — adapts the martingale two-slot harness; REUSES production
+code verbatim (engine `_council_signal_fn`, `check_exit`, cost model, Watchman `evaluate_watchman`,
+Shield cooldown, `compute_lot_size`, `build_order_plan`) under the CURRENTLY-ADOPTED config (pivot 3,
+tp 2.0, all-24h [0,24), be/trail OFF + structure/time-stop ON, Shield cooldown ON, min_lot_risk_cap 1.5,
+risk 1.0%). Start equity $3,000. Commission $0 (IC Markets **Standard**, per memory); spread baked
+per-bar (min-1-spread). **FIDELITY PASSED**: baseline reproduces stock `run_backtest` on the 5,000-bar
+slice to the cent (235 trades, PF 1.0511, net $180.6), and B0 on full Train reproduces the martingale
+NOTE's B0 exactly (755 trades, PF 1.1019, net $1,309.9, MTM maxDD 25.54%, per-year 0.963/1.187/1.123/1.059).
+
+Hedge leg = **SAME lot as leg 1** (net-flat while both open; a bigger hedge would be a disguised
+reversal, out of scope). Trigger X = fraction of leg-1's own initial risk R, swept at −0.5R and −1.0R.
+THE EXIT RULE IS THE CRUX of a hedge (unlike martingale's independent adds), so two well-motivated rules
+were tested separately:
+- **(Ha) INDEPENDENT MIRRORED EXITS** — direct analog of the martingale leg-2 handling, flipped: hedge
+  gets its own SL (=entry∓d) and 2R TP (=entry±2d), d = leg-1 stop distance; both legs exit independently.
+  Exposes the WHIPSAW failure (leg 1 stops out, then price reverses and stops the hedge too).
+- **(Hb) LOCK-AND-RELEASE** — the classic "cap the loss, wait" intent: hedge has no exit of its own;
+  it closes when (1) leg 1 recovers to breakeven (lock the small hedge loss, let leg 1 ride on), or
+  (2) leg 1 hits its own SL/Watchman exit (close BOTH same bar → combined loss CAPPED below −1R). Hedge
+  can never outlive leg 1; hedge exit price = bar close (realistic, not the optimistic leg-1 SL touch).
+"Net position" P&L is honest: MTM equity = realized + floating of BOTH legs each bar (floats offset while
+net-flat). Per-EPISODE combined P&L (leg1 total + hedge total, from equity_at_trigger to fully-flat) is
+tracked to see if the hedge CAPS the tail. Concurrency capped at 2; fresh leg-1 signal only when flat.
+
+### 1. Results (Train, $3,000, comm $0)
+```
+label                trades  PF      net$    maxDD%  worst_single  worst_streak  hedge_eps  neg%   hedge_eps_net$  per-year PF (21/22/23/24)
+B0_baseline (1 pos)    755  1.1019  +1309.9  25.54    -45.3         -276.1          0        --        --          0.963/1.187/1.123/1.059
+Ha_indep  -0.5R        862  1.0573   +758.3  26.12    -41.6         -274.6        246       66%     -3872         0.951/1.152/1.069/0.967
+Ha_indep  -1.0R        756  1.1023  +1318.9  26.21    -45.3         -276.1          3      100%      -145         0.967/1.197/1.112/1.060
+Hb_lock   -0.5R       1069  1.0419   +602.8  25.88    -92.9         -227.7        314       86%     -5115         0.910/1.144/1.071/0.961
+Hb_lock   -1.0R        758  1.1023  +1316.5  25.84    -45.3         -276.1          3      100%       -88         0.965/1.186/1.120/1.065
+```
+"hedge_eps_net$" = aggregate combined P&L of just the episodes where a hedge fired. MTM trough (worst
+equity reached from $3,000): B0 $2,810 / Ha-.5 $2,760 / Hb-.5 $2,689 — no variant approaches ruin.
+
+### 2. Risk findings (the point of this probe)
+1. **Does the hedge CAP the tail? Yes — but that's not where it fails.** Unlike martingale (which FATTENED
+   the left tail: worst single −45→−113, worst streak −276→−546), hedging leaves the extreme tail roughly
+   NEUTRAL-to-slightly-better: no single episode blows up (worst combined episode −75 for Ha, and Hb's
+   worst STREAK is actually milder, −228 vs −276), MTM drawdown ~26% ≈ baseline. So the hedge does what it
+   promises mechanically — it bounds any single sequence. The problem is the OPPOSITE end.
+2. **It fails on CHRONIC EXPECTANCY EROSION, not tail risk.** At the only trigger that actually fires
+   (−0.5R), the hedge activates 246–314 times and LOSES on 66% (Ha) to 86% (Hb) of those episodes, for an
+   aggregate drag of −$3,872 (Ha) to −$5,115 (Hb). The account stays net-positive ONLY because the
+   non-hedged trades carry it; the hedge activity itself is pure bleed. Net drops 42% (Ha, +1310→+758) to
+   54% (Hb, +1310→+603); PF falls 1.102→1.057/1.042. This is exactly the predicted "whipsaw + double-spread
+   + mechanical cancellation of leg-1's edge" failure: the worst episodes' min-float is only −$15 to −$35
+   (shallow chop, NOT deep disasters) — the hedge got opened into noise, paid spread twice, and cancelled
+   the directional edge it was supposed to protect. Hb is worse than Ha because "lock at breakeven"
+   systematically pays the hedge cost right before leg 1 would have recovered on its own, and its
+   forced both-legs-close can even WORSEN worst single trade (−92.9 vs −45.3).
+3. **No trigger sweet-spot exists.** At −1.0R the trigger essentially never fires before leg-1's own SL
+   closes the trade (only 3 episodes across 3 years) → both rules collapse back to baseline (inert). So
+   the hedge is a strict lose-lose: shallow trigger = chronic bleed, deep trigger = does nothing. There is
+   no X where it earns its keep.
+4. **Robustness break — same signature as martingale.** The −0.5R hedges FLIP the most RECENT year 2024
+   net-NEGATIVE (Ha 0.967, Hb 0.961) and Hb also drags 2021 to 0.910, exactly the recent-regime
+   degradation the martingale variants showed. An idea that only "works" by not firing, and hurts the
+   moment it does, is not a robust edge.
+5. **Margin / circuit-breaker: not the binding constraints (same as martingale).** Hedge leg is 0.01 lot,
+   ~$6,600 notional → ~$13 margin at 1:500; trivially affordable at $3,000. MTM drawdown ~26% is still 3x
+   past the 8% `max_drawdown_halt_pct` (unmodeled) for EVERY variant incl. baseline, so headline nets are
+   not live-achievable — but the halt caveat is identical across variants and doesn't change the ranking.
+
+### 3. Verdict vs baseline AND vs the martingale NOTE
+- **Hedge (both Ha and Hb) — REJECT.** It does NOT improve risk-adjusted return; it erodes it. Instructive
+  contrast with martingale: **martingale kills you with TAIL risk** (rare fat losses, fatter left tail,
+  same central expectancy), whereas **hedging kills you with CENTRAL expectancy** (no fat tail — arguably
+  safer in the pure ruin sense — but a chronic, pervasive bleed that cancels the strategy's edge on every
+  shallow whipsaw and charges spread twice). Both share the same recent-year robustness break (2024 flips
+  negative). Neither is worth pursuing; they fail for opposite reasons but fail equally.
+- The "lock-and-release" intent the user was reaching for (cap the loss, wait it out) DOES bound the
+  single-episode loss as designed — but empirically that protection is worth far less than it costs,
+  because the strategy's losers are mostly shallow chop, not deep runaway trends, so the hedge mostly
+  "protects" trades that would have recovered anyway, at full double-spread price.
+
+### 4. Recommendation — DO NOT PURSUE (no promotion to a pre-registered EXP)
+Opposite-direction hedging is a net-negative for a $3,000 account: lower PF, lower net (−42% to −54%),
+comparable drawdown, and it flips 2024 (and Hb also 2021) negative — while the tail protection it does
+deliver is not the account's actual problem. There is no trigger value that earns its keep (shallow =
+bleed, deep = inert). Nothing survives the risk sanity-check, so no Validation/Test EXP is warranted
+(Test one-touch budget UNSPENT). `config/base.yaml` and all src/ UNCHANGED; Auditor gate thresholds NOT
+touched (rule 8). If the user wants downside protection on deep-underwater trades, the disciplined
+alternatives are (a) a tighter/earlier structure-based exit on leg 1 (tune the existing Watchman
+`dead_trade_r_band` / time-stop — a real EXP on the ONE stop already in the pipeline), or (b) simply
+smaller risk% — both of which reduce the same downside WITHOUT paying spread twice or cancelling the
+edge. Cross-ref: a $7/lot Raw-Spread pass was not run (uniformly lowers PF, would only worsen every hedge
+variant relative to baseline). Harness: `experiments/exp_hedge_secondleg_harness.py`.
+
+---
+
+## NOTE (not an EXP) 2026-07-23 — Winter/Summer SEASONALITY + DST / server-time-mechanics probe
+
+Diagnostic, not a sweep. No Train/Val/Test pre-registration; Test budget UNTOUCHED. Standalone harness
+`experiments/analysis_seasonality_dst.py` reuses production `run_backtest` OFFLINE (manual SymbolSpec,
+same pattern as the martingale harness) under the CURRENTLY-ADOPTED config (pivot 3, tp 2.0, all-24h
+[0,24), be/trail OFF + structure/time-stop ON, Shield cooldown ON, risk 1.0%, min_lot_cap 1.5, comm $0,
+spread per-bar min-1). Full 5yr XAUUSD H1 (2021-07-22 → 2026-07-21, 29,543 bars; 1,245 trades, overall
+PF 1.126, net +$3,148 @ $3,000). `config/base.yaml` and src/ UNCHANGED. First check of this surface —
+grep confirmed no prior season/DST EXP (only EXP-003 §4 flagged "DST drift" as an unquantified caveat;
+this NOTE resolves it empirically).
+
+### Q1 — Calendar / seasonal pattern in the trades
+Month-of-year (all 5yr pooled), PF (net$): Jan 1.03(+304) Feb 1.32(+524) Mar 1.51(+891) Apr 0.79(-387)
+May 0.89(-179) Jun 0.81(-185) Jul 1.02(-22) Aug 1.44(+710) Sep 1.53(+735) Oct 1.21(+267) Nov 1.51(+848)
+Dec 0.81(-358). Season pooled: winter(NDJF) PF 1.132(+1318,431tr); summer(MJJA) PF 1.021(+324,422tr);
+shoulder(MA+SO) PF 1.242(+1506,392tr).
+
+Per-year robustness (the bar every finding here must clear) — PF(net$,n) by season × trade-year:
+```
+season           2021          2022          2023          2024          2025          2026(part)
+winter(NDJF)  1.09(+77,102) 1.01(+42,86)  1.15(+243,86) 1.10(+156,88) 1.39(+799,69)   --
+summer(MJJA)  0.80(-195,71) 1.05(+121,90) 0.98(-137,82) 1.11(+247,82) 1.28(+465,81)  0.53(-176,16)
+shoulder      1.07(+64,82)  1.00(+12,71)  1.82(+864,72) 1.30(+407,78) 1.18(+159,89)   --
+```
+Findings: (a) winter (Nov–Feb) is the ONLY season that is net-positive AND PF≥1.0 in EVERY one of the 5
+years — a genuinely per-year-consistent mild tilt. (b) But it is NOT clean: within "winter", Dec alone is
+a LOSER (PF 0.81, -$358) — the winter edge is really Feb+Nov, not a solid 4-month block. (c) The pooled
+shoulder headline (1.24) is INFLATED by a single outlier year: 2023's Mar–Apr/Sep–Oct at PF 1.82 (+$864);
+strip 2023 and shoulder collapses to ~1.1. (d) The most consistent WEAK stretch is Apr–Jun (pooled PF
+0.79/0.89/0.81) — but summer as a whole is per-year mixed (negative 2021 & 2023, positive 2022/24/25), i.e.
+roughly break-even, not reliably losing. Net: there is a real, modest winter>summer bias that survives
+per-year checks, but the monthly structure is noisy (Dec breaks winter; shoulder rides one year) and the
+effect size is small (winter 1.13 vs summer 1.02). A month/season entry-filter is a 12-dim calendar
+overlay = high curve-fit risk for a ~0.1-PF pooled gap. VERDICT: mild real signal, NOT clean/large enough
+to justify a calendar filter now. If ever pursued, the ONLY disciplined framing is ONE narrowly-scoped,
+mechanistically-motivated EXP (e.g. "de-risk/skip Apr–Jun" as a single binary, pre-registered, per-year-
+gated hypothesis) — LOW priority, and expected to be fragile. Not recommending an EXP.
+
+### Q2 — DST / server-time mechanics (the structural question)
+Server clock = MT5 SERVER time (`global.timezone: server`); every hour threshold, incl. the ACTIVE
+`risk_voice.friday_close_hour: 20`, is in server time. Empirical DST test: mean H1 bar range (high−low) by
+hour-of-day, summer (Apr–Oct) vs winter (Nov–Mar). The London/NY volatility ramp sits at SERVER hours
+15–17 in BOTH regimes (summer peak-range hours 16,17,15; winter 17,16,15) — NO 1-hour seasonal shift.
+Per-calendar-month peak-range hour is pinned at server 16±1 all 12 months. **Conclusion: this broker's
+server clock DOES observe DST (EET/EEST, i.e. UTC+2 winter / UTC+3 summer — the standard IC Markets
+behavior).** If it were a fixed UTC offset, the NY ramp would visibly shift 1h between summer/winter; it
+does not. Mechanically: NY open (13:30 UTC summer / 14:30 UTC winter) maps to ~16:30 server in BOTH
+regimes precisely because the +3/+2 server offset absorbs the shift.
+
+Consequence for `friday_close_hour: 20`: because the server auto-adjusts, 20:00 server maps to a STABLE
+real-world market time year-round (~3h before the 23:00-server NY close in both regimes). So the hypothesized
+"weekend-gap protection drifts up to 1h across the DST calendar" gap DOES NOT EXIST for this broker — the
+DST-observing server is the SAFE regime, and no config change is warranted. (Minor caveat: US and EU switch
+DST on different dates; during the ~2–3 shoulder weeks where only one has switched, the NY session sits 1h
+off in server time — visible as the tiny Apr=17/May=16 and Oct=17/Nov=16 wobble in the monthly peak-hour
+table. Immaterial to a 20:00 threshold with a 3h buffer.) **Actionable takeaway: this finding is only
+valid because the server observes DST — if the account is ever moved to a broker whose server is a fixed
+UTC offset, all hour thresholds (friday_close_hour especially) WOULD drift 1h twice a year and must be
+re-verified. Worth documenting, not worth a config change now.**
+
+Data quality in DST-transition weeks (all 5yr, US ~2nd-Sun-Mar/1st-Sun-Nov + EU last-Sun-Mar/Oct):
+every transition week clean — zero_spread=0 (spread-floor holding), spreads 1–9 (one 29-pt bar 2025-03-30,
+still floored/finite), no missing-bar anomalies beyond the normal daily ~1h maintenance break and the
+standard weekend close. Only oddity: 2024-03-31 has fewer bars (46) + a 3-day max gap = EU DST weekend
+coinciding with Easter Sunday, a legitimate holiday close, not a feed glitch. No thin/glitchy transition-
+weekend liquidity signature.
+
+### Bottom line
+Q1: checked — a mild, per-year-consistent winter>summer tilt EXISTS but is small and structurally noisy
+(Dec negative, shoulder inflated by 2023); NOT worth a calendar filter (overfit risk ≫ edge). Q2: checked
+— server observes DST, so `friday_close_hour` and all hour gates are DST-stable in real-world terms; the
+suspected seasonal weekend-gap hole is a NON-issue on this broker (structural knowledge worth keeping, not
+urgent). Neither finding warrants a config change or an immediate EXP. Harness:
+`experiments/analysis_seasonality_dst.py`.
+
+## EXP-017 2026-07-23 — ADDITIVE "deep-loss timeout" exit condition (NEW family "loss-cutting exit")
+Status: REJECTED
+Hypothesis: today's live paper trade (BUY XAUUSD, held ~7h56m, closed −0.90R / −$36.12 via
+structure_invalidation) suggests a deeply-losing trade bleeds too long before an existing exit fires. The
+current exits structurally cannot cut a deep loser early: fixed SL only at −1R; structure_invalidation
+waits for a closed-bar swing break; time_stop needs ≥48h AND ±0.3R ("dead/flat" only — a −0.9R trade is far
+outside its band). Genuine never-tested gap. NOT EXP-008's breakeven/trail (those act on PROFIT and cut
+WINNERS). New rule: while open, if floating R ≤ −X AND held ≥ Y hours AND no existing exit fired this bar,
+close at the bar's close. X is always a NEGATIVE-R threshold, so it can never touch a flat/profitable trade.
+Pre-registered range & metric: 2D grid X∈{0.5,0.7}R × Y∈{4,8,12}h = 6 configs, Train-only per-year (y1
+2021-22, y2 2022-23, y3 2023-24). Decision metric = per-year PF/net$/avgR AND worst-single-trade / worst-10%
+tail severity. Acceptance (ALL required): (a) meaningfully reduce worst loss / left-tail, (b) preserve or
+improve PF/net$/avgR across ALL 3 Train years, (c) winners genuinely untouched (fidelity: X=−5 ⇒ byte-
+identical to baseline), (d) plateau (neighboring X/Y behave similarly, not a lucky spike).
+Configs evaluated (this exp / cumulative for this param family): 6 / 6 (first-ever in this family).
+Baseline = live adopted config: pivot 3, tp 2.0, all-24h Risk Voice, Shield cooldown, min-lot cap 1.5, be/
+trail OFF (EXP-008), structure+time ON, risk 1.0%, commission $0 (IC Markets Standard), $10k equity.
+Harness: experiments/exp017_deeploss_timeout_harness.py — a standalone VERBATIM copy of
+backtest.engine.run_backtest's loop reusing every engine helper, adding ONLY the deep-loss check at the
+required precedence (existing exits always win). No src/ or config touched.
+
+FIDELITY (mandatory, on y1): real run_backtest = my memoized re-sim with deep-loss DISABLED = my re-sim with
+unreachable X=5.0, all three 265 trades BYTE-FOR-BYTE identical. Harness trusted. Signal/ATR memoization
+(pure fn of (df,i)) validated by the same check.
+
+RESULTS — PF | net$ | avgR by config, per Train year (baseline bold-equiv first):
+                     y1 (2021-22)            y2 (2022-23)            y3 (2023-24)
+baseline        PF1.033  +502  0.027    PF0.975  −406  −0.016   PF1.224 +3321  0.139
+X0.5 Y4         PF0.945  −859 −0.025    PF0.976  −382  −0.008   PF1.094 +1594  0.062
+X0.5 Y8         PF0.966  −533 −0.012    PF1.017  +287  +0.015   PF1.056  +944  0.044
+X0.5 Y12        PF0.976  −388 −0.007    PF1.050  +828  +0.036   PF1.077 +1270  0.053
+X0.7 Y4         PF1.047  +744  0.035    PF0.981  −306  −0.010   PF1.127 +2127  0.089
+X0.7 Y8         PF1.020  +320  0.019    PF0.982  −291  −0.009   PF1.101 +1626  0.075
+X0.7 Y12        PF1.012  +186  0.013    PF0.989  −180  −0.004   PF1.120 +1947  0.086
+Worst single-trade net (tail): baseline y1 −157.49 / y2 −129.1 / y3 −142.7 — UNCHANGED (±few $) under EVERY
+config. Deep-loss fires on bar-CLOSE floating R; the genuinely worst trades are gap-through-SL fills it
+structurally cannot pre-empt. worst-10% tail mean flat-to-slightly-better only because the rule ADDS more
+small losers (churn), diluting the pool — not because it truncates the real left tail. Trade counts RISE
+(y1 265→322) and win-rate FALLS (y1 0.370→0.308) as would-recover holds become realized losers + reshuffle
+downstream selection (single-position engine).
+
+Robustness: neighborhood ✗ (best (X,Y) FLIPS by year: y1→X0.7/Y4, y2→X0.5/Y12; no shared plateau), per-year
+✗ (NO config preserves/improves all 3 years — every config bleeds y3, the strongest baseline year, PF
+1.224→1.09–1.13, net −$1.2k to −$1.7k), top-5 n.a. (rejected earlier), walk-forward n.a.
+Decision & rationale: REJECT all 6 (X,Y). Fails acceptance (a) — no meaningful worst-loss/tail reduction
+(worst losses are gaps the rule can't catch). Fails (b)/(d) — no config improves all 3 years and there is no
+plateau; the per-year optimum flips with regime = noise. Confirms the exact predicted failure mode: the rule
+cuts trades that would have recovered past structure_invalidation's own exit, gutting the best year (y3). The
+one config that helps the two weak years marginally (X0.7/Y4: y1 +0.014 PF, y2 +0.006 PF) destroys y3
+(−0.097 PF, −$1,194). Net: the current exit stack (SL/structure/time) already handles deep losers better
+than a blanket floating-R timeout. Do NOT proceed to Validation; Validation/Test untouched (as required).
+Today's −0.90R trade is within normal variance, not evidence of a systemic early-exit gap.

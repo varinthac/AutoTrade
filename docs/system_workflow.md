@@ -63,6 +63,19 @@ Council มี 3 "เสียง" (voices) ที่ให้คะแนนส
 - Stop Loss = ตำแหน่งที่ยอมให้ขาดทุน​ได้ (วางต่ำกว่าจุดต่ำสุดหรือสูงกว่าจุดสูงสุดของโครงสร้าง)
 - Take Profit = จุดเป้าหมายกำไรที่คาดหวัง (โดยปกติ = 2 × Stop Loss distance)
 
+### Bull/Bear Scoring Components (ค่าจาก src/autotrade/council/scoring.py, module constants)
+
+| Component | ค่า (pts) | Fire rate (Bull % / Bear %) | ความหมาย |
+|-----------|---------|---------|---------|
+| `trend_alignment` full | 30 | 42.3 / 30.5 | EMA(20) > EMA(50) > EMA(200) — best single discriminator |
+| `trend_alignment` partial | 15 | 12.3 / 14.8 | EMA(20) > EMA(50) only — ⚠️ (EXP-016: tested & REJECTED; −0.022R was selection-confounded artifact) |
+| `momentum_rsi` (RSI 14) | 20 | 46.4 / 40.8 | RSI ∈ [50,70] (Bull) / [30,50] (Bear) — ~half the time |
+| `momentum_macd` | 15 | 25.7 / 26.1 | MACD histogram positive+expanding (Bull) / negative+contracting (Bear) — real discriminator |
+| `market_structure` | 20 | 44.8 / 38.9 | Higher-low swing (Bull) / lower-high swing (Bear) — structurally flat in outcome |
+| `confluence` | 15 | 100.0 / 100.0 | ⚠️ **CONSTANT/DEAD** — fires every bar (gold's 0.50 granularity always within 0.5×ATR gate) |
+
+**Max score:** 30+15+20+15+20+15 = **100 pts**
+
 ### เงื่อนไข/Threshold ปัจจุบัน (ค่าจาก config/base.yaml)
 
 | Parameter | ค่าปัจจุบัน | ความหมาย |
@@ -79,6 +92,20 @@ Council มี 3 "เสียง" (voices) ที่ให้คะแนนส
 - **EXP-002** (2026-07-21): ทดสอบ `tp_r_multiple` 1.5–3.0 → **REJECTED ทั้งหมด**, ค่า 2.0 ยังคงดีที่สุด (แข็งแรง​ทุก​ปี เมื่อวัดเป็น per-year; candidates อื่น fail Y1 หรือ Y2)
 - **EXP-009** (2026-07-22): ทดสอบ tp ใหม่ด้วย Watchman modeling → **REJECTED อีกครั้ง** (ยืนยัน 2.0 ยังเป็นตัวเลือกที่ดีที่สุด)
 - **RE-VERIFICATION (P2, 2026-07-22):** หลังแก้ cost model (spread floor + commission $0), tp=2.0 ยังคงดีที่สุด — candidates 2.25/2.5 fail Y1 *harder* (Y1 PF 0.833→0.805 ที่ tp 2.25) — **การปฏิเสธนี้ RECONFIRMED** ไม่ใช่แค่ยืนยัน
+
+- **NOTE (2026-07-23)**: Council scoring-formula component audit — การประเมิน Bull/Bear scoring formula ครั้งแรก (5 components/thresholds ไม่เคยถูก adjust ใน prior EXP)
+  - **ผลการประเมิน:** `confluence` (+15) เป็น CONSTANT/DEAD (fires 100%, gold granularity 0.50 ≤ 0.5×ATR เสมอ), `momentum_macd` เป็น real positive discriminator, `trend_alignment` full-tier ดีที่สุด, `bull_threshold=70` เป็น non-monotone predictor (85+ highest-conviction signals ที่อ่อนที่สุด/"all-aligned=late in move"), no quality gradient ที่ justify adjustment. ไม่มี edge-positive action — confluence benign mis-specification, keep as-is
+  - **Optional lead (ยังไม่pursued):** trend partial-tier (15pt) correlates with net-LOSING trades (−0.022R) → **tested in EXP-016, REJECTED**
+
+- **EXP-015** (2026-07-23): Council scoring WEIGHT-REALLOCATION — ทดสอบการจัดสรร confluence's dead +15 ไปยัง discriminating components (macd/trend) 
+  - **Candidates:** C1_macd30 (macd 15→30), C2_trend45 (trend_full 30→45), C3_split (trend_full 30→38, macd 15→22)
+  - **ผลลัพธ์:** **REJECTED ทั้งหมด** — baseline (current live) PF 1.086 / avgR 0.052 ชนะทุก candidate บน Train aggregate, C1 PF 1.007 / C2 PF 1.017 / C3 PF 1.015 (per-year consistent reject Y1/Y2/Y3) ⚠️ All candidates WORSE across every year; mechanism confirmed: making 15 pts conditional raises effective bar → tilts toward weak high-conviction zone (noted in diagnostic)
+  - **สถานะ:** ❌ Train rejection → Validation/Test NOT reached. Keeps scoring formula unchanged; confluence stays benign inert +15
+
+- **EXP-016** (2026-07-23): Council scoring TREND_PARTIAL point value — ทดสอบการลดหรือค่อยๆ ปรับ trend partial-tier (15pt) ตามที่ diagnostic flagged เป็น net-losing subset
+  - **Candidates:** P0_drop (partial 15→0), P7_mid (partial 15→7), BASE_p15 (live, partial=15)
+  - **ผลลัพธ์:** **REJECTED both P0_drop & P7_mid** — baseline PF 1.086 / avgR 0.052 / +$1588 ชนะทุก candidate บน Train (P0 PF 1.014 / P7 PF 1.047; per-year consistent Y1/Y2/Y3); P0 flips Y1 negative (−$181 vs +$278), halves Y3 profit, raises DD. Response 0→7→15 monotone-increasing (not a false peak). ⚠️ Confirms diagnostic's −0.022R was SELECTION-CONFOUNDED artifact (same as EXP-015's mechanism lesson)
+  - **สถานะ:** ❌ Train rejection → Validation/Test NOT reached. Scoring formula & `trend_partial=15` unchanged. **ปิด Council-scoring-formula investigation เสร็จสิ้น** — ทั้ง EXP-015 + EXP-016 ล้มเหลว; formula validated as-is
 
 ---
 
@@ -115,6 +142,8 @@ Risk Voice คือ "ประตูรักษาความปลอดภ�
   
 - **EXP-004** (2026-07-21): ทดสอบ compromise [0,22) (ไม่รวม rollover 22-23)
   - **ผลลัพธ์:** ไม่ดีกว่า all-24h → **REJECTED** เหตุผล: "hours 22-23 losses" เป็น artifact ของ multi-year aggregate ไม่ใช่ per-year pattern; ที่ Train+Val โค้ง [0,22) แย่กว่า all-24h ~$91 aggregate
+
+- **DST mechanics validation (2026-07-23):** Server observes DST (EET/EEST: UTC+2 winter / UTC+3 summer); empirically confirmed London/NY volatility ramp pinned at server hours 15–17 year-round, zero 1-hour shift → `friday_close_hour: 20` stable in real-world time, weekend-gap protection design validated. (See Section 7's ✅ CHECKED subsection for full probe details; only applies to brokers observing DST.)
 
 ---
 
@@ -254,7 +283,7 @@ lot_size = risk_amount / (stop_distance × point_value)
 
 ---
 
-## 7. สรุปการเปลี่ยนแปลงล่าสุด (Recent Changes) — Session 2026-07-21/22
+## 7. สรุปการเปลี่ยนแปลงล่าสุด (Recent Changes) — Session 2026-07-21/22/23
 
 ล​​ำดับ​ (**ใหญ่ไป​เล็ก โดย​ impact​**):
 
@@ -272,6 +301,16 @@ lot_size = risk_amount / (stop_distance × point_value)
    - **สถานะ:** ✅ **LIVE** — config/base.yaml updated, shadow loop restarted (2026-07-22)
 
 ### ❌ REJECTED / SUPERSEDED (Tested, Didn't Pan Out)
+
+2.5. **Council scoring weight-reallocation (confluence → macd/trend)** — EXP-015
+   - **ทดสอบ:** 3 candidates redistribute confluence's inert +15 to discriminating components (C1_macd30, C2_trend45, C3_split)
+   - **ผลลัพธ์:** ❌ **REJECTED ทั้งหมด** — baseline PF 1.086 beats all candidates on Train (Y1/Y2/Y3 per-year consistent; C1 1.007 / C2 1.017 / C3 1.015); mechanism: making conditional component means bars lacking it score lower → tilts toward weak high-conviction zone → lower quality. Train-only pass; Validation not reached
+   - **สถานะ:** ❌ REJECTED — Council formula unchanged; confluence stays (benign but inert); no config/code change
+
+2.6. **Council scoring trend_partial point value** — EXP-016
+   - **ทดสอบ:** 2 candidates change partial-tier weight (P0_drop: 15→0, P7_mid: 15→7) vs live baseline (P15: 15); diagnostic flagged −0.022R correlation as possible net-losing contributor
+   - **ผลลัพธ์:** ❌ **REJECTED both** — baseline PF 1.086 / avgR 0.052 / +$1,588 beats both on Train aggregate (P0 PF 1.014 / +$240, P7 PF 1.047 / +$809); P0 per-year failure (Y1 flips −$181, Y3 halves to +$635, DD rises 11.2%→13.0%); P7 single-regime win (Y2 only) fails per-year-consistent check. Response monotone 0→7→15, live value sits on good end. Train-only pass; Validation not reached
+   - **สถานะ:** ❌ REJECTED — `trend_partial=15` unchanged. **Council-scoring-formula investigation (diagnostic + EXP-015 + EXP-016) CLOSED COMPLETE** — all leads tested, formula validated as-is
 
 3. **pivot_bars = 4** — EXP-009 Test-confirmed, then SUPERSEDED by joint re-verification
    - **ทดสอบเดิม (EXP-009):** hardcoded 3 → 4 (6 bars lookback = fractal 4-4) ดูเหมือนดีกว่า (Test PF 1.243 vs 1.215) — แต่วัดตอน Watchman ยังใช้ค่า default ที่รู้แล้วว่าพัง
@@ -305,6 +344,42 @@ lot_size = risk_amount / (stop_distance × point_value)
    - **ตัวเลขที่ run:** Fresh baseline (floored data, comm $0): Y1 1.001/+20 (277 tr), Y2 0.967/−548 (256 tr), Y3 1.199/+2935 (234 tr), Val 1.101/+1557 (262 tr). Best hybrid cell (N8·p2): Y1 0.943/−$1,018 (313 tr) — fails on regime/whipsaw
    - **สถานะ:** ❌ **REJECTED 2026-07-22** — H1-as-is entry stands; config unchanged; Test budget unspent
 
+8.5. **H1 + M30 momentum confirmation filter (EXP-012) & H1 + H4 trend agreement filter (EXP-013)** — Confluence filter family
+   - **Concept:** Pure-additive gate on H1 pipeline (Council/RiskVoice/Shield/CFO/Watchman unchanged) — take an H1 signal ONLY IF a second timeframe agrees in the same direction. Never adds signals, only filters. Cannot reproduce EXP-010/11's tighter-stop whipsaw (no entry/stop/decision change).
+   - **EXP-012 (M30):** Gate = last closed M30 bar's close vs M30 EMA(P), P ∈ {6,10,14,20,30} M30-bars (5 configs); loose settings remove ~5% of trades, tight settings reshuffle noise only.
+   - **EXP-013 (H4):** Gate = last closed H4 bar's close vs H4 EMA(Q), Q ∈ {10,20,30,50} H4-bars (4 configs, byte-exact 4h resample, no re-download). H4 chosen over Daily to balance "bigger-picture trend check" vs small-account trade-frequency need.
+   - **Baseline (same H1-as-is for both):** Y1 PF 1.001/+$20/277tr | Y2 PF 0.967/−$548/256tr | Y3 PF 1.199/+$2935/234tr | Y4 Val PF 1.101/+$1557/262tr
+   - **Key finding — both filters near-collinear with H1 signal itself:** H1 signal fires *because* H1 momentum/trend points that way; M30/H4 correlate highly with H1 direction → "agreement" is almost automatic when H1 fires → loose settings are no-ops (remove ~1–5% of trades, change nothing but shuffle winners/losers), strict settings hit the *wrong* trades (in 2021-22 chop, counter-H4-trend H1 entries are disproportionately the reversal trades that win; stricter H4 (Q≥20) flips Y1 positive net-negative: Q20 −$715, Q30 −$410, Q50 −$807).
+   - **ผลลัพธ์:** ❌ **REJECTED BOTH**
+     - **(b) Repair both weak years:** M30 (best P=30) ties Y2 only by noise reshuffle; H4 (only Q=50) repairs Y2 but turns Y1 negative — no Q raises Y1 AND Y2.
+     - **(c)/(e)/(f) Trend preservation / plateau:** M30 drags Val (P=6/10/14 all >0.03) or Y3 (P=30 −0.068); H4 has regime swap (Y1↔Y2 flip as Q rises) — no plateau, mode-switch not edge.
+     - **(d) Sign flip:** H4 decisively fails — Q≥20 turns 2021-22 positive (PF 1.001) net-negative (0.939–0.971).
+   - **Frequency cost:** M30 ~5% removal (negligible), H4 Q=50 removes ~11% (277→247 tr) but only by deleting *profitable* trades — worst case.
+   - **Test budget:** Confluence-filter family (EXP-012 + EXP-013 = 9 configs total) never touched Test set (no candidate cleared Train+Val → Test reserved/UNSPENT).
+   - **สถานะ:** ❌ **REJECTED 2026-07-22** — H1-as-is pipeline stands; harness `experiments/exp012_013_confluence_harness.py` (reusable); config/base.yaml unchanged
+
+8.6. **Add-to-loser (martingale) & hedge second-position strategies (2026-07-23)** — Paired risk-first diagnostic
+   - **Martingale / same-direction averaging:** User idea: when leg 1 is floating at loss X%, open leg 2 in same direction to average down. Tested 1.0× (pure averaging) and 2.0× (double-down) sizing at $3,000 starting equity via harness `experiments/exp_martingale_secondleg_harness.py` (TRAIN-ONLY, 2021-07-22 → 2024-07-21).
+   - **Key findings:** Worst single loss jumps −$45 → −$113 (≈3.8% account), worst streak −$276 → −$546 (≈18% account), MTM drawdown ~32% (vs baseline 25.5%), PF worsens (1.056–1.084 vs baseline 1.102), and FLIPS two most recent years (2023–24) net-negative — all textbook martingale signature (same expectancy reshaped into fatter left tail). Also: at $3,000 + min-lot floor (0.01–0.02), the recovery leg cannot be sized meaningfully, so account size masks tail while delivering none of upside. **Verdict: REJECT.**
+   
+   - **Hedging / opposite-direction stop-loss:** User idea: when leg 1 (BUY) floats at loss X%, open leg 2 (SELL) as net-flat hedge, capping further loss. Tested two trigger depths (−0.5R, −1.0R) and two exit rules (independent legs vs locked when leg 1 recovers) via harness `experiments/exp_hedge_secondleg_harness.py` (TRAIN-ONLY, same window).
+   - **Key findings:** At −0.5R trigger: hedge legs opened 246–314 times, LOST 66–86% of time, hedge P&L alone −$3,872 to −$5,115 (42–54% profit cut overall). Mechanism: most floating losses are shallow chop, not real trends — hedge fires into noise, pays spread twice, cancels original leg's edge right before recovery. At −1.0R: trigger almost never fires (only 3 times), effectively a no-op. No trigger depth provides a sweet spot; also flips recent years (2024) negative — same robustness-break signature as martingale but opposite mechanism (central expectancy bleed vs tail risk). **Verdict: REJECT.** Alternative: if downside cap is the goal, tune existing Watchman `dead_trade_r_band`/time-stop or reduce `risk_per_trade_pct` — both achieve cap without double spread.
+   
+   - **Test budget:** Both strategies TRAIN-ONLY; Validation/Test deliberately UNSPENT (risk shape alone disqualifying). Config/code unchanged; rule 8 (Auditor gates NOT touched) respected.
+   - **สถานะ:** ❌ **REJECTED BOTH, DO NOT PURSUE** — neither approved for pre-registered EXP; harnesses preserved for reference
+
+### ✅ CHECKED & DOCUMENTED (No Config Change Needed)
+
+- **Seasonality + DST / server-time mechanics (2026-07-23)** — Diagnostic probe
+  - **Q1: Winter/Summer seasonality.** Tested all 5 years' XAUUSD H1 (2021-07-22 → 2026-07-21, full 29,543 bars). Winter (Nov–Feb) PF ≥1.0 every year (1.09/1.01/1.15/1.10/1.39) — genuine per-year robustness — but not clean: December ITSELF loses money (PF 0.81), and strongest shoulder month (PF 1.24) driven by single year (2023: 1.82; strip that out → ~1.1). Weakest: Apr–Jun (PF 0.79/0.89/0.81). Overall effect small (winter 1.13 vs summer 1.02 aggregate). **Verdict:** Do NOT open a seasonal EXP. High overfit danger for small effect size against 12-month multiple-testing risk. If future interest: only ONE narrowly-scoped, pre-registered hypothesis (e.g., "skip Apr–Jun" binary) and low priority.
+  
+  - **Q2: DST / server-time mechanics.** Config `global.timezone: server` means hour thresholds (e.g., `risk_voice.friday_close_hour: 20`) are in MT5 SERVER time. Empirical test: mean H1 bar range by hour-of-day, summer vs winter — London/NY volatility ramp consistently at server hours 15–17 in BOTH seasons (summer: 16,17,15; winter: 17,16,15). NO 1-hour shift. **Confirms IC Markets server observes DST (EET/EEST: UTC+2 winter / UTC+3 summer).** Consequence: `friday_close_hour: 20` stays stable year-round (~3h before 23:00-server NY close in both regimes). **The hypothesized "weekend-gap drift up to 1h across DST" does NOT exist on this broker.** Minor caveat: US/EU switch DST on different dates; ~2–3 shoulder weeks (Apr/May, Oct/Nov) where only one has switched, NY session sits 1h off server time (immaterial to 20:00 threshold with 3h buffer). Data quality in DST-transition weeks (all 5yr): clean spreads, no missing bars. **Actionable:** This validation ONLY holds because server observes DST. If account moves to broker with FIXED UTC offset, all hour thresholds MUST be re-verified (that scenario would exhibit true 1h drift twice yearly).
+  
+  - **Test budget:** Diagnostic (not pre-registered EXP); Train/Val/Test UNTOUCHED. Harness `experiments/analysis_seasonality_dst.py`. Config/code unchanged.
+  - **สถานะ:** ✅ **CHECKED & DOCUMENTED** — no action needed; DST finding validates existing `friday_close_hour` design; seasonality knowledge documented for future reference
+
+---
+
 ### 🔄 INFRASTRUCTURE READY, AWAITING REAL-WORLD VERIFICATION
 
 7. **Watchman exits modeled in backtest** — Commit 67df406
@@ -319,6 +394,18 @@ lot_size = risk_amount / (stop_distance × point_value)
      - **On-disk (ครั้งแรก, 2026-07-22):** Manual floor ไป `spread==0` rows ใน CSV: XAUUSD ทุก TF → 5 pts, EURUSD → 10, GBPUSD → 13, USDJPY → 10
      - **Permanent (commit `5be62c8`, 2026-07-22):** `feed/historical.py` ตอนนี้ floor spread==0 ให้อัตโนมัติทุกครั้งที่ download (per-symbol, ทุก TF, raise ดังๆ ถ้าเจอ symbol ที่ไม่รู้จัก) — download ใหม่ไม่ทำให้ zeros กลับมาอีกแล้ว
    - **⚠️ ข้อยกเว้น:** GBPUSD/USDJPY ข้อมูล spread ที่*มีค่าอยู่แล้ว*ไม่น่าเชื่อถือ (1pt = 0.1 pip ไม่สมจริง) ต้อง re-download ก่อน FX go-live
+
+9. **Shield config values reviewed (2026-07-22)** — NOTE, no config change
+   - **การประเมิน:** ทบทวนทั้ง 6 ค่า Shield (`min_rr`, `max_correlation`, `max_positions_per_symbol`, `max_positions_total`, `total_risk_ceiling_pct`, `duplicate_signal_cooldown_hours`) ใน `config/base.yaml`
+   - **ผลลัพธ์:** ทั้งหมดพบว่าสมเหตุสมผล NO config change made — ค่า 5 ค่า (ยกเว้น cooldown) เป็น structurally inert บนการ setup XAUUSD-only สัญญาณเดียว (บาง rule always-pass, บาง rule can-never-fire); cooldown (4.0 ชม.) เป็น divergence จริง live/backtest เพียงอย่างเดียว
+   - **สถานะ:** ✅ Review complete; parity fix (item 10) + impact validation complete
+
+10. **Shield duplicate-signal cooldown modeled in backtest (2026-07-23)**
+    - **Backtest engine** now simulates `Shield.duplicate_signal_cooldown_hours` via optional `BacktestConfig.shield_cfg` (same `None`-means-not-modeled convention as `risk_voice_cfg`/`watchman_cfg`)
+    - **Scripts/CLI:** `run_backtest.py` now always constructs `shield_cfg` from `config/base.yaml`
+    - **Promotion gate:** `BacktestReportEnvelope` และ Gate 1 (`evaluate_backtest_to_paper_gate`) both gained `shield_modeled` field/hard-fail criterion, mirroring existing `risk_voice_modeled`/`watchman_exits_modeled` pattern
+    - **Impact on adopted config (measured 2026-07-23):** Ran full XAUUSD H1 history (2021-07-22→2026-07-21) with shield ON vs shield OFF (the old behavior) — **trades 1277→1246 (−2.4%), PF 1.104→1.112, net $8,865→$9,871, DD 28.9%→29.7%**. Per-window: |ΔPF| ≤ 0.03 everywhere, non-systematic sign. Compared against decision margins: EXP-008 decided by ~0.05–0.11 PF gap; Shield perturbs Test-PF only +0.002 → order of magnitude smaller, so EXP-008 (and EXP-003/002/009) verdicts unaffected. Bias direction reassuring: Shield RAISED full-history PF/expectancy, so prior shield-unmodeled runs were marginally pessimistic, never inflated any conclusion. **NO retest warranted.**
+    - **สถานะ:** ✅ Complete — parity fix implemented, impact measured (negligible per adopted decision margins), no historical re-verification needed, going forward new backtests model Shield by default
 
 ---
 
@@ -338,7 +425,7 @@ global:
 symbols:
   XAUUSD: XAUUSD   # only Gold; FX (EURUSD/GBPUSD/USDJPY) commented — failed OOS tests
 
-council:
+council:  # 2026-07-23: scoring formula audit CLOSED (NOTE diagnostic + EXP-015 weight-reallocation + EXP-016 trend-partial) — all plausible leads tested & REJECTED; formula validated as-is
   bull_threshold: 70
   bear_threshold: 70
   conflict_threshold: 55
@@ -360,7 +447,7 @@ risk_voice:
   friday_close_hour: 20
   max_atr_panic_multiple: 3.0
 
-shield:
+shield:  # All 6 values reviewed 2026-07-22 (sound); cooldown rule wired into backtest 2026-07-23
   min_rr: 1.5
   max_correlation: 0.7
   max_positions_per_symbol: 1   # future: 2 after 3 mo live

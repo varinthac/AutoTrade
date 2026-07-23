@@ -348,7 +348,7 @@
       เขียนสำหรับผู้อ่านที่ไม่เคยเทรดมาก่อนก็อ่านเข้าใจได้
     </p>
     <div class="meta-row">
-      <span>อัปเดตล่าสุด: <strong>22 ก.ค. 2026</strong></span>
+      <span>อัปเดตล่าสุด: <strong>23 ก.ค. 2026</strong></span>
       <span>อ้างอิงค่าจาก: <strong>config/base.yaml</strong> (ปัจจุบัน)</span>
       <span>สัญลักษณ์ที่ถือปฏิบัติ: <strong class="pill adopted">ใช้งานจริง</strong> <strong class="pill pending">รอตัดสินใจ</strong> <strong class="pill rejected">ถูกปฏิเสธ</strong></span>
     </div>
@@ -502,13 +502,16 @@
             <td>รูปแบบราคาขาขึ้นแบบคลาสสิก ไม่ใช่แค่ตัวเลขอินดิเคเตอร์</td>
           </tr>
           <tr>
-            <td><b>Confluence</b> (จุดราคาสำคัญ)</td>
+            <td><b>Confluence</b> (จุดราคาสำคัญ) <span class="pill rejected" style="margin-left:0.5rem;font-size:0.7rem;">ตาย</span></td>
             <td class="num">15</td>
             <td>ราคาปัจจุบันอยู่ใกล้ &ldquo;เลขกลม&rdquo; หรือจุด pivot ของเมื่อวาน (ในระยะ 0.5×ATR)</td>
-            <td>หลายคนจับตาราคาบริเวณนี้พร้อมกัน มักเป็นจุดกลับตัว/ยืนยัน</td>
+            <td><strong style="color: var(--rejected-fg);">⚠️ ส่วนประกอบนี้ไม่ทำการเลือกกรองเลย</strong> — ทองคำมีความเป็นเลขกลมตามธรรมชาติที่ 0.50 ดังนั้นระยะห่างจากราคาไปยังเลขกลมจะ ≤0.25 ซึ่งน้อยกว่า 0.5×ATR เสมอ → ให้คะแนน 15 ทุกแท่ง (ค่าคงที่ไม่เปลี่ยน)</td>
           </tr>
         </tbody>
       </table>
+    </div>
+    <div class="callout note-neutral" style="margin-top:1rem;">
+      <strong>หมายเหตุเกี่ยวกับ Confluence:</strong> ห้ามใจคิดว่า Confluence เป็นตัวเลือกคุณภาพที่แท้จริง เพราะหลังการทดสอบพบว่ามันเป็น <strong>ค่าคงที่</strong> (ให้คะแนน 15 บนแท่งทุกแท่งเหมือนกัน) ไม่ได้เป็นตัวกรองจริงๆ ดังนั้น <code>bull_threshold=70</code> และ <code>conflict_threshold=55</code> ที่บอกในตารางตัดสินใจ ที่เห็นว่า 70/55 นั้นจริงๆ แล้วทำให้ &ldquo;ส่วนประกอบ 4 ตัวอื่น รวมต้อง ≥55/40&rdquo; ตามลำดับ — Confluence สร้างมาเพื่อให้เกณฑ์หน้าตาดูเป็น 100 แต้มเท่านั้น การก่อสร้างนี้ตั้งใจแล้วและยังทำงานได้อย่างมีเหตุผล ไม่มีเหตุผลที่จะ &ldquo;แก้ไข&rdquo; ซึ่งอาจทำร้ายเกณฑ์ที่ทำงานอยู่ได้ (ดูรายละเอียด: NOTE 2026-07-23 Council scoring audit + EXP-015/016 ที่ปฏิเสธการจัดสรรใหม่)
     </div>
     <p class="lede" style="font-size:0.88rem;">
       Bear Voice คิดแบบเดียวกันทุกจุดแต่กลับทิศทาง เช่น แนวโน้มต้อง EMA20 &lt; EMA50 &lt; EMA200,
@@ -558,7 +561,60 @@
     </div>
 
     <h3>ประวัติการปรับจูน</h3>
-    <p><span class="pill rejected">ถูกปฏิเสธ</span> ทดสอบ 2 รอบ (<span class="history-exp">EXP-002, EXP-009</span>) ลอง <code>tp_r_multiple</code> ตั้งแต่ 1.5 ถึง 2.5 — ค่า 2.0 ที่ใช้อยู่ยังคงเป็นค่าที่ดีที่สุด แข็งแรงในทุกปีที่ทดสอบ ค่าอื่นล้มเหลวเมื่อเจอปีที่ตลาดผันผวนสูง (2021–22)</p>
+
+    <div class="history-item" style="margin-top:1rem;">
+      <div class="history-head">
+        <span class="pill adopted">ยืนยันแล้ว</span>
+        <span class="history-title">สูตรการให้คะแนน Bull/Bear ถูกทบทวนครั้งแรก — ทั้ง 5 องค์ประกอบและเกณฑ์ยืนยันว่าสมเหตุสมผล (23 ก.ค. 2026)</span>
+      </div>
+      <dl class="history-grid">
+        <dt>ที่มา</dt><dd>Council scoring-formula component audit NOTE (23 ก.ค. 2026) — diagnostic read-only ไม่มี config change</dd>
+        <dt>ขอบเขต</dt><dd>ทบทวนแต่ละองค์ประกอบ (trend/RSI/MACD/structure/confluence) ทับทิมชนิด: base rates ตลาดจริง, ผลลัพธ์การเทรด (avgR/win rate), การตรวจสอบว่า threshold 70/55 ทำการเลือกกรองจริงหรือไม่</dd>
+        <dt>ผลการทบทวน</dt><dd><b style="color: var(--rejected-fg);">Confluence:</b> ตัวที่ตายแล้ว (100% fire rate, ค่าคงที่ +15) | <b style="color: var(--adopted-fg);">MACD:</b> จริงจังมีความแยกแยะ (+0.119 vs +0.037) | <b style="color: var(--adopted-fg);">Trend full-tier (30 pts):</b> ตัวจำแนกที่ดีที่สุด (+0.125 avgR) | <b>Threshold 70:</b> non-monotone (85+ bucket ที่ conviction สูงสุดเป็นที่อ่อนที่สุด "all-aligned=late") หมายความว่าเพิ่มขึ้นเกิน 70 ไม่ช่วย ลดลงก็เพิ่มสัญญาณน้อยคุณภาพ</dd>
+        <dt>การวัด</dt><dd>999 ไม้ (ข้อมูล full history XAUUSD H1 2021–26 ที่ adopt config: pivot 3, tp 2.0, all-24h, be/trail OFF) โดยนับ component base rates ที่ origin scores และ outcome correlation ของไม้ที่ fired ≥70</dd>
+        <dt>สถานะ</dt><dd>✅ <strong>สูตรการให้คะแนนยืนยันว่าสมเหตุสมผล</strong> — Confluence เป็น mis-spec ที่ benign (ไม่มีทางแก้ที่ให้ edge ใหม่), threshold/components อื่นถูกต้อง, ไม่ต้องเปลี่ยน config</dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill rejected">ถูกปฏิเสธ (ทั้ง 3 candidates)</span>
+        <span class="history-title">จัดสรร confluence's dead +15 ไปยัง macd/trend ที่จำแนกจริง (23 ก.ค. 2026)</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>EXP-015</dd>
+        <dt>สมมติฐาน</dt><dd>Confluence เป็นค่าคงที่ (+15 ทั้งแท่ง) แต่ MACD/trend มี discriminating power จริง — ถ้าจัดสรร +15 ของ Confluence ไปให้ component ที่เลือกกรองจริง ควรได้ trade set ที่ดีกว่า → PF/avgR ขึ้น</dd>
+        <dt>Candidates ที่ทดสอบ</dt><dd>C1_macd30 (macd 15→30), C2_trend45 (trend full 30→45), C3_split (trend full 30→38, macd 15→22)</dd>
+        <dt>ผลลัพธ์</dt><dd><b>❌ REJECTED ทั้ง 3</b> — Baseline (live config) PF 1.086 / avgR 0.052 ชนะทุก candidate ใน Train aggregate (C1 PF 1.007 / C2 PF 1.017 / C3 PF 1.015) อีกทั้งยังวิ่งได้สม่ำเสมอทุกปี Y1/Y2/Y3 — mechanism: ทำ component conditional (ไม่ใช่คงที่) เพิ่ม effective bar → ทำให้ trade set โน้มไป weak high-conviction zone (ที่ diagnostic เห็นว่าเป็นที่อ่อนที่สุด)</dd>
+        <dt>สถานะ</dt><dd>❌ Train rejection → Validation/Test NOT reached | <strong>Confluence ยังคงอยู่ที่ +15 ไม่เปลี่ยน</strong></dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill rejected">ถูกปฏิเสธ (ทั้ง 2 candidates)</span>
+        <span class="history-title">ลดหรือปรับ trend_alignment partial-tier จาก 15 pts เหตุผลคืออ่อนแอ (23 ก.ค. 2026)</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>EXP-016</dd>
+        <dt>สมมติฐาน</dt><dd>Diagnostic พบว่า trend partial-alignment (15 pts) สัมพันธ์กับ net-losing trades (−0.022R) — ทดสอบว่าลดหรือปล่อยทิ้งพวกนี้จะดีขึ้นไหม</dd>
+        <dt>Candidates ที่ทดสอบ</dt><dd>P0_drop (partial 15→0, ต้องเต็มเท่านั้น), P7_mid (partial 15→7, ปรับแต่ไม่ทิ้งเสร็จ), BASE_p15 (live baseline)</dd>
+        <dt>ผลลัพธ์</dt><dd><b>❌ REJECTED ทั้ง P0 และ P7</b> — Baseline PF 1.086 / avgR 0.052 / +$1,588 ชนะทั้งคู่ (P0 PF 1.014 / +$240; P7 PF 1.047 / +$809) ทั้งที่วัดใน Train aggregate และ per-year consistent Y1/Y2/Y3 — P0 พิเศษ: Y1 flip to negative (−$181 vs +$278) และ Y3 ลดลงครึ่ง (→ +$635) พร้อม DD ขึ้น; response curve 0→7→15 monotone-increasing ยืนยันว่าค่า live นั่งอยู่ที่ปลายดี → −0.022R ที่ diagnostic เห็นเป็น selection-confounded (trade บางตัวที่ partial-tier มีส่วน ตัวเอง margin ไม่ดี ไม่ได้ส่วนประกอบที่เป็นปัญหา)</dd>
+        <dt>สถานะ</dt><dd>❌ Train rejection → Validation/Test NOT reached | <strong>`trend_partial=15` ยังคงเดิม</strong> | <strong>Council-scoring-formula investigation ปิด</strong> (diagnostic + EXP-015 + EXP-016 ครบทุกเส้นทาง ทั้งหมดปฏิเสธ สูตร validated as-is)</dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill rejected">ถูกปฏิเสธ</span>
+        <span class="history-title">ปรับเป้าหมายกำไร (tp_r_multiple) จาก 2.0 เป็นค่าอื่น</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>EXP-002, EXP-009</dd>
+        <dt>ทดสอบ</dt><dd>ค่าตั้งแต่ 1.5 ถึง 2.5</dd>
+        <dt>ผลลัพธ์</dt><dd>ค่าต่ำกว่า 2.0 ทำกำไรน้อยลงชัดเจน ค่าสูงกว่า 2.0 ดูดีในภาพรวมหลายปีรวมกัน แต่ล้มเหลวเมื่อแยกดูเป็นรายปี (โดยเฉพาะปี 2021–22 ที่ตลาดผันผวนหนัก) — ค่า 2.0 เดิมยังคงเป็นค่าเดียวที่แข็งแรงทุกปี</dd>
+      </dl>
+    </div>
   </section>
 
   <!-- ============================================================ -->
@@ -595,6 +651,7 @@
     <h3>ประวัติการปรับจูน</h3>
     <p><span class="pill adopted">ใช้งานจริง</span> <span class="history-exp">EXP-003</span> — ทดสอบเปรียบเทียบ &ldquo;เทรดได้แค่ช่วง 14:00–18:00&rdquo (เดิม) กับ &ldquo;เทรดได้ตลอด 24 ชั่วโมง&rdquo; พบว่าเปิดตลอด 24 ชม. ชนะใน 4 จาก 5 ปีที่ทดสอบ (รวมปีที่กันไว้ทดสอบสุดท้ายด้วย) — ช่วงเดิมบังเอิญปิดกั้นเวลาที่ทำกำไรได้ดีจากตลาดเอเชียไปด้วย จึงเปลี่ยนเป็นเปิดตลอด 24 ชม.</p>
     <p><span class="pill rejected">ถูกปฏิเสธ</span> <span class="history-exp">EXP-004</span> — ทดสอบทางเลือกกลางๆ คือเปิดตลอดยกเว้นชั่วโมง 22:00–24:00 (ช่วงเปลี่ยนกะตลาด) ผลปรากฏว่าแย่กว่าเปิดตลอด 24 ชม.เฉยๆ เพราะ &ldquo;ชั่วโมง 22-23 ขาดทุน&rdquo; ที่ดูเหมือนจริงในภาพรวมหลายปี จริงๆ แล้วไม่ได้เกิดขึ้นสม่ำเสมอทุกปี</p>
+    <p><span class="pill neutral">ยืนยันแล้ว</span> DST / Server-time validation (23 ก.ค. 2026, diagnostic NOTE) — ยืนยันว่า <code>friday_close_hour: 20</code> ซึ่งตั้งในเวลา server มีระยะห่างเสถียรจากการปิดตลาดจริง (ประมาณ 3 ชั่วโมง) ตลอดปี ไม่มี drift เมื่อ DST สลับ (broker observes DST: EET/EEST = UTC+2/+3) → ไม่ต้อง config change | ถ้า account move to fixed-UTC broker ต้อง re-verify hour thresholds ทั้งหมด</p>
   </section>
 
   <!-- ============================================================ -->
@@ -627,7 +684,44 @@
     </div>
 
     <h3>ประวัติการปรับจูน</h3>
-    <p><span class="pill neutral">ยังไม่มีการทดลอง</span> ใช้ค่าตั้งต้นตามสเปกเดิม ยังไม่มีการทดสอบปรับจูนพารามิเตอร์กลุ่มนี้</p>
+    <p><span class="pill neutral">ยืนยันแล้ว</span> ทบทวนและวัดผลกระทบ 22–23 ก.ค. 2026</p>
+
+    <div class="history-item" style="margin-top:1rem;">
+      <div class="history-head">
+        <span class="pill neutral">ยืนยันแล้ว</span>
+        <span class="history-title">Shield ค่าทั้ง 6 ตัว ยืนยันว่าสมเหตุสมผล (22 ก.ค. 2026)</span>
+      </div>
+      <dl class="history-grid">
+        <dt>ที่มา</dt><dd>Shield config review NOTE (22 ก.ค. 2026) — read-only diagnostic ไม่เปลี่ยน config</dd>
+        <dt>ทบทวนค่า</dt><dd><code>min_rr</code> (1.5), <code>max_correlation</code> (0.7), <code>max_positions_per_symbol</code> (1), <code>max_positions_total</code> (3), <code>total_risk_ceiling_pct</code> (3.0), <code>duplicate_signal_cooldown_hours</code> (4.0)</dd>
+        <dt>ผลลัพธ์</dt><dd>ค่า 5 ตัวแรก (ยกเว้น cooldown) เป็น structurally inert บน setup XAUUSD single-symbol (บางกฎ always-pass บางกฎ can-never-fire); cooldown (4.0 ชม.) เป็น divergence จริง live/backtest เพียงอย่างเดียว — <strong>ไม่มีการเปลี่ยน config</strong> ทั้ง 6 ค่ายังสมเหตุสมผล</dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill adopted">นำมาใช้ (การแก้ไขโครงสร้าง)</span>
+        <span class="history-title">Shield cooldown (duplicate-signal-cooldown-hours) ถูกใส่เข้าในระบบจำลองย้อนหลัง (23 ก.ค. 2026)</span>
+      </div>
+      <dl class="history-grid">
+        <dt>สถานะเดิม</dt><dd>ก่อนหน้านี้ระบบจำลองย้อนหลังไม่เคยจำลอง Shield เลย — เพราะเป็น setup single-symbol ทำให้กฎ 1–5 structurally inert อยู่แล้ว จึงมีแค่ rule 6 (cooldown) เพียงตัวเดียวที่คุ้มค่าจะแก้</dd>
+        <dt>การแก้ไข</dt><dd><code>backtest/engine.py</code> ตอนนี้เรียกใช้ <code>shield/checkpoint.Shield</code> จริง โดยรับ <code>BacktestConfig.shield_cfg</code> (default <code>None</code>) | <code>scripts/run_backtest.py</code> ตอนนี้สร้าง <code>ShieldConfig</code> จาก <code>config/base.yaml</code> โดยไม่มี opt-out | <code>auditor/promotion.py</code> Gate 1 ได้รับ <code>shield_modeled</code> hard-fail criterion ใหม่ (เหมือนกับ <code>risk_voice_modeled</code>/<code>watchman_exits_modeled</code>)</dd>
+        <dt>ความสำคัญ</dt><dd>ระบบจำลองตอนนี้มีความสมบูรณ์เท่ากับระบบจริง — สัญญาณที่ Shield ปฏิเสธ (เพราะอยู่ในช่วง cooldown) จะไม่กลายเป็นการเปิดตำแหน่ง ไม่เหมือนอดีตที่มันอาจจะยังปรากฏในการจำลอง</dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill adopted">ยืนยันแล้ว</span>
+        <span class="history-title">วัดผลกระทบของการใส่ Shield cooldown ลงในการจำลอง — ไม่มีการเปลี่ยน config (23 ก.ค. 2026)</span>
+      </div>
+      <dl class="history-grid">
+        <dt>วิธีวัด</dt><dd>รันข้อมูล XAUUSD H1 ทั้งหมด (29,543 bars, 2021-07-22→2026-07-21) สองรอบ: Shield ON vs Shield OFF ด้วยตัวแปรอื่นทั้งหมดเหมือนกัน ทำให้เห็นผลกระทบที่แท้จริง</dd>
+        <dt>ผล (full history)</dt><dd><code>Shield OFF (old)</code>: 1277 trades, PF 1.104, net $8,865, DD 28.92%, avgR 0.059 | <code>Shield ON (new)</code>: 1246 trades, PF 1.112, net $9,871, DD 29.66%, avgR 0.067</dd>
+        <dt>ความหมาย</dt><dd>Shield เพิ่ม trades -2.4% (−31 ไม้) แต่ PF ขึ้นจาก 1.104 เป็น 1.112 (+0.008) ✅ Per-window: Train ขึ้น (+0.024), Val ลง (−0.031), Test เกือบเท่า (+0.002) — non-systematic sign, ภาพรวมกำไรเพิ่มขึ้น $1,006 — ทิศทางดีเลย (ไม่ใช่ที่กำไรลง)</dd>
+        <dt>ผลกระทบต่อการตัดสินใจ</dt><dd><b>ไม่ต้อง retest</b> — EXP-008 (ปิด be/trail) ตัดสินด้วยส่วนต่าง PF 0.05–0.11 ซึ่งมากกว่า perturbation ของ Shield (±0.03) อย่างน้อย 3 เท่า ผลสรุปของ EXP-008 และ EXP-003/002/009 จึงยังยืนได้เหมือนเดิม</dd>
+      </dl>
+    </div>
   </section>
 
   <!-- ============================================================ -->
@@ -794,7 +888,7 @@
       ทุกการเปลี่ยนแปลงผ่านการทดสอบแบบมีวินัย (แบ่งข้อมูลเป็นชุดฝึก/ตรวจสอบ/ทดสอบจริงแยกกัน ไม่แอบดูชุดทดสอบก่อนเวลา)
     </p>
 
-    <h3 style="margin-top:2rem;">ใช้งานจริงแล้ว</h3>
+    <h3 style="margin-top:2rem;">ใช้งานจริงแล้ว (session 21–22–23 ก.ค.)</h3>
 
     <div class="history-item">
       <div class="history-head">
@@ -856,6 +950,48 @@
       </dl>
     </div>
 
+    <h3 style="margin-top:2.6rem;">โครงสร้างที่เตรียมไว้ (23 ก.ค.)</h3>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill neutral">โครงสร้างพร้อมแล้ว</span>
+        <span class="history-title">Shield duplicate-signal cooldown ถูกใส่เข้าในระบบจำลองย้อนหลัง + วัดผลกระทบแล้ว (23 ก.ค.)</span>
+      </div>
+      <dl class="history-grid">
+        <dt>สถานะเดิม</dt><dd>ก่อนหน้านี้ระบบจำลองไม่เคยจำลอง Shield rule 6 (cooldown) เลย — single-symbol ดังนั้นกฎ 1–5 structurally inert ตัดเดี่ยวทำให้เจอว่าแค่ cooldown ที่มีผลจริง</dd>
+        <dt>การแก้ไข</dt><dd>wired `shield/checkpoint.Shield` ลงใน `backtest/engine.py` โดยใช้ optional `BacktestConfig.shield_cfg` (default `None`) | `run_backtest.py` ตอนนี้ build `ShieldConfig` จาก config โดยไม่มี opt-out | Gate 1 ได้รับ `shield_modeled` hard-fail criterion</dd>
+        <dt>ผลกระทบ (full history)</dt><dd>trades 1277→1246 (−2.4%), PF 1.104→1.112 (+0.008), net $8,865→$9,871 (+$1,006), avgR 0.059→0.067 — per-window non-systematic: Train +0.024, Val −0.031, Test +0.002 — ไม่มีการเปลี่ยน config (ค่า 6 ตัว ยังเดิม)</dd>
+        <dt>ผลต่อการตัดสินใจ</dt><dd>Shield's ±0.03 PF perturbation เล็กกว่า EXP-008 margin (0.05–0.11) ถึง 3 เท่า → ไม่ต้อง retest EXP-008/003/002/009</dd>
+      </dl>
+    </div>
+
+    <h3 style="margin-top:2.6rem;">ทดสอบแล้ว — ยืนยันสูตรเดิม (23 ก.ค.)</h3>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill rejected">ถูกปฏิเสธ (ทั้ง 3 candidates)</span>
+        <span class="history-title">Council scoring weight-reallocation: confluence → macd/trend (EXP-015)</span>
+      </div>
+      <dl class="history-grid">
+        <dt>สาเหตุ</dt><dd>Diagnostic NOTE (23 ก.ค.) พบ confluence dead (+15 const) + MACD/trend discriminate real → ลองจัดสรร confluence's 15 ไปยัง MACD/trend candidates</dd>
+        <dt>ผลลัพธ์</dt><dd>❌ Train rejection: baseline PF 1.086 ชนะ C1/C2/C3 (1.007/1.017/1.015) ทุกปี Y1/Y2/Y3 → Validation/Test NOT reached</dd>
+        <dt>เหตุผล</dt><dd>ทำ component conditional (ไม่ const) เพิ่ม effective bar → trade set โน้มไป weak high-conviction zone</dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill rejected">ถูกปฏิเสธ (ทั้ง 2 candidates)</span>
+        <span class="history-title">Council scoring: trend_partial point value (EXP-016)</span>
+      </div>
+      <dl class="history-grid">
+        <dt>สาเหตุ</dt><dd>Diagnostic flagged trend partial (15-pt) correlates −0.022R → test dropping it (P0: 15→0) หรือปรับลง (P7: 15→7)</dd>
+        <dt>ผลลัพธ์</dt><dd>❌ Train rejection: baseline PF 1.086 / +$1,588 ชนะ P0/P7 (1.014/1.047) ทุกปี consistent → Validation/Test NOT reached</dd>
+        <dt>เหตุผล</dt><dd>P0 year-1 flip negative (−$181 vs +$278), Y3 halve; response 0→7→15 monotone → live value on good end → −0.022R was selection-confounded artifact</dd>
+        <dt>ผลสุดท้าย</dt><dd><strong>Council-scoring-formula investigation ปิด</strong> — diagnostic + EXP-015 + EXP-016 ลองทั้งหมด ปฏิเสธ → สูตรยืนยันว่า validated as-is</dd>
+      </dl>
+    </div>
+
     <h3 style="margin-top:2.6rem;">สำรวจแล้ว — ไม่เปลี่ยนแปลง</h3>
 
     <div class="history-item">
@@ -874,6 +1010,25 @@
 
     <div class="history-item">
       <div class="history-head">
+        <span class="pill neutral">ตรวจสอบและยืนยัน</span>
+        <span class="history-title">ฤดูกาล (Seasonality) + DST / Server-time mechanics — ทั้งคู่ตรวจสอบแล้ว (23 ก.ค. 2026)</span>
+      </div>
+      <dl class="history-grid">
+        <dt>Q1: Seasonality (ฤดูกาลหรือเดือนมีผล)</dt><dd>
+          <strong>พบว่า:</strong> Winter (Nov–Feb) มี PF ≥1.0 ทั้ง 5 ปี Train (1.09/1.01/1.15/1.10/1.39) ก็ดูมี signal | ปัญหา: December เองขาดทุน (PF 0.81), shoulder-month PF 1.24 ขับเคลื่อนโดย 1 ปี (2023 PF 1.82) เฉพาะ | เสียโอกาส (Apr–Jun PF 0.79/0.89/0.81) ไม่ clean | ผลรวมเล็ก (winter 1.13 vs summer 1.02, ~0.1 PF gap) หลาย 12-dim multiple-test → <strong>overfit risk ≫ edge</strong>
+          <br><strong>ผลลัพธ์:</strong> ✅ ตรวจสอบแล้ว — เสียน้อย real signal, ไม่สะอาด → ไม่ recommend EXP | ถ้าเคยสนใจ ต้อง narrow scope 1 EXP (e.g. "de-risk Apr–Jun" binary pre-registered, per-year-gated)
+        </dd>
+        <dt>Q2: DST / Server-time mechanics (ระบบเวลา)</dt><dd>
+          <strong>พบว่า:</strong> <code>global.timezone: server</code> = hour thresholds ทั้ง <code>friday_close_hour: 20</code> อยู่ใน MT5 SERVER time | ทดสอบ empirically: mean H1 bar range (high−low) by hour-of-day, summer vs winter → London/NY volatility ramp-up อยู่ที่ server hours 15–17 ทั้ง 2 seasons (summer peak 16,17,15; winter 17,16,15) <strong>ไม่มี 1-hour shift</strong> | ตรวจเป็นรายเดือน: server hour 16±1 all 12 months | <strong>สรุป:</strong> broker ตรวจสอบแล้ว: DST-observing (EET/EEST = UTC+2 winter/UTC+3 summer) — server clock auto-adjust → friday_close_hour 20:00 server maps to stable real-world time year-round (~3h before 23:00-server NY close ทั้ง regime)
+          <br><strong>ผลลัพธ์:</strong> ✅ ตรวจสอบแล้ว — weekend-gap drift ที่กังวล <strong>ไม่มีจริง</strong> (DST-observing server is safe regime) | ไม่ต้อง config change | <strong>Actionable:</strong> ถ้า account move to fixed-UTC broker → hour thresholds ต้อง re-verify (drift 1h twice yearly) ไม่ใช่ safe default
+        </dd>
+        <dt>Data quality DST-transitions</dt><dd>ตรวจทั้ง 5 ปี (US ~2nd-Sun-Mar/1st-Sun-Nov + EU last-Sun-Mar/Oct): ทั้ง transition weeks clean — zero_spread=0 (floor ทำงาน), spreads 1–9, ไม่มี missing-bar anomalies (นอกจาก maintenance 1h/day standard + weekend close) | Oddity: 2024-03-31 fewer bars (46) + 3-day gap = EU DST + Easter Sunday (legitimate holiday, ไม่ glitch)</dd>
+        <dt>สถานะ</dt><dd>✅ Q1 checked — mild winter>summer bias exist แต่ small + noisy (Dec negative, shoulder inflated 2023) ≠ overfit risk | Q2 checked — server observes DST → <code>friday_close_hour</code> stable real-world terms, no issue | ไม่ต้อง config change หรือ immediate EXP | harness: <code>experiments/analysis_seasonality_dst.py</code></dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
         <span class="pill rejected">ถูกปฏิเสธ</span>
         <span class="history-title">H1→M30 hybrid: ให้ H1 ตัดสินใจ แต่เข้าไม้ด้วยสัญญาณ M30 pullback-then-resume</span>
       </div>
@@ -887,6 +1042,45 @@
     </div>
 
     <h3 style="margin-top:2.6rem;">ทดสอบแล้ว — ไม่นำมาใช้</h3>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill rejected">ถูกปฏิเสธ (ทั้ง 2 ตัวแปร)</span>
+        <span class="history-title">เปิดตำแหน่งที่สอง (martingale/averaging + hedging) เพื่อบรรเทา loss — ทั้งคู่ผิด สาเหตุต่างกัน (23 ก.ค. 2026)</span>
+      </div>
+      <dl class="history-grid">
+        <dt>Variant A: Martingale / Averaging-down</dt><dd>
+          <strong>สมมติฐาน:</strong> หากตำแหน่ง BUY เปิดแล้วลอยขาดทุนอยู่ −X% เปิด BUY ตัวที่สองเหมือนกันเพื่อ "ลดราคาเฉลี่ย" ให้ฟื้นตัวได้เร็ว (martingale/grid pattern: เพิ่มขนาดเมื่อแพ้ติด)
+          <br><strong>ทดสอบ:</strong> harness <code>experiments/exp_martingale_secondleg_harness.py</code> @ $3,000 starting equity, Train window
+          <br><strong>ผลลัพธ์:</strong> ❌ <strong>REJECTED</strong> — PF worse than baseline (1.06–1.08 vs ~1.10) | worst single loss −$45→−$113 (~3.8% account) | worst losing streak −$546 (~18% account) | mark-to-market drawdown ~32% | flipped 2023–24 net-negative | signature martingale: same breakeven expectancy, fatter left tail | min-lot floor ($3k) masks worst-case blowup + still eats the tail
+        </dd>
+        <dt>Variant B: Hedging / Opposite-direction</dt><dd>
+          <strong>สมมติฐาน:</strong> หากตำแหน่ง BUY ลอยขาดทุน เปิด SELL ที่สอง (net-flat) เพื่อ offset loss แล้วหวังอย่างใดอย่างหนึ่งจะเฟื้นตัว
+          <br><strong>ทดสอบ:</strong> harness <code>experiments/exp_hedge_secondleg_harness.py</code> × 2 triggers (−0.5R, −1.0R) × 2 exit rules, same setup
+          <br><strong>ผลลัพธ์:</strong> ❌ <strong>REJECTED</strong> — Baseline: 755 trades, PF 1.102, net +$1,310, DD 25.5% | −0.5R: 862–1,069 trades, PF 1.042–1.057, net +$603–$758 (42–54% profit cut) | hedge legs lost 66–86% of the time (P&L −$3,872 to −$5,115) | mechanism: floating losses mostly chop, not trends → hedge fires into noise, pays spread twice, cancels original edge before recovery | −1.0R trigger barely fires → near no-op | flipped 2024 (both), 2021 net-negative | <strong>Achieves downside cap unlike martingale, but erodes core edge too much</strong>
+        </dd>
+        <dt>ทั่วไป</dt><dd>
+          <strong>ทำไมปฏิเสธทั้งสอง:</strong> Martingale ฟอกดี ด้วยกลไกที่ออกแบบมา (tail risk แรง) vs Hedging ตัว opposite เป็นครีม (tail capped แต่ edge ลดลง) | สำหรับปกป้องขาดทุนลึก ทางเลือกที่ดีกว่า: ปรับ Watchman's <code>dead_trade_r_band</code>/time-stop หรือลด <code>risk_per_trade_pct</code> — ได้ downside reduction ปราศจาก double-spread cost
+        </dd>
+        <dt>สถานะ</dt><dd>❌ <b>REJECTED 23 ก.ค. 2026</b> — A+B ถูกปฏิเสธอย่างแน่นอน | config/backtest/engine ไม่เปลี่ยน | Test budget untouched | harness: <code>experiments/exp_martingale_secondleg_harness.py</code>, <code>experiments/exp_hedge_secondleg_harness.py</code></dd>
+      </dl>
+    </div>
+
+    <div class="history-item">
+      <div class="history-head">
+        <span class="pill rejected">ถูกปฏิเสธ (ทั้ง 2 family, 9 configs)</span>
+        <span class="history-title">Confluence filters: ตัวยืนยัน H1 ด้วย M30 momentum หรือ H4 trend (EXP-012 + EXP-013)</span>
+      </div>
+      <dl class="history-grid">
+        <dt>อ้างอิง</dt><dd>EXP-012 (H1 + M30 confirmation, run 22 ก.ค. 2026), EXP-013 (H1 + H4 agreement, run 22 ก.ค. 2026)</dd>
+        <dt>สมมติฐาน</dt><dd>เก็บ pipeline H1 ทั้งหมด (Council/RiskVoice/Shield/CFO/Watchman) ไม่เปลี่ยนแปลง เพิ่มเงื่อนไขบูลีน: สัญญาณ H1 จะเข้าไม้ได้ก็ต่อเมื่อกราฟ M30 (EXP-012) หรือ H4 (EXP-013) ยังสอดคล้องทิศทางเดียวกัน — pure-additive filter (ลดจำนวนไม้เท่านั้น, ไม่เพิ่มสัญญาณ) ไม่เปลี่ยนเข้าไม้/stop เหมือน EXP-010 ท่าให้ป้องกันปัญหา whipsaw โครงสร้างไม่ได้เกิดซ้ำ</dd>
+        <dt>Baseline (H1-as-is, current live)</dt><dd>Y1 2021-22: PF 1.001/+$20/277 | Y2 2022-23: 0.967/−$548/256 | Y3 2023-24: 1.199/+$2935/234 | Val 2024-25: 1.101/+$1557/262</dd>
+        <dt>EXP-012 (M30 momentum)</dt><dd>5 configs (P ∈ {6, 10, 14, 20, 30} — M30 EMA period): close M30 vs short M30 EMA(P) — <b>ทั้ง 5 ปฏิเสธ</b>: Y2 ไม่ซ่อม (best P=30 tied 0.965 vs baseline 0.967) | P=6/10/14 ลาก Val &lt;−0.03 | P=30 ลาก Y3 เป็น 1.131 (−0.068) | ไม่ beat baseline majority Y1–Y4 | ไม่ plateau (Y3 ตกขณะ Val ขึ้น = regime-reshuffle ไม่ edge)</dd>
+        <dt>EXP-013 (H4 trend)</dt><dd>4 configs (Q ∈ {10, 20, 30, 50} — H4 EMA period): close H4 vs short H4 EMA(Q) — <b>ทั้ง 4 ปฏิเสธ</b>: Q≥20 strict พอจะมีผล ก็ flip Y1 negative (Q20 −$715, Q30 −$410, Q50 −$807) เพราะแนวโน้ม H4 ในช่วง 2021-22 chop เองก็ whipsaw → ไม้ &ldquo;counter-H4-trend&rdquo; (chop-reversal ชนะ) ถูกตัด → whipsaw failure like EXP-010 | Y1 &amp; Y2 ไม่ซ่อม simultaneously (Q=50 fixed Y2 แต่ flip Y1)</dd>
+        <dt>เหตุผลหลัก</dt><dd><strong>Both filters near-collinear with H1 signal itself.</strong> H1 ยิงเพราะ H1 momentum/trend ชี้ทางนั้นแล้ว, M30/H4 correlate highly กับ H1 direction — "same-direction agreement" เป็น true โดยปริยาย ~always: loose P/Q ลบ ~1–5% trades เท่านั้น (277→263–276) = reshuffle noise, filter ไม่จริง; strict settings ลบไม้ wrong (chop-reversal winners) เท่านั้น, ไม่ fix regime weakness. ไม่ repair Y1+Y2 together = regime tradeoff, not edge. Frequency cost unfavorable (either remove nothing or remove profitable).</dd>
+        <dt>สถานะ</dt><dd>❌ <b>REJECTED 22 ก.ค. 2026</b> — H1-as-is stands; config/council/backtest/engine ไม่เปลี่ยน; confluence-filter family (2 subfamilies, 9 total configs) Test budgets unspent pristine; harness: <code>experiments/exp012_013_confluence_harness.py</code></dd>
+      </dl>
+    </div>
 
     <div class="history-item">
       <div class="history-head">
@@ -952,7 +1146,7 @@
   </section>
 
   <footer>
-    <p>เอกสารนี้อ้างอิงค่าจาก <code>config/base.yaml</code> และผลการทดลองใน <code>experiments/experiments_log.md</code> ณ วันที่ 22 กรกฎาคม 2026 — เมื่อมีการปรับจูนค่าเพิ่มเติม ควรอัปเดตเอกสารนี้ให้ตรงกันเสมอ</p>
+    <p>เอกสารนี้อ้างอิงค่าจาก <code>config/base.yaml</code> และผลการทดลองใน <code>experiments/experiments_log.md</code> ณ วันที่ 23 กรกฎาคม 2026 — เมื่อมีการปรับจูนค่าเพิ่มเติม ควรอัปเดตเอกสารนี้ให้ตรงกันเสมอ</p>
   </footer>
 
 </div>

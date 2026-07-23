@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1133 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1161 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1133 (including all parametrized variants)
+- **Total Test Count**: 1161 (including all parametrized variants)
 - **Test Files**: ~55 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -14,20 +14,20 @@ This document provides a comprehensive list of all 1133 test cases in the AutoTr
 
 | Subsystem | Test File | Test Count |
 |-----------|-----------|-----------|
-| Auditor | test_backtest_results.py | 10 |
+| Auditor | test_backtest_results.py | 11 |
 | | test_borderline.py | 15 |
 | | test_daily_report.py | 3 |
 | | test_demotion.py | 12 |
 | | test_metrics.py | 6 |
-| | test_promotion.py | 30 |
-| **Auditor Subtotal** | | **76** |
+| | test_promotion.py | 31 |
+| **Auditor Subtotal** | | **78** |
 | Backtest | test_clock.py | 3 |
 | | test_cost_model.py | 7 |
-| | test_engine.py | 38 |
+| | test_engine.py | 42 |
 | | test_forward_walk.py | 10 |
 | | test_lookahead_validation.py | 3 |
 | | test_report.py | 15 |
-| **Backtest Subtotal** | | **76** |
+| **Backtest Subtotal** | | **80** |
 | Council | test_decision_matrix.py | 50 |
 | | test_finnhub_news_calendar.py | 12 |
 | | test_mql5_calendar_provider.py | 21 |
@@ -39,9 +39,9 @@ This document provides a comprehensive list of all 1133 test cases in the AutoTr
 | **Council Subtotal** | | **155** |
 | Dashboard | test_app.py | 47 |
 | **Dashboard Subtotal** | | **47** |
-| Execution | test_demo_adapter.py | 81 |
+| Execution | test_demo_adapter.py | 82 |
 | | test_noop_adapter.py | 8 |
-| **Execution Subtotal** | | **89** |
+| **Execution Subtotal** | | **90** |
 | Features | test_indicators.py | 10 |
 | | test_levels.py | 13 |
 | | test_swing.py | 15 |
@@ -68,11 +68,11 @@ This document provides a comprehensive list of all 1133 test cases in the AutoTr
 | | test_connectivity_watchdog.py | 10 |
 | | test_evaluate.py | 7 |
 | | test_exit_conditions.py | 19 |
-| | test_loop.py | 28 |
+| | test_loop.py | 33 |
 | | test_news_protection.py | 10 |
 | | test_position_metadata.py | 11 |
 | | test_stop_logic.py | 38 |
-| **Watchman Subtotal** | | **133** |
+| **Watchman Subtotal** | | **138** |
 | Scripts & CLI | test_autotrade_control.py | 19 |
 | | test_clock.py | 1 |
 | | test_config.py | 26 |
@@ -80,19 +80,21 @@ This document provides a comprehensive list of all 1133 test cases in the AutoTr
 | | test_historical_gaps.py | 4 |
 | | test_kill_switch_flag.py | 9 |
 | | test_kill_switch_script.py | 29 |
+| | test_loop_watchdog.py | 9 |
 | | test_mt5_connection.py | 10 |
 | | test_mt5_time.py | 4 |
 | | test_pid_file.py | 19 |
 | | test_poller.py | 10 |
 | | test_run_auditor.py | 37 |
-| | test_run_backtest.py | 22 |
-| | test_run_shadow_loop.py | 31 |
+| | test_run_backtest.py | 24 |
+| | test_run_scheduled_daily_report.py | 3 |
+| | test_run_shadow_loop.py | 33 |
 | | test_run_telegram_control.py | 10 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **261** |
+| **Scripts & CLI Subtotal** | | **277** |
 | | | |
-| **GRAND TOTAL** | | **1133** |
+| **GRAND TOTAL** | | **1161** |
 
 ---
 
@@ -104,6 +106,7 @@ This document provides a comprehensive list of all 1133 test cases in the AutoTr
 - test_missing_top_level_field_raises
 - test_missing_risk_voice_modeled_field_raises
 - test_missing_watchman_exits_modeled_field_raises
+- test_missing_shield_modeled_field_raises
 - test_missing_min_lot_risk_cap_pct_field_raises
 - test_min_lot_risk_cap_pct_none_is_a_valid_value_not_a_missing_field
 - test_missing_report_field_raises
@@ -167,7 +170,8 @@ This document provides a comprehensive list of all 1133 test cases in the AutoTr
 - test_gate1_fails_outright_reporting_both_hard_fail_criteria_when_both_missing
 - test_gate1_fails_outright_when_risk_voice_not_modeled_regardless_of_otherwise_passing_numbers
 - test_gate1_fails_outright_when_watchman_exits_not_modeled_regardless_of_otherwise_passing_numbers
-- test_gate1_fails_outright_reporting_all_four_hard_fail_criteria_when_all_missing
+- test_gate1_fails_outright_when_shield_not_modeled_regardless_of_otherwise_passing_numbers
+- test_gate1_fails_outright_reporting_all_five_hard_fail_criteria_when_all_missing
 - test_gate1_profit_factor_boundary_1_30_passes_1_29_fails
 - test_gate1_profit_factor_exact_boundary_1_3_passes_1_2999_fails
 - test_gate1_max_drawdown_boundary_15_00_passes_15_01_fails
@@ -252,6 +256,10 @@ This document provides a comprehensive list of all 1133 test cases in the AutoTr
 - test_watchman_sell_structure_invalidation_closes_at_the_bars_close_price
 - test_watchman_trailed_position_still_exits_via_its_original_unmoved_take_profit_later
 - test_watchman_metadata_none_fallback_when_no_confirmed_swing_exists_at_entry_still_exits_via_fixed_sl_tp
+- test_cooldown_blocks_a_same_swing_signal_fired_within_the_window
+- test_cooldown_approved_once_the_window_has_elapsed
+- test_shield_cfg_none_never_gates_even_within_the_cooldown_window
+- test_shield_check_skipped_without_crashing_when_no_confirmed_swing_exists_at_signal_time
 
 ### tests/unit/backtest/test_forward_walk.py
 
@@ -556,6 +564,7 @@ This document provides a comprehensive list of all 1133 test cases in the AutoTr
 - test_abnormal_slippage_within_rr_floor_logs_but_stays_open
 - test_abnormal_slippage_below_rr_floor_closes_position_immediately
 - test_abnormal_slippage_self_close_writes_trade_record
+- test_abnormal_slippage_self_close_feeds_circuit_breaker_when_given_one
 - test_abnormal_slippage_self_close_sends_trade_closed_notify
 - test_place_order_retry_request_identical_across_all_three_attempts
 - test_place_order_does_not_retry_terminal_no_money_retcode
@@ -1071,6 +1080,11 @@ This document provides a comprehensive list of all 1133 test cases in the AutoTr
 - test_duplicate_trade_record_write_does_not_also_double_notify
 - test_explicit_close_notifies_once_with_key_trade_facts
 - test_reconciliation_close_notifies_once_with_key_trade_facts
+- test_explicit_close_losing_trade_feeds_circuit_breaker
+- test_explicit_close_winning_trade_resets_consecutive_losses
+- test_reconciliation_close_feeds_circuit_breaker
+- test_three_consecutive_losses_across_cycles_trips_the_halt
+- test_duplicate_close_write_does_not_double_count_circuit_breaker
 
 ### tests/unit/watchman/test_news_protection.py
 
@@ -1254,6 +1268,18 @@ This document provides a comprehensive list of all 1133 test cases in the AutoTr
 - test_main_requires_one_of_the_mutually_exclusive_flags
 - test_main_rejects_activate_and_status_together
 
+### tests/unit/common/test_loop_watchdog.py
+
+- test_first_check_running_records_baseline_silently
+- test_first_check_down_notifies_immediately
+- test_running_to_down_transition_notifies
+- test_down_to_running_transition_notifies_recovery
+- test_running_to_running_unchanged_does_not_notify
+- test_down_to_down_unchanged_does_not_re_notify
+- test_state_persists_across_separate_calls_simulating_separate_process_invocations
+- test_corrupt_state_file_is_treated_as_no_prior_state_not_a_crash
+- test_missing_state_file_parent_directory_is_created
+
 ### tests/unit/test_mt5_connection.py
 
 - test_mt5_session_success_yields_and_shuts_down
@@ -1363,22 +1389,32 @@ This document provides a comprehensive list of all 1133 test cases in the AutoTr
 - test_run_and_persist_writes_a_loadable_envelope
 - test_run_and_persist_risk_voice_cfg_marks_envelope_as_modeled
 - test_run_and_persist_watchman_cfg_marks_envelope_as_modeled
+- test_run_and_persist_shield_cfg_marks_envelope_as_modeled
 - test_run_and_persist_threads_pivot_bars_into_backtest_config
 - test_run_and_persist_threads_min_lot_risk_cap_pct_into_backtest_config_and_envelope
 - test_main_requires_commission_per_lot_argument
 - test_main_constructs_risk_voice_cfg_from_config_with_every_field_mapped_correctly
 - test_main_constructs_watchman_cfg_from_config_with_every_field_mapped_correctly
+- test_main_constructs_shield_cfg_from_config_with_every_field_mapped_correctly
 - test_main_threads_pivot_bars_from_config_into_run_and_persist
 - test_main_threads_min_lot_risk_cap_pct_from_config_into_run_and_persist
 - test_main_min_lot_risk_cap_pct_cli_override_takes_precedence_over_config
 - test_main_writes_an_envelope_with_risk_voice_modeled_true
 - test_main_with_commission_zero_writes_envelope_with_cost_model_complete_true
 
+### tests/unit/test_run_scheduled_daily_report.py
+
+- test_resolves_yesterday_from_local_date_and_passes_it_explicitly
+- test_month_boundary_rolls_back_correctly
+- test_propagates_the_subprocess_exit_code
+
 ### tests/unit/test_run_shadow_loop.py
 
 - test_build_adapter_noop_returns_noop_broker_adapter
 - test_build_adapter_demo_returns_throttled_demo_adapter
 - test_build_adapter_demo_threads_journal_db_path_through
+- test_build_adapter_demo_threads_circuit_breaker_through
+- test_build_adapter_demo_circuit_breaker_defaults_to_none
 - test_build_adapter_unknown_name_raises_value_error
 - test_seed_history_converts_rates_to_dataframe_with_datetime_time_column
 - test_seed_history_raises_when_copy_rates_returns_none
