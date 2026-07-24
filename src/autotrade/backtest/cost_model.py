@@ -14,8 +14,105 @@ uses.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+
+import pandas as pd
 
 from autotrade.common.symbol_spec import SymbolSpec
+
+
+@dataclass(frozen=True)
+class SwapModelConfig:
+    """Overnight swap / rollover financing, the one cost component the live
+    side ALREADY pays but the backtest historically did not -- a genuine
+    backtest/live PARITY gap (see `store/models.py`'s `TradeRecord.cost`
+    docstring and `execution/adapter.py`: on live, MT5's own swap figure is
+    folded into `cost` alongside commission; this dataclass restores the same
+    charge to the simulator). Added 2026-07-24 after a cross-project
+    out-of-sample study (D:\\ForexTrade EXP-053..058) flagged that holding
+    XAUUSD overnight ~1 night/trade makes swap material to expectancy in
+    PF/R terms -- see `experiments/experiments_log.md` EXP-018.
+
+    Sign convention (matches how a broker books it, and MT5's own sign):
+    NEGATIVE = a debit charged to the trader, POSITIVE = a credit paid to the
+    trader. The rates are per 1.0 (standard) lot per night, already in the
+    account's deposit currency -- no point/tick conversion (unlike
+    spread/slippage/commission arithmetic below), because a broker quotes swap
+    directly in currency per lot.
+
+    `triple_swap_weekday` (server-time weekday of the rollover boundary that
+    is booked at 3x; Monday=0 .. Sunday=6, default Wednesday=2) models the
+    standard "triple swap Wednesday" that compensates for the weekend's
+    unbooked Sat/Sun carry. `rollover_hour` is the server-time hour of the
+    daily rollover boundary (default 00:00 server). Saturday/Sunday rollover
+    boundaries are booked at 0x here (the weekend carry is already recovered
+    by the Wednesday 3x) -- the well-known consequence is that a position
+    opened after Wednesday and closed the following Monday is under-charged
+    for the weekend; this is faithful to how retail brokers actually book
+    swap, not a modeling shortcut. Given the rates themselves are broker- and
+    time-varying (~±20%), the ~1-day ambiguity in exactly which midnight
+    carries the Wednesday 3x is immaterial and left configurable rather than
+    hard-coded.
+
+    There is intentionally NO "not modeled" default here: `None` on
+    `CostModelConfig.swap_model` (and `BacktestConfig`/tooling that thread it)
+    is the explicit "swap not modeled" placeholder, same honesty-over-
+    convenience convention as `risk_voice_cfg`/`watchman_cfg`/`shield_cfg` in
+    `backtest/engine.py`. A run that models swap must consciously supply real
+    rates.
+    """
+
+    long_per_lot_per_night: float
+    short_per_lot_per_night: float
+    triple_swap_weekday: int = 2
+    rollover_hour: int = 0
+
+
+def effective_swap_nights(
+    entry_time: pd.Timestamp, exit_time: pd.Timestamp, config: SwapModelConfig
+) -> float:
+    """Number of swap-charged nights between entry and exit, with the
+    Wednesday rollover weighted 3x and Saturday/Sunday rollovers weighted 0x
+    (see `SwapModelConfig` docstring). Counts every rollover boundary `t`
+    (server midnight, or `config.rollover_hour`) with `entry_time < t <=
+    exit_time` -- a position must be OPEN across the boundary to be charged,
+    so an intraday trade that never crosses a rollover pays nothing."""
+    if exit_time <= entry_time:
+        return 0.0
+    boundary = entry_time.normalize() + pd.Timedelta(hours=config.rollover_hour)
+    if boundary <= entry_time:
+        boundary += pd.Timedelta(days=1)
+    nights = 0.0
+    while boundary <= exit_time:
+        dow = boundary.dayofweek
+        if dow == config.triple_swap_weekday:
+            nights += 3.0
+        elif dow not in (5, 6):
+            nights += 1.0
+        # Sat(5)/Sun(6): 0x -- weekend carry is recovered by the Wednesday 3x.
+        boundary += pd.Timedelta(days=1)
+    return nights
+
+
+def swap_cost(
+    direction: Literal["BUY", "SELL"],
+    lot_size: float,
+    entry_time: pd.Timestamp,
+    exit_time: pd.Timestamp,
+    config: SwapModelConfig,
+) -> float:
+    """Overnight swap for one trade as a POSITIVE-when-charged currency amount
+    to SUBTRACT from P&L (i.e. add into a `cost` field) -- mirroring
+    `store/models.py`'s `TradeRecord.cost` convention exactly, so backtest and
+    live agree. A swap CREDIT (e.g. the +short rate) returns a negative number
+    that REDUCES total cost, again matching live. Signed the opposite of
+    `SwapModelConfig`'s broker-booked rates because those are debit-negative
+    while a `cost` is charge-positive."""
+    rate = (
+        config.long_per_lot_per_night if direction == "BUY" else config.short_per_lot_per_night
+    )
+    swap_pnl = rate * lot_size * effective_swap_nights(entry_time, exit_time, config)
+    return -swap_pnl
 
 
 @dataclass(frozen=True)
@@ -42,6 +139,18 @@ class CostModelConfig:
 
     commission_per_lot: float = 0.0
     slippage_points: float | None = None
+    swap_model: SwapModelConfig | None = None
+    """`None` (the default) means overnight swap/rollover is NOT modeled in
+    this run -- the explicit, honest placeholder (same convention as
+    `slippage_points`/`commission_per_lot` above and
+    `engine.py`'s `risk_voice_cfg`/`watchman_cfg`/`shield_cfg`). Live trading
+    ALWAYS pays swap (`store/models.py`), so a promotion-relevant backtest of
+    an overnight-holding strategy should supply a real `SwapModelConfig`;
+    leaving this `None` is only appropriate for intraday tests/tooling or when
+    deliberately isolating the pre-swap number. `scripts/run_backtest.py`
+    surfaces this as `swap_modeled` in the report envelope, alongside the
+    existing `risk_voice_modeled`/`watchman_exits_modeled`/`shield_modeled`
+    honesty flags."""
 
 
 def spread_slippage_price(

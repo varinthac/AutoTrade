@@ -139,7 +139,7 @@ from typing import Callable, Literal
 import pandas as pd
 
 from autotrade.backtest.clock import SimulatedClock
-from autotrade.backtest.cost_model import CostModelConfig, commission_cost, spread_slippage_price
+from autotrade.backtest.cost_model import CostModelConfig, commission_cost, spread_slippage_price, swap_cost
 from autotrade.backtest.news_stub import NoHistoricalNewsDataProvider
 from autotrade.common.clock import Clock
 from autotrade.common.symbol_spec import SymbolSpec
@@ -255,7 +255,12 @@ class ClosedTrade:
     `exit_price`, before commission -- NOT gross of spread/slippage, only of
     commission."""
     cost: float
-    """Commission only (`cost_model.commission_cost`)."""
+    """Commission (`cost_model.commission_cost`) plus overnight swap
+    (`cost_model.swap_cost`) when `cost_model.swap_model` is set -- combined as
+    a single positive-when-charged amount, matching `store/models.py`'s live
+    `TradeRecord.cost` convention (commission + swap). When swap is not
+    modeled (`swap_model is None`) this is commission only, and a swap CREDIT
+    can make the swap contribution negative."""
     spread_slippage_cost: float
     """Spread + slippage cost in currency, already folded into `entry_price`
     (and thus into `gross_pnl`) at fill time -- tracked here separately so a
@@ -508,6 +513,11 @@ def _close_trade(
     sign = 1.0 if position.plan.direction == "BUY" else -1.0
     gross_pnl = sign * (exit_price - position.entry_price) * point_value * position.lot_size
     cost = commission_cost(position.lot_size, cost_model)
+    if cost_model.swap_model is not None:
+        cost += swap_cost(
+            position.plan.direction, position.lot_size,
+            position.entry_time, exit_time, cost_model.swap_model,
+        )
     spread_slippage_cost = position.spread_slippage_price_delta * point_value * position.lot_size
     net_pnl = gross_pnl - cost
     risk_amount = position.plan.stop_distance * point_value * position.lot_size

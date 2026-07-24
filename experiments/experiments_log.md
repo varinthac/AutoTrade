@@ -3935,3 +3935,82 @@ one config that helps the two weak years marginally (X0.7/Y4: y1 +0.014 PF, y2 +
 (−0.097 PF, −$1,194). Net: the current exit stack (SL/structure/time) already handles deep losers better
 than a blanket floating-R timeout. Do NOT proceed to Validation; Validation/Test untouched (as required).
 Today's −0.90R trade is within normal variance, not evidence of a systemic early-exit gap.
+
+## EXP-018 2026-07-24 — Overnight SWAP / rollover cost model (NEW cost-component; backtest/live PARITY gap)
+Status: BUILT + PRE-REGISTERED (capability added, default OFF = "not modeled"); materiality assessed. NO promotion, NO gate change.
+Trigger: cross-project out-of-sample study (D:\ForexTrade EXP-053..058, XAUUSD 2009-2019 — a market era this
+project's own 5-yr window (2021-07 → 2026-07) never covered) flagged (a) our backtest models no swap/rollover
+while live DOES pay it, and (b) our edge does not survive pre-2021 regimes.
+
+VERIFICATION of the three cross-project claims (done from inside this repo, not taken on faith):
+- (1) cost_model.py swap gap — CONFIRMED. `src/autotrade/backtest/cost_model.py` (pre-EXP-018) modeled only
+  spread+slippage+commission; no swap term anywhere. MEANWHILE the LIVE side already pays real MT5 swap:
+  `execution/adapter.py` + `store/models.py` fold "commission + swap" into `TradeRecord.cost`. So this was a
+  genuine backtest↔live PARITY gap (live pays a cost the simulator ignored), not merely a missing refinement.
+- (2) replica fidelity — CONFIRMED reproducible. `data/db/backtest_reports/XAUUSD_20260722T055933Z.json`
+  exists in THIS repo and shows n=1259, PF 1.0799, DD 29.4%, win 0.382, full 5-yr window, commission $7 —
+  matching the cross-project "n=1259, PF 1.08" reproduction claim exactly.
+- (3) internal per-year consistency — CONFIRMED and WELL-CALIBRATED. The report's "2022-23 sideways ≈ PF 0.98"
+  matches THIS repo's own EXP-017 baseline (current live config: be/trail OFF, $0 commission, $10k) per-year:
+  y1 2021-22 PF 1.033 (+$502), y2 2022-23 PF 0.975 (−$406, LOSING), y3 2023-24 PF 1.224 (+$3,321). The edge is
+  concentrated in the single trending year; the flat/sideways year is net-negative — exactly the cross-project
+  thesis. (Note: the older EXP-002 showed y2=1.001, but that was a pre-EXP-008 config; the current config's
+  0.975 is the right comparison and the report's 0.98 is accurate against it.)
+
+Hypothesis / mechanism: XAUUSD is held overnight ~1 night/trade; broker books swap per night (triple Wednesday),
+long-negative on gold. A per-trade swap charge on the order of the strategy's own per-trade expectancy would
+materially erode or erase the edge — and does so WORST in exactly the gold-bull regime that produces the apparent
+edge (net-long bias ⇒ maximal long-swap drag). This couples the "beta" and the cost: the regime that flatters PF
+is the regime that pays the most swap.
+Metric that decides materiality: swap-in-R per trade vs. baseline avg-R per trade (a LOT-SIZE- and EQUITY-
+INDEPENDENT comparison: swap_R = rate·nights / (stop_distance·point_value); the $/lot·night figure and the
+account size both cancel). Acceptance for "material": swap_R is a non-trivial fraction of avg_R.
+
+Rates used (source stated, per mandate): long −$53.2 / short +$36.8 per 1.0 lot per night, 3× Wednesday — the
+figures the cross-project report cited from an IC Markets demo measurement. NO more-authoritative swap rate is
+recorded anywhere in THIS repo (checked config/base.yaml, .env, execution/*, store/*: live reads swap from MT5
+at runtime, never persists a static rate). These rates are broker- & time-varying (~±20%); treated as an
+order-of-magnitude input, not a precise constant. A real promotion run should pass the account's own live rates.
+
+MATERIALITY (analytical, anchored to reproduced report): full-5yr avg_R = 0.0525 (a THIN edge). For a net-long
+gold trade, swap_R ≈ 53.2·1 / (stop_distance·100). At a representative H1 ATR stop ~$8–$15 (price) that is
+≈ 0.035–0.066 R of drag PER overnight long — i.e. same order of magnitude as the ENTIRE 0.0525R expectancy.
+Shorts earn ~0.037R, so net impact scales with long/short balance and is largest in a long-biased bull regime.
+CONCLUSION: swap is MATERIAL to expectancy in PF/R terms, independent of the small $-figures on a $3k account.
+CAVEAT on the report's framing: its headline $5.3–9.5k / "−$1,561 → −$6,895" swap figures are at 1.0 lot and do
+NOT translate to this $3k / ~0.01–0.05-lot account's dollar P&L (over-dramatic in absolute $ for this account) —
+but the PROPORTIONAL PF/edge erosion DOES carry over regardless of lot size, and that is what matters for a
+promote decision. So the report is directionally right and materially important; only its absolute-$ drama is
+mis-scaled for this account.
+
+IMPLEMENTATION (capability only; behavior unchanged unless a caller opts in):
+- `backtest/cost_model.py`: new `SwapModelConfig` (long/short per-lot-per-night, triple_swap_weekday=Wed,
+  rollover_hour=0; Sat/Sun rollovers 0× — weekend carry recovered by Wed 3×, faithful to broker booking),
+  `effective_swap_nights()`, `swap_cost()` (returns positive-when-charged, mirroring store/models.py's live
+  `cost` sign convention so backtest↔live agree). New optional `CostModelConfig.swap_model` field.
+- `backtest/engine.py`: `_close_trade` adds swap into `cost` when `swap_model is not None`; ClosedTrade.cost
+  docstring updated (now "commission + swap", matching live).
+- `scripts/run_backtest.py`: optional `--swap-long-per-lot`/`--swap-short-per-lot` (must be given together);
+  new envelope flag `swap_modeled` alongside the existing risk_voice/watchman/shield honesty flags.
+- DEFAULT everywhere = `None` = "not modeled" (same explicit-placeholder convention as risk_voice_cfg/
+  watchman_cfg/shield_cfg). No adopted result changes; no existing backtest silently altered.
+- Tests: 7 new known-input cases in tests/unit/backtest/test_cost_model.py (Wed 3×, weekend 0×, intraday 0,
+  multi-night, long-charge/short-credit sign, lot scaling). Full backtest unit suite: 87 passed.
+
+GATE POLICY — DELIBERATELY NOT DECIDED HERE (rule 8, never tune the referee): whether a promotion-relevant run
+MUST have swap_modeled=true (i.e. folding swap into `cost_model_complete` / the promotion gate) is a human
+decision. `cost_model_complete` is left UNCHANGED (still slippage-only). Escalated to user.
+
+Robustness: neighborhood n.a. (not a tuned parameter — a cost correction), per-year n.a. (see EXP-017 for the
+current-config per-year picture this corroborates), top-5 n.a., walk-forward n.a. On-our-data empirical swap-off
+vs swap-on re-run (Train+Val 2021-07→2025-07, Test year EXCLUDED, $50k equity per EXP-008 sizing-confound-free
+method) was LAUNCHED to quantify the exact PF/avgR drop; the full-Council engine over ~24k H1 bars is very slow,
+so that number is pending — the analytical estimate above stands regardless and does not depend on it.
+
+Decision & rationale: ADOPT the swap-model CAPABILITY (code + tests), default OFF. Do NOT promote, do NOT change
+any gate. The evidence — verified parity gap + thin 0.0525R edge + swap drag of the same order + corroborating
+current-config per-year (y2 2022-23 PF 0.975) — supports the cross-project warning: the Test-year PF 1.28 is
+best read as gold-bull regime beta, not established stable alpha, and should NOT by itself justify live/scale.
+Recommended next steps (each its OWN pre-registered experiment): (i) real-rate swap re-run of the full history;
+(ii) regime-awareness as an explicit hypothesis tested on 2009-2019 data; (iii) keep the free real out-of-sample
+(paper trading) running.

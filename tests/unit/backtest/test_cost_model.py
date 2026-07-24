@@ -1,15 +1,27 @@
 """Known-inputs-known-output tests for backtest/cost_model.py."""
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
 from autotrade.backtest.cost_model import (
     CostModelConfig,
+    SwapModelConfig,
     commission_cost,
+    effective_swap_nights,
     round_trip_cost,
     spread_slippage_price,
+    swap_cost,
 )
 from autotrade.common.symbol_spec import SymbolSpec
+
+# 2026-01-05 is a Monday: 05=Mon, 06=Tue, 07=Wed, 08=Thu, 09=Fri, 10=Sat, 11=Sun.
+_MON = "2026-01-05"
+_TUE = "2026-01-06"
+_WED = "2026-01-07"
+_THU = "2026-01-08"
+_FRI = "2026-01-09"
+_NEXT_MON = "2026-01-12"
 
 SYMBOL = SymbolSpec(
     canonical="XAUUSD", broker_name="XAUUSD", digits=2, point=0.01,
@@ -23,6 +35,64 @@ def test_cost_model_config_defaults_are_the_documented_placeholder():
     config = CostModelConfig()
     assert config.commission_per_lot == 0.0
     assert config.slippage_points is None
+    assert config.swap_model is None  # swap "not modeled" placeholder
+
+
+_SWAP = SwapModelConfig(long_per_lot_per_night=-53.2, short_per_lot_per_night=36.8)
+
+
+def test_effective_swap_nights_single_ordinary_overnight_is_one():
+    # Mon 10:00 -> Tue 14:00 crosses only the Tue 00:00 rollover (weekday, 1x).
+    nights = effective_swap_nights(
+        pd.Timestamp(f"{_MON} 10:00"), pd.Timestamp(f"{_TUE} 14:00"), _SWAP
+    )
+    assert nights == pytest.approx(1.0)
+
+
+def test_effective_swap_nights_wednesday_rollover_is_triple():
+    # Tue 10:00 -> Wed 14:00 crosses the Wed 00:00 rollover (triple-swap day).
+    nights = effective_swap_nights(
+        pd.Timestamp(f"{_TUE} 10:00"), pd.Timestamp(f"{_WED} 14:00"), _SWAP
+    )
+    assert nights == pytest.approx(3.0)
+
+
+def test_effective_swap_nights_weekend_rollovers_are_not_charged():
+    # Fri 10:00 -> next Mon 14:00: Sat/Sun 00:00 boundaries are 0x (weekend
+    # carry is recovered by the Wednesday 3x), only Mon 00:00 counts.
+    nights = effective_swap_nights(
+        pd.Timestamp(f"{_FRI} 10:00"), pd.Timestamp(f"{_NEXT_MON} 14:00"), _SWAP
+    )
+    assert nights == pytest.approx(1.0)
+
+
+def test_effective_swap_nights_multi_night_span_includes_the_wednesday_triple():
+    # Mon 10:00 -> Thu 14:00 crosses Tue(1x) + Wed(3x) + Thu(1x) = 5.
+    nights = effective_swap_nights(
+        pd.Timestamp(f"{_MON} 10:00"), pd.Timestamp(f"{_THU} 14:00"), _SWAP
+    )
+    assert nights == pytest.approx(5.0)
+
+
+def test_effective_swap_nights_intraday_trade_crosses_no_rollover():
+    nights = effective_swap_nights(
+        pd.Timestamp(f"{_MON} 10:00"), pd.Timestamp(f"{_MON} 20:00"), _SWAP
+    )
+    assert nights == pytest.approx(0.0)
+
+
+def test_swap_cost_long_is_a_positive_charge_short_is_a_credit():
+    entry, exit_ = pd.Timestamp(f"{_MON} 10:00"), pd.Timestamp(f"{_TUE} 14:00")  # 1 night
+    # Long pays: broker rate -53.2 -> +53.2 cost to subtract (per 1.0 lot).
+    assert swap_cost("BUY", 1.0, entry, exit_, _SWAP) == pytest.approx(53.2)
+    # Short is credited: broker rate +36.8 -> -36.8 (reduces cost) per 1.0 lot.
+    assert swap_cost("SELL", 1.0, entry, exit_, _SWAP) == pytest.approx(-36.8)
+
+
+def test_swap_cost_scales_with_lot_and_triple_wednesday():
+    entry, exit_ = pd.Timestamp(f"{_TUE} 10:00"), pd.Timestamp(f"{_WED} 14:00")  # 3 nights (Wed)
+    # 0.5 lot long across the triple-swap Wednesday: -53.2 * 0.5 * 3 -> +79.8.
+    assert swap_cost("BUY", 0.5, entry, exit_, _SWAP) == pytest.approx(79.8)
 
 
 def test_spread_slippage_price_defaults_slippage_to_the_bars_own_spread():

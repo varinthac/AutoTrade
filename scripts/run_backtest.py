@@ -47,7 +47,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from autotrade.backtest.cost_model import CostModelConfig
+from autotrade.backtest.cost_model import CostModelConfig, SwapModelConfig
 from autotrade.backtest.engine import BacktestConfig, run_backtest
 from autotrade.backtest.report import BacktestReport, format_report, generate_report
 from autotrade.common.config import REPO_ROOT, load_mt5_credentials, load_yaml_config
@@ -97,7 +97,14 @@ def build_envelope(
     `min_lot_risk_cap_pct` records this run's
     `BacktestConfig.min_lot_risk_cap_pct` for auditability (`None` when the
     min-lot risk-cap fallback was disabled) -- see `risk/sizing.py`'s
-    `compute_lot_size` docstring.
+    `compute_lot_size` docstring. `swap_modeled` mirrors the same honesty
+    flags for overnight swap/rollover (true iff `cost_model.swap_model` is
+    set; see `backtest/cost_model.py`'s `SwapModelConfig`). NOTE: whether a
+    promotion-relevant run MUST have `swap_modeled` true (i.e. folding swap
+    into `cost_model_complete` / the promotion gate) is deliberately left as a
+    gate-policy decision for a human -- EXP-018 added the capability and the
+    flag but does NOT change the gate. `cost_model_complete` therefore still
+    checks only slippage, unchanged.
     """
     cost_model_complete = cost_model.slippage_points is None
     return {
@@ -106,6 +113,7 @@ def build_envelope(
         "starting_equity": starting_equity,
         "cost_model": asdict(cost_model),
         "cost_model_complete": cost_model_complete,
+        "swap_modeled": cost_model.swap_model is not None,
         "is_out_of_sample": is_out_of_sample,
         "risk_voice_modeled": risk_voice_modeled,
         "watchman_exits_modeled": watchman_exits_modeled,
@@ -206,6 +214,18 @@ def main() -> int:
         help="Omit to use the bar's own spread (minimum-1-spread convention)",
     )
     parser.add_argument(
+        "--swap-long-per-lot", type=float, default=None,
+        help="Overnight swap for a LONG, currency per 1.0 lot per night, broker sign "
+             "(negative = charged). Must be given together with --swap-short-per-lot to model "
+             "swap; omit BOTH to leave swap unmodeled (envelope swap_modeled=false). See "
+             "backtest/cost_model.py SwapModelConfig.",
+    )
+    parser.add_argument(
+        "--swap-short-per-lot", type=float, default=None,
+        help="Overnight swap for a SHORT, currency per 1.0 lot per night, broker sign "
+             "(positive = credited). Must be given together with --swap-long-per-lot.",
+    )
+    parser.add_argument(
         "--out-of-sample", action="store_true",
         help="Mark this run as out-of-sample in the envelope (human-set, not auto-detected)",
     )
@@ -282,8 +302,22 @@ def main() -> int:
     with mt5_session(creds):
         symbol_spec = get_symbol_spec(args.symbol)
 
+    if (args.swap_long_per_lot is None) != (args.swap_short_per_lot is None):
+        parser.error(
+            "--swap-long-per-lot and --swap-short-per-lot must be given together "
+            "(both, to model swap) or both omitted (swap unmodeled)."
+        )
+    swap_model = (
+        SwapModelConfig(
+            long_per_lot_per_night=args.swap_long_per_lot,
+            short_per_lot_per_night=args.swap_short_per_lot,
+        )
+        if args.swap_long_per_lot is not None
+        else None
+    )
     cost_model = CostModelConfig(
         commission_per_lot=args.commission_per_lot, slippage_points=args.slippage_points,
+        swap_model=swap_model,
     )
 
     run_and_persist(
