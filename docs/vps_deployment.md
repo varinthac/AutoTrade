@@ -295,12 +295,26 @@ mechanism for both detecting AND auto-recovering from the loop dying;
 `run_loop_watchdog.py`/`AutoTrade_Watchdog_Start.bat` remain as a secondary,
 alert-only (no restart) belt-and-suspenders check when manually launched.
 
+**Same day, same incident window:** found genuine duplicate Dashboard/
+Telegram-control-listener processes (neither had run_shadow_loop.py's own
+PID-file double-launch guard, so a re-fired "At log on" trigger -- or any
+other double-start -- just produced two instances fighting each other
+instead of one cleanly refusing). Both scripts gained the same PID-file
+guard, and `scripts/run_health_check.py` now checks and auto-restarts all
+three services (shadow loop, dashboard, Telegram control listener) every
+cycle via the generic `common/service_watchdog.py`, not just the loop --
+notably, this is the ONLY way to recover the Telegram listener itself: if
+it's the thing that's down, there's no way to reach it with a Telegram
+command in the first place.
+
 1. [ ] Create a free healthchecks.io check with a period matching your
        Task Scheduler interval (e.g. every 10 minutes, grace period 15
        minutes) and connect its own Telegram/email integration.
 2. [ ] `C:\AutoTrade\ops\heartbeat.ps1` (a deployment ops artifact, not
        part of the Python package) calls `scripts/run_health_check.py`,
-       which does two things every cycle: (a) Telegram-alerts on a
+       which does two things every cycle for the shadow loop (and the
+       analogous check+restart for the dashboard and Telegram control
+       listener via `common/service_watchdog.py`): (a) Telegram-alerts on a
        DOWN<->UP transition (`common/loop_watchdog.py`'s existing
        transition-only logic, unchanged), and (b) attempts to relaunch the
        loop (`autotrade_control.py start`) on every cycle it's found down,

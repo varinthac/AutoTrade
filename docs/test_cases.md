@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1301 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1312 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1301 (including all parametrized variants)
+- **Total Test Count**: 1312 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -91,14 +91,16 @@ This document provides a comprehensive list of all 1301 test cases in the AutoTr
 | | test_run_auditor.py | 42 |
 | | test_run_backtest.py | 24 |
 | | test_run_dashboard.py | 4 |
+| | test_run_health_check.py | 3 |
 | | test_run_scheduled_daily_report.py | 3 |
 | | test_run_shadow_loop.py | 33 |
 | | test_run_telegram_control.py | 26 |
+| | test_service_watchdog.py | 8 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **305** |
+| **Scripts & CLI Subtotal** | | **316** |
 | | | |
-| **GRAND TOTAL** | | **1301** |
+| **GRAND TOTAL** | | **1312** |
 
 ---
 
@@ -1535,6 +1537,12 @@ This document provides a comprehensive list of all 1301 test cases in the AutoTr
 - test_main_overwrites_stale_pid_file_from_a_no_longer_running_process
 - test_main_removes_pid_file_even_if_app_run_raises
 
+### tests/unit/test_run_health_check.py
+
+- test_main_checks_shadow_loop_dashboard_and_telegram_control
+- test_main_prints_not_running_when_loop_is_down
+- test_main_passes_auto_restart_true_to_loop_check
+
 ### tests/unit/test_run_scheduled_daily_report.py
 
 - test_resolves_yesterday_from_local_date_and_passes_it_explicitly
@@ -1605,6 +1613,17 @@ This document provides a comprehensive list of all 1301 test cases in the AutoTr
 - test_backlog_discard_exception_message_never_logged_with_bot_token
 - test_exception_from_poll_fn_is_swallowed_and_loop_continues
 - test_exception_message_never_logged_with_bot_token
+
+### tests/unit/common/test_service_watchdog.py
+
+- test_first_check_running_records_baseline_silently_and_does_not_restart
+- test_first_check_down_notifies_and_attempts_restart
+- test_down_to_down_unchanged_does_not_re_notify_but_keeps_retrying_restart
+- test_down_to_running_transition_notifies_recovery_and_stops_restarting
+- test_restart_passes_extra_args_through
+- test_restart_falls_back_without_breakaway_flag_if_caller_job_disallows_it
+- test_restart_exception_is_logged_not_raised
+- test_corrupt_state_file_is_treated_as_no_prior_state_not_a_crash
 
 ### tests/unit/test_stop_request_flag.py
 
