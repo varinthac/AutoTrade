@@ -274,7 +274,7 @@ not" is fine here since this task has no GUI-app dependency -- it's a
 one-shot Python script that reads the DB and exits) via an elevated
 schtasks command or Task Scheduler UI.
 
-### 6c. External heartbeat ("the whole VPS went dark")
+### 6c. External heartbeat + auto-restart ("the whole VPS went dark" / "the loop died and nothing said so")
 
 Telegram alerts from AutoTrade obviously can't fire if the VPS itself, or
 Windows, or the Python process, is what died -- that needs a check
@@ -283,27 +283,53 @@ external to this system. Recommended: a free dead-man's-switch service
 and alerts you itself (email/Telegram/etc., independent of this codebase)
 if the ping doesn't show up within a grace period.
 
+**2026-07-24 incident:** the shadow loop died silently (~13:00 server time)
+and `scripts/run_loop_watchdog.py` -- the console-window process meant to
+alert on exactly that -- was ALSO found not running, so zero alert fired.
+A process that only (re)launches "at logon" cannot recover from its own
+silent death mid-session. This section's Task Scheduler task, because it
+has its own *repeating* trigger, doesn't have that problem: Task Scheduler
+dispatches a fresh one-shot process every cycle, so there's no long-lived
+watchdog process here that can silently die. It is now the primary
+mechanism for both detecting AND auto-recovering from the loop dying;
+`run_loop_watchdog.py`/`AutoTrade_Watchdog_Start.bat` remain as a secondary,
+alert-only (no restart) belt-and-suspenders check when manually launched.
+
 1. [ ] Create a free healthchecks.io check with a period matching your
        Task Scheduler interval (e.g. every 10 minutes, grace period 15
        minutes) and connect its own Telegram/email integration.
-2. [ ] Create a small PowerShell script on the VPS,
-       `C:\AutoTrade\ops\heartbeat.ps1` (a deployment ops artifact, not
-       part of the Python package):
+2. [ ] `C:\AutoTrade\ops\heartbeat.ps1` (a deployment ops artifact, not
+       part of the Python package) calls `scripts/run_health_check.py`,
+       which does two things every cycle: (a) Telegram-alerts on a
+       DOWN<->UP transition (`common/loop_watchdog.py`'s existing
+       transition-only logic, unchanged), and (b) attempts to relaunch the
+       loop (`autotrade_control.py start`) on every cycle it's found down,
+       not just the first -- safe to retry unconditionally because
+       `run_shadow_loop.py`'s own PID-file double-launch guard already
+       refuses a second instance, so a retry racing an in-progress startup
+       just harmlessly no-ops:
        ```powershell
        $status = & "C:\AutoTrade\.venv\Scripts\python.exe" `
-           "C:\AutoTrade\scripts\autotrade_control.py" status
+           "C:\AutoTrade\scripts\run_health_check.py"
        if ($status -match "RUNNING") {
            Invoke-WebRequest -Uri "https://hc-ping.com/<your-check-uuid>" -UseBasicParsing | Out-Null
        }
        ```
-       This only pings healthchecks.io when `autotrade_control.py status`
-       actually reports the loop as RUNNING -- so the external alarm fires
-       both if the VPS/scheduler itself is dead (no ping arrives at all)
-       and if Windows is up but the shadow loop process itself has crashed
-       (ping is skipped because status isn't RUNNING).
-3. [ ] Task Scheduler: run this script every 10 minutes, "whether user is
-       logged on or not" (fine here -- it's a one-shot script call, no GUI
-       dependency), action:
+       This only pings healthchecks.io when the loop is actually RUNNING --
+       so the external alarm fires both if the VPS/scheduler itself is dead
+       (no ping arrives at all) and if Windows is up but the shadow loop
+       process itself has crashed (ping is skipped because it isn't
+       RUNNING).
+3. [ ] Task Scheduler: run this script every 10 minutes. Unlike a plain
+       read-only status check, this one's restart attempt launches
+       `run_shadow_loop.py`, which has the exact same interactive-desktop
+       requirement Section 6a explains (MT5's GUI needs a real Session 1,
+       not Session 0) -- so this task MUST use the same settings as 6a's
+       three tasks: trigger "At log on" + repeat every 10 minutes, security
+       option **"Run only when user is logged on"** (NOT "whether user is
+       logged on or not" -- that would silently break the auto-restart's
+       MT5 connection even though the heartbeat ping itself would still
+       look fine). Action:
        `powershell.exe -ExecutionPolicy Bypass -File C:\AutoTrade\ops\heartbeat.ps1`
 
 ## 7. Remote access to the dashboard

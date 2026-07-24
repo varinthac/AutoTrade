@@ -38,11 +38,36 @@ small and dependency-free as possible (just a sleep loop, a `tasklist`
 subprocess call, and a Telegram POST) specifically so it is far less likely
 to crash than the MT5-connected trading loop it monitors, but this is a
 mitigation, not a guarantee.
+
+**2026-07-24 follow-up incident:** the loop died again (~13:00 server time)
+and this time even `scripts/run_loop_watchdog.py` itself -- the one thing
+meant to alert on exactly this -- was found not running, so zero alert
+fired either time. A console-window process that only ever launches "at
+logon" (Task Scheduler) cannot recover from its own silent death mid-session.
+`scripts/run_health_check.py` exists to route this check through a
+mechanism that already reliably survives that failure mode: a Task
+Scheduler task with its own *repeating* trigger ("AutoTrade Heartbeat",
+`ops/heartbeat.ps1`, every 10 minutes). Task Scheduler dispatches a fresh
+one-shot process every cycle -- there is no long-lived watchdog process left
+to silently die. `auto_restart=True`
+(only `run_health_check.py` passes this; `run_loop_watchdog.py` still
+doesn't, to keep its own behavior unchanged) additionally attempts to
+relaunch the loop on every check while it's down -- safe to retry every
+cycle unchanged because `run_shadow_loop.py`'s own PID-file double-launch
+guard (see its `main()`) already refuses a second instance, so a retry
+racing an in-progress startup just harmlessly no-ops rather than double
+running. Deliberately NOT re-notified on every failed retry (same
+transition-only philosophy as the alerts above) -- the down alert already
+told the operator restart is being attempted/needed; if the underlying cause
+(e.g. an active kill switch) prevents it from ever coming back, that's
+surfaced by the *absence* of the "back up" message, not fresh spam.
 """
 from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 from autotrade.common import pid_file
@@ -52,6 +77,8 @@ from autotrade.notify.telegram import notify
 logger = logging.getLogger(__name__)
 
 DEFAULT_STATE_PATH = REPO_ROOT / "data" / "db" / "loop_watchdog_state.json"
+_AUTOTRADE_CONTROL_PATH = REPO_ROOT / "scripts" / "autotrade_control.py"
+_RESTART_TIMEOUT_SEC = 30
 
 _DOWN_MESSAGE = (
     "[AutoTrade] \U0001F6A8 The shadow loop process is DOWN -- it stopped running "
@@ -82,14 +109,23 @@ def _save_last_state(state_path: Path, running: bool) -> None:
     state_path.write_text(json.dumps({"running": running}), encoding="utf-8")
 
 
-def check_loop_alive(pid_path: Path | None = None, state_path: Path | None = None) -> bool:
+def check_loop_alive(
+    pid_path: Path | None = None, state_path: Path | None = None, auto_restart: bool = False,
+) -> bool:
     """Call this once per poll cycle. Returns the currently-observed running
     state. Notifies via Telegram on the first check if already down (mirrors
     `AutoTradingWatchdog.check`'s "alert on first check if already bad"
     convention -- there is no safe baseline to silently assume), and on
     every subsequent True<->False transition. Two consecutive "down" checks
     (the loop stays down) do NOT re-notify -- this is what the persisted
-    last-known state exists to prevent."""
+    last-known state exists to prevent.
+
+    auto_restart=True additionally attempts to relaunch the loop (see
+    _attempt_restart) every single time it's observed down, transition or
+    not -- deliberately NOT gated on the same transition-only logic as the
+    Telegram alerts above, so a restart that fails to actually bring MT5
+    back up (e.g. broker/network hiccup) keeps getting retried on the next
+    cycle rather than being attempted once and given up on."""
     state_path = state_path or DEFAULT_STATE_PATH
     currently_running = pid_file.is_running(pid_path)
     previous = _load_last_state(state_path)
@@ -105,6 +141,9 @@ def check_loop_alive(pid_path: Path | None = None, state_path: Path | None = Non
         else:
             _alert_down()
 
+    if not currently_running and auto_restart:
+        _attempt_restart()
+
     _save_last_state(state_path, currently_running)
     return currently_running
 
@@ -117,3 +156,26 @@ def _alert_down() -> None:
 def _alert_up() -> None:
     logger.warning(_UP_MESSAGE)
     notify(_UP_MESSAGE)
+
+
+def _attempt_restart() -> None:
+    """Best-effort relaunch via the same `autotrade_control.py start` a
+    human would run -- reused rather than duplicated so this stays subject
+    to that command's own safety checks (refuses if the kill switch is
+    active) unchanged. Deliberately not notified here on failure (see
+    check_loop_alive's docstring) -- logged only; the operator already got
+    the down alert, and the "back up" alert (or its absence) is the honest
+    signal of whether this is working."""
+    try:
+        result = subprocess.run(
+            [sys.executable, str(_AUTOTRADE_CONTROL_PATH), "start"],
+            capture_output=True, text=True, timeout=_RESTART_TIMEOUT_SEC,
+        )
+        if result.returncode == 0:
+            logger.warning("loop_watchdog: auto-restart launched (scripts/autotrade_control.py start).")
+        else:
+            logger.error(
+                "loop_watchdog: auto-restart command exited %d: %s", result.returncode, result.stderr.strip(),
+            )
+    except Exception:
+        logger.exception("loop_watchdog: auto-restart attempt raised an exception.")

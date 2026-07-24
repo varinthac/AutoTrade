@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1287 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1293 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1287 (including all parametrized variants)
+- **Total Test Count**: 1293 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -83,7 +83,7 @@ This document provides a comprehensive list of all 1287 test cases in the AutoTr
 | | test_historical_gaps.py | 4 |
 | | test_kill_switch_flag.py | 9 |
 | | test_kill_switch_script.py | 29 |
-| | test_loop_watchdog.py | 9 |
+| | test_loop_watchdog.py | 15 |
 | | test_mt5_connection.py | 10 |
 | | test_mt5_time.py | 4 |
 | | test_pid_file.py | 19 |
@@ -97,7 +97,7 @@ This document provides a comprehensive list of all 1287 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **298** |
 | | | |
-| **GRAND TOTAL** | | **1287** |
+| **GRAND TOTAL** | | **1293** |
 
 ---
 
@@ -1392,6 +1392,12 @@ This document provides a comprehensive list of all 1287 test cases in the AutoTr
 - test_state_persists_across_separate_calls_simulating_separate_process_invocations
 - test_corrupt_state_file_is_treated_as_no_prior_state_not_a_crash
 - test_missing_state_file_parent_directory_is_created
+- test_auto_restart_false_by_default_never_attempts_restart
+- test_auto_restart_true_and_down_attempts_restart
+- test_auto_restart_true_and_running_does_not_attempt_restart
+- test_auto_restart_retries_on_every_still_down_check_not_just_transition
+- test_auto_restart_nonzero_exit_is_logged_not_raised
+- test_auto_restart_subprocess_exception_is_swallowed_not_raised
 
 ### tests/unit/test_mt5_connection.py
 

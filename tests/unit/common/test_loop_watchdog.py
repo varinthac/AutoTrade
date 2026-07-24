@@ -130,3 +130,92 @@ def test_missing_state_file_parent_directory_is_created(monkeypatch, tmp_path):
     check_loop_alive(state_path=state_path)
 
     assert state_path.exists()
+
+
+def _capture_subprocess_run(monkeypatch, returncode: int = 0):
+    calls: list[list[str]] = []
+
+    class _Result:
+        def __init__(self):
+            self.returncode = returncode
+            self.stderr = ""
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _Result()
+
+    monkeypatch.setattr(loop_watchdog_module.subprocess, "run", _fake_run)
+    return calls
+
+
+def test_auto_restart_false_by_default_never_attempts_restart(monkeypatch, tmp_path):
+    _capture_notify(monkeypatch)
+    calls = _capture_subprocess_run(monkeypatch)
+    _stub_running(monkeypatch, False)
+    state_path = tmp_path / "state.json"
+
+    check_loop_alive(state_path=state_path)
+
+    assert calls == []
+
+
+def test_auto_restart_true_and_down_attempts_restart(monkeypatch, tmp_path):
+    _capture_notify(monkeypatch)
+    calls = _capture_subprocess_run(monkeypatch)
+    _stub_running(monkeypatch, False)
+    state_path = tmp_path / "state.json"
+
+    check_loop_alive(state_path=state_path, auto_restart=True)
+
+    assert len(calls) == 1
+    assert "autotrade_control.py" in calls[0][1]
+    assert calls[0][2] == "start"
+
+
+def test_auto_restart_true_and_running_does_not_attempt_restart(monkeypatch, tmp_path):
+    _capture_notify(monkeypatch)
+    calls = _capture_subprocess_run(monkeypatch)
+    _stub_running(monkeypatch, True)
+    state_path = tmp_path / "state.json"
+
+    check_loop_alive(state_path=state_path, auto_restart=True)
+
+    assert calls == []
+
+
+def test_auto_restart_retries_on_every_still_down_check_not_just_transition(monkeypatch, tmp_path):
+    _capture_notify(monkeypatch)
+    calls = _capture_subprocess_run(monkeypatch)
+    _stub_running(monkeypatch, False)
+    state_path = tmp_path / "state.json"
+
+    check_loop_alive(state_path=state_path, auto_restart=True)  # first check, already down
+    check_loop_alive(state_path=state_path, auto_restart=True)  # still down -- no transition
+
+    assert len(calls) == 2
+
+
+def test_auto_restart_nonzero_exit_is_logged_not_raised(monkeypatch, tmp_path):
+    _capture_notify(monkeypatch)
+    _capture_subprocess_run(monkeypatch, returncode=1)
+    _stub_running(monkeypatch, False)
+    state_path = tmp_path / "state.json"
+
+    result = check_loop_alive(state_path=state_path, auto_restart=True)
+
+    assert result is False
+
+
+def test_auto_restart_subprocess_exception_is_swallowed_not_raised(monkeypatch, tmp_path):
+    _capture_notify(monkeypatch)
+    _stub_running(monkeypatch, False)
+    state_path = tmp_path / "state.json"
+
+    def _raise(cmd, **kwargs):
+        raise OSError("no such file")
+
+    monkeypatch.setattr(loop_watchdog_module.subprocess, "run", _raise)
+
+    result = check_loop_alive(state_path=state_path, auto_restart=True)
+
+    assert result is False
