@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 
 from autotrade.common import kill_switch_flag, pid_file, stop_request_flag
+from autotrade.common.config import REPO_ROOT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -48,7 +49,24 @@ def do_start() -> int:
     --adapter demo detached, in its own new console window, and returns
     immediately -- the actual "started successfully" confirmation comes via
     Telegram from inside run_shadow_loop.py itself once MT5 actually
-    connects, not from this command."""
+    connects, not from this command.
+
+    2026-07-24 incident: a restart triggered over SSH died within seconds,
+    zero log output -- consistent with Windows Job Object semantics, where
+    a process launched from a job-confined parent (Win32-OpenSSH wraps each
+    session in one) is itself part of that job by default, so it gets
+    killed the moment the parent session/job tears down, REGARDLESS of
+    CREATE_NEW_CONSOLE. That flag only controls the console window, not job
+    membership. This affects any non-interactive caller (SSH, and by the
+    same logic scripts/run_health_check.py's Task Scheduler-driven
+    auto-restart), not just a human double-clicking AutoTrade_Start.bat
+    from an already-unconfined desktop session. CREATE_BREAKAWAY_FROM_JOB
+    asks Windows to exempt the child from the caller's job entirely; most
+    real-world jobs (Explorer, Task Scheduler, OpenSSH) already set
+    JOB_OBJECT_LIMIT_BREAKAWAY_OK to allow exactly this, but a caller could
+    exist that disallows it, and CreateProcess raises immediately rather
+    than falling back silently in that case -- caught and retried below
+    without the flag so this never becomes a NEW way to fail to start."""
     status = kill_switch_flag.get_status()
     if status is not None:
         logger.error(
@@ -59,10 +77,24 @@ def do_start() -> int:
         return 1
 
     logger.info("Launching scripts/run_shadow_loop.py --adapter demo in a new console window...")
-    subprocess.Popen(
-        [sys.executable, str(RUN_SHADOW_LOOP_PATH), "--adapter", "demo"],
-        creationflags=subprocess.CREATE_NEW_CONSOLE,
-    )
+    popen_kwargs = {"cwd": str(REPO_ROOT)}
+    try:
+        subprocess.Popen(
+            [sys.executable, str(RUN_SHADOW_LOOP_PATH), "--adapter", "demo"],
+            creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_BREAKAWAY_FROM_JOB,
+            **popen_kwargs,
+        )
+    except OSError:
+        logger.warning(
+            "Launch with CREATE_BREAKAWAY_FROM_JOB failed (caller's job disallows breakaway) -- "
+            "retrying without it. If the caller's own job/session ends, this new process may be "
+            "killed along with it."
+        )
+        subprocess.Popen(
+            [sys.executable, str(RUN_SHADOW_LOOP_PATH), "--adapter", "demo"],
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            **popen_kwargs,
+        )
     logger.info(
         "Launched. Watch the new console window for live output -- a Telegram confirmation will "
         "follow once MT5 actually connects."

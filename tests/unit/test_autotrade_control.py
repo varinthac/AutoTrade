@@ -76,7 +76,35 @@ def test_do_start_launches_run_shadow_loop_in_new_console_when_not_halted(kill_f
     args, kwargs = popen_calls[0]
     assert str(autotrade_control.RUN_SHADOW_LOOP_PATH) in args
     assert "--adapter" in args and "demo" in args
-    assert kwargs["creationflags"] == subprocess.CREATE_NEW_CONSOLE
+    assert kwargs["creationflags"] == subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_BREAKAWAY_FROM_JOB
+    assert kwargs["cwd"] == str(autotrade_control.REPO_ROOT)
+
+
+def test_do_start_falls_back_without_breakaway_flag_if_caller_job_disallows_it(kill_flag_path, monkeypatch):
+    # 2026-07-24: CREATE_BREAKAWAY_FROM_JOB raises OSError outright if the
+    # calling process's own job object doesn't permit breakaway -- must not
+    # be a new way for `start` to fail entirely.
+    popen_calls = []
+
+    class _FakeProcess:
+        pass
+
+    def fake_popen(args, **kwargs):
+        popen_calls.append((args, kwargs))
+        if kwargs.get("creationflags", 0) & subprocess.CREATE_BREAKAWAY_FROM_JOB:
+            raise OSError("Access is denied")
+        return _FakeProcess()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    exit_code = autotrade_control.do_start()
+
+    assert exit_code == 0
+    assert len(popen_calls) == 2
+    _first_args, first_kwargs = popen_calls[0]
+    _second_args, second_kwargs = popen_calls[1]
+    assert first_kwargs["creationflags"] & subprocess.CREATE_BREAKAWAY_FROM_JOB
+    assert second_kwargs["creationflags"] == subprocess.CREATE_NEW_CONSOLE
 
 
 # --- do_stop() -----------------------------------------------------------

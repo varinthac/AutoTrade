@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1293 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1294 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1293 (including all parametrized variants)
+- **Total Test Count**: 1294 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -76,7 +76,7 @@ This document provides a comprehensive list of all 1293 test cases in the AutoTr
 | | test_position_metadata.py | 11 |
 | | test_stop_logic.py | 38 |
 | **Watchman Subtotal** | | **138** |
-| Scripts & CLI | test_autotrade_control.py | 19 |
+| Scripts & CLI | test_autotrade_control.py | 20 |
 | | test_clock.py | 1 |
 | | test_config.py | 29 |
 | | test_historical_download.py | 14 |
@@ -97,7 +97,7 @@ This document provides a comprehensive list of all 1293 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **298** |
 | | | |
-| **GRAND TOTAL** | | **1293** |
+| **GRAND TOTAL** | | **1294** |
 
 ---
 
@@ -1261,6 +1261,7 @@ This document provides a comprehensive list of all 1293 test cases in the AutoTr
 
 - test_do_start_refuses_when_kill_switch_active
 - test_do_start_launches_run_shadow_loop_in_new_console_when_not_halted
+- test_do_start_falls_back_without_breakaway_flag_if_caller_job_disallows_it
 - test_do_stop_requests_stop_flag_with_reason
 - test_do_emergency_stop_without_confirm_refuses_and_does_not_shell_out
 - test_do_emergency_stop_with_confirm_invokes_kill_switch_script

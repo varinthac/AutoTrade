@@ -25,6 +25,7 @@ import pandas as pd
 from autotrade.common import pid_file
 from autotrade.common.clock import RealClock
 from autotrade.common.config import (
+    REPO_ROOT,
     MT5Credentials,
     load_finnhub_api_key,
     load_mt5_credentials,
@@ -57,8 +58,13 @@ logger = logging.getLogger(__name__)
 
 # Where per-run log files are written (see _configure_logging() below) --
 # module-level constant so tests can monkeypatch it to a tmp_path, same
-# pattern as pid_file.DEFAULT_PID_PATH.
-LOG_DIR = Path("logs")
+# pattern as pid_file.DEFAULT_PID_PATH. Absolute (anchored to REPO_ROOT), not
+# a bare relative "logs" -- a relative path silently resolves against
+# whatever the *caller's* current working directory happens to be (SSH,
+# Task Scheduler, and a human's RDP console can all differ), which was found
+# 2026-07-24 to leave a run's log file written somewhere other than
+# C:\AutoTrade\logs with zero indication anything was wrong.
+LOG_DIR = REPO_ROOT / "logs"
 
 DEFAULT_SEED_BARS = 200
 
