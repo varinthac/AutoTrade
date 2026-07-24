@@ -18,12 +18,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 import urllib.request
 
+from autotrade.common import pid_file
 from autotrade.common.clock import RealClock
-from autotrade.common.config import load_telegram_credentials, load_webapp_url
+from autotrade.common.config import REPO_ROOT, load_telegram_credentials, load_webapp_url
 from autotrade.notify import telegram
 from autotrade.notify.telegram_control import (
     ControlReply,
@@ -41,6 +43,16 @@ _POLL_TIMEOUT_SEC = 30
 _SOCKET_TIMEOUT_SEC = 40
 _ERROR_BACKOFF_SEC = 4
 _BACKLOG_DISCARD_MAX_ATTEMPTS = 3
+
+# 2026-07-24: an RDP reconnect re-fires every "At log on" Task Scheduler
+# trigger for that logon event (Shadow Loop, Dashboard, Telegram Control
+# alike -- see docs/vps_deployment.md Section 6a), not just the first time.
+# run_shadow_loop.py already refuses a second instance via its own PID file
+# (common/pid_file.py); this listener had no equivalent, so a reconnect
+# could launch a second poller against the same bot token, and both would
+# fight over Telegram's getUpdates offset (each answering/mis-answering
+# some fraction of updates) rather than one cleanly refusing to start.
+PID_PATH = REPO_ROOT / "data" / "db" / "telegram_control.pid"
 
 # Registers Telegram's persistent bottom-of-keyboard command menu (see
 # telegram.set_my_commands()) -- command names given WITHOUT the leading
@@ -207,20 +219,36 @@ def main() -> int:
         )
         return 1
 
+    existing_pid = pid_file.read(PID_PATH)
+    if existing_pid is not None and pid_file.is_pid_running(existing_pid):
+        logger.error(
+            "Telegram control listener already running (PID %d) -- refusing to start a second "
+            "instance (would fight the running one over Telegram's getUpdates offset).", existing_pid,
+        )
+        return 1
+    try:
+        pid_file.write(os.getpid(), PID_PATH)
+    except FileExistsError as exc:
+        logger.error("Lost the race to claim the PID file: %s", exc)
+        return 1
+
     token, chat_id = creds
     webapp_url = load_webapp_url()
     logger.info("Telegram control listener starting (authorized chat_id=%s).", chat_id)
-    telegram.set_my_commands(_BOT_COMMANDS, bot_token=token)
-    run_poll_loop(
-        token, chat_id, poll_fn=_get_updates, send_fn=telegram.send_message,
-        send_photo_fn=telegram.send_photo,
-        answer_callback_fn=lambda callback_query_id: telegram.answer_callback_query(
-            callback_query_id, bot_token=token
-        ),
-        sleep_fn=time.sleep, clock=RealClock(),
-        max_iterations=args.max_iterations,
-        webapp_url=webapp_url,
-    )
+    try:
+        telegram.set_my_commands(_BOT_COMMANDS, bot_token=token)
+        run_poll_loop(
+            token, chat_id, poll_fn=_get_updates, send_fn=telegram.send_message,
+            send_photo_fn=telegram.send_photo,
+            answer_callback_fn=lambda callback_query_id: telegram.answer_callback_query(
+                callback_query_id, bot_token=token
+            ),
+            sleep_fn=time.sleep, clock=RealClock(),
+            max_iterations=args.max_iterations,
+            webapp_url=webapp_url,
+        )
+    finally:
+        pid_file.remove(PID_PATH)
     return 0
 
 

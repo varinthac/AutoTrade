@@ -7,6 +7,7 @@ script is loaded directly via importlib."""
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -129,6 +130,59 @@ def test_main_registers_bot_commands_at_startup_before_polling(monkeypatch):
     commands, kwargs = set_commands_calls[0]
     assert commands == run_telegram_control._BOT_COMMANDS
     assert kwargs == {"bot_token": "TOKEN"}
+
+
+# --- main(): double-launch guard ---------------------------------------------
+
+
+def test_main_refuses_second_instance_while_one_is_genuinely_running(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "argv", ["run_telegram_control.py", "--max-iterations", "0"])
+    monkeypatch.setattr(run_telegram_control, "load_telegram_credentials", lambda: ("TOKEN", "12345"))
+    monkeypatch.setattr(run_telegram_control, "PID_PATH", tmp_path / "telegram_control.pid")
+    monkeypatch.setattr(run_telegram_control.pid_file, "is_pid_running", lambda pid: True)
+    poll_calls = []
+    monkeypatch.setattr(run_telegram_control, "_get_updates", lambda *a, **kw: poll_calls.append(a) or [])
+    (tmp_path / "telegram_control.pid").write_text("999", encoding="utf-8")
+
+    exit_code = run_telegram_control.main()
+
+    assert exit_code == 1
+    assert poll_calls == []
+
+
+def test_main_writes_and_removes_pid_file_around_a_clean_run(monkeypatch, tmp_path):
+    pid_path = tmp_path / "telegram_control.pid"
+    monkeypatch.setattr(sys, "argv", ["run_telegram_control.py", "--max-iterations", "0"])
+    monkeypatch.setattr(run_telegram_control, "load_telegram_credentials", lambda: ("TOKEN", "12345"))
+    monkeypatch.setattr(run_telegram_control, "PID_PATH", pid_path)
+    monkeypatch.setattr(run_telegram_control.telegram, "set_my_commands", lambda *a, **kw: True)
+    written_while_running = {}
+
+    def fake_run_poll_loop(*args, **kwargs):
+        written_while_running["pid"] = pid_path.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(run_telegram_control, "run_poll_loop", fake_run_poll_loop)
+
+    exit_code = run_telegram_control.main()
+
+    assert exit_code == 0
+    assert written_while_running["pid"] == str(os.getpid())
+    assert not pid_path.exists()
+
+
+def test_main_overwrites_stale_pid_file_from_a_no_longer_running_process(monkeypatch, tmp_path):
+    pid_path = tmp_path / "telegram_control.pid"
+    pid_path.write_text("999", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["run_telegram_control.py", "--max-iterations", "0"])
+    monkeypatch.setattr(run_telegram_control, "load_telegram_credentials", lambda: ("TOKEN", "12345"))
+    monkeypatch.setattr(run_telegram_control, "PID_PATH", pid_path)
+    monkeypatch.setattr(run_telegram_control.pid_file, "is_pid_running", lambda pid: False)
+    monkeypatch.setattr(run_telegram_control.telegram, "set_my_commands", lambda *a, **kw: True)
+    monkeypatch.setattr(run_telegram_control, "_get_updates", lambda token, offset, timeout_sec: [])
+
+    exit_code = run_telegram_control.main()
+
+    assert exit_code == 0
 
 
 # --- run_poll_loop(): startup backlog discard --------------------------------

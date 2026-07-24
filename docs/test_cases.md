@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1294 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1301 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1294 (including all parametrized variants)
+- **Total Test Count**: 1301 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -90,14 +90,15 @@ This document provides a comprehensive list of all 1294 test cases in the AutoTr
 | | test_poller.py | 10 |
 | | test_run_auditor.py | 42 |
 | | test_run_backtest.py | 24 |
+| | test_run_dashboard.py | 4 |
 | | test_run_scheduled_daily_report.py | 3 |
 | | test_run_shadow_loop.py | 33 |
-| | test_run_telegram_control.py | 23 |
+| | test_run_telegram_control.py | 26 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **298** |
+| **Scripts & CLI Subtotal** | | **305** |
 | | | |
-| **GRAND TOTAL** | | **1294** |
+| **GRAND TOTAL** | | **1301** |
 
 ---
 
@@ -1527,6 +1528,13 @@ This document provides a comprehensive list of all 1294 test cases in the AutoTr
 - test_main_writes_an_envelope_with_risk_voice_modeled_true
 - test_main_with_commission_zero_writes_envelope_with_cost_model_complete_true
 
+### tests/unit/test_run_dashboard.py
+
+- test_main_refuses_second_instance_while_one_is_genuinely_running
+- test_main_writes_and_removes_pid_file_around_a_clean_run
+- test_main_overwrites_stale_pid_file_from_a_no_longer_running_process
+- test_main_removes_pid_file_even_if_app_run_raises
+
 ### tests/unit/test_run_scheduled_daily_report.py
 
 - test_resolves_yesterday_from_local_date_and_passes_it_explicitly
@@ -1576,6 +1584,9 @@ This document provides a comprehensive list of all 1294 test cases in the AutoTr
 - test_main_passes_webapp_url_from_config_to_run_poll_loop
 - test_main_passes_none_webapp_url_when_not_configured
 - test_main_registers_bot_commands_at_startup_before_polling
+- test_main_refuses_second_instance_while_one_is_genuinely_running
+- test_main_writes_and_removes_pid_file_around_a_clean_run
+- test_main_overwrites_stale_pid_file_from_a_no_longer_running_process
 - test_startup_backlog_is_discarded_and_offset_advances_past_it
 - test_startup_backlog_discard_drains_multiple_pages
 - test_fresh_update_after_backlog_skip_produces_a_sent_reply
