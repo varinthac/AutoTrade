@@ -3,18 +3,16 @@ dashboard/views.py's pure logic -- same seeded-tmp_path DB convention as
 tests/unit/store/test_journal.py / tests/unit/test_run_auditor.py."""
 from __future__ import annotations
 
-import logging
 from contextlib import contextmanager
 from datetime import date, datetime
 
-import MetaTrader5 as mt5
 import pandas as pd
 import pytest
 
 from autotrade.auditor.daily_report import build_daily_report
 from autotrade.dashboard import views
 from autotrade.dashboard import app as dashboard_app
-from autotrade.dashboard.app import create_app, get_current_server_time, get_open_positions_display
+from autotrade.dashboard.app import create_app, get_current_server_time
 from autotrade.store import journal
 
 
@@ -164,141 +162,13 @@ def test_page_still_renders_200_when_mt5_session_raises(db_path, monkeypatch):
     assert "unavailable" in resp.get_data(as_text=True).lower()
 
 
-# --- get_open_positions_display / open positions on /trades (Feature B) ---
-
-
-class _FakeOpenPosition:
-    def __init__(self, symbol, type_, volume, price_open, price_current, sl, tp, profit, ticket=1):
-        self.symbol = symbol
-        self.type = type_
-        self.volume = volume
-        self.price_open = price_open
-        self.price_current = price_current
-        self.sl = sl
-        self.tp = tp
-        self.profit = profit
-        self.ticket = ticket
-
-
-def test_get_open_positions_display_returns_none_when_mt5_session_raises(monkeypatch):
-    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
-    monkeypatch.setattr(dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a"}})
-
-    def _raise(creds, **kwargs):
-        raise RuntimeError("MT5 terminal not running")
-
-    monkeypatch.setattr(dashboard_app, "mt5_session", _raise)
-
-    assert get_open_positions_display() is None
-
-
-def test_get_open_positions_display_returns_none_when_positions_get_returns_none(monkeypatch):
-    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
-    monkeypatch.setattr(dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a"}})
-
-    @contextmanager
-    def _fake_session(creds, **kwargs):
-        yield
-
-    monkeypatch.setattr(dashboard_app, "mt5_session", _fake_session)
-    monkeypatch.setattr(dashboard_app.mt5, "positions_get", lambda: None)
-
-    assert get_open_positions_display() is None
-
-
-def test_get_open_positions_display_returns_empty_list_for_genuinely_zero_positions(monkeypatch):
-    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
-    monkeypatch.setattr(dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a"}})
-
-    @contextmanager
-    def _fake_session(creds, **kwargs):
-        yield
-
-    monkeypatch.setattr(dashboard_app, "mt5_session", _fake_session)
-    monkeypatch.setattr(dashboard_app.mt5, "positions_get", lambda: ())
-
-    result = get_open_positions_display()
-
-    assert result == []
-    assert result is not None
-
-
-def test_get_open_positions_display_maps_broker_symbol_and_skips_unmapped(monkeypatch, caplog):
-    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
-    monkeypatch.setattr(
-        dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a", "EURUSD": "EURUSD.a"}},
-    )
-
-    @contextmanager
-    def _fake_session(creds, **kwargs):
-        yield
-
-    monkeypatch.setattr(dashboard_app, "mt5_session", _fake_session)
-    monkeypatch.setattr(
-        dashboard_app.mt5, "positions_get",
-        lambda: (
-            _FakeOpenPosition(
-                symbol="XAUUSD.a", type_=mt5.POSITION_TYPE_BUY, volume=0.1, price_open=2400.0,
-                price_current=2410.0, sl=2390.0, tp=2420.0, profit=10.0, ticket=1,
-            ),
-            _FakeOpenPosition(
-                symbol="UNKNOWNSYMBOL", type_=mt5.POSITION_TYPE_BUY, volume=0.1, price_open=1.0,
-                price_current=1.1, sl=0.9, tp=1.2, profit=1.0, ticket=2,
-            ),
-        ),
-    )
-
-    with caplog.at_level(logging.WARNING):
-        result = get_open_positions_display()
-
-    assert len(result) == 1
-    assert result[0].symbol == "XAUUSD"
-    assert result[0].direction == "BUY"
-    assert any("no canonical mapping" in record.message for record in caplog.records)
-
-
-def test_get_open_positions_display_maps_sell_type_to_sell_direction(monkeypatch):
-    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
-    monkeypatch.setattr(dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a"}})
-
-    @contextmanager
-    def _fake_session(creds, **kwargs):
-        yield
-
-    monkeypatch.setattr(dashboard_app, "mt5_session", _fake_session)
-    monkeypatch.setattr(
-        dashboard_app.mt5, "positions_get",
-        lambda: (
-            _FakeOpenPosition(
-                symbol="XAUUSD.a", type_=mt5.POSITION_TYPE_SELL, volume=0.2, price_open=2410.0,
-                price_current=2405.0, sl=2420.0, tp=2390.0, profit=-5.0, ticket=1,
-            ),
-        ),
-    )
-
-    result = get_open_positions_display()
-
-    assert result[0].direction == "SELL"
-    assert result[0].profit == -5.0
-
-
-def test_get_open_positions_display_passes_a_short_timeout_ms_to_mt5_session(monkeypatch):
-    monkeypatch.setattr(dashboard_app, "load_mt5_credentials", lambda: object())
-    monkeypatch.setattr(dashboard_app, "load_yaml_config", lambda name: {"symbols": {"XAUUSD": "XAUUSD.a"}})
-    captured = {}
-
-    @contextmanager
-    def _fake_session(creds, **kwargs):
-        captured.update(kwargs)
-        yield
-
-    monkeypatch.setattr(dashboard_app, "mt5_session", _fake_session)
-    monkeypatch.setattr(dashboard_app.mt5, "positions_get", lambda: ())
-
-    get_open_positions_display()
-
-    assert captured.get("timeout_ms") is not None
-    assert captured["timeout_ms"] <= 5000
+# --- open positions on /trades (Feature B) ---------------------------------
+# Low-level get_open_positions_display() MT5-mocking tests now live in
+# tests/unit/dashboard/test_positions.py, alongside dashboard/positions.py
+# (moved when get_open_positions_display was extracted out of this module so
+# notify/telegram_control.py could reuse it without a transitive Flask
+# import). The tests below only exercise this module's own concern: how the
+# /trades route renders whatever get_open_positions_display() returns.
 
 
 def test_trades_page_shows_open_positions_when_available(db_path, monkeypatch):

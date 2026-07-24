@@ -3,6 +3,15 @@ status/emergency-stop) -- no network I/O here, see
 scripts/run_telegram_control.py for the polling/`urllib` boundary. Kept
 separate so the authorization/confirmation/dispatch logic is unit-testable
 without mocking `urllib` at all.
+
+/positions is this module's one accepted exception to being otherwise
+MT5-free (same "kept here so this listener stays MT5-free" reasoning
+_handle_daily() applies to daily-report date derivation): it calls
+`dashboard/positions.py`'s `get_open_positions_display()`, a Flask-free MT5
+query shared with `dashboard/app.py`'s `/trades` page, rather than
+duplicating the mt5.positions_get() + symbol-mapping + None-vs-empty-list
+logic here or importing `dashboard/app.py` itself (which would pull in a
+transitive Flask dependency this listener has no other reason to need).
 """
 from __future__ import annotations
 
@@ -13,6 +22,7 @@ from datetime import datetime, timedelta
 from autotrade.auditor.daily_report import build_daily_report, format_daily_report
 from autotrade.common.clock import Clock
 from autotrade.dashboard import views
+from autotrade.dashboard.positions import get_open_positions_display
 from autotrade.gui import control as gui_control
 from autotrade.store import journal
 from autotrade.store.models import DEFAULT_PAPER_DB_PATH
@@ -27,7 +37,7 @@ _STDERR_TRUNCATE_CHARS = 300
 # own pagination, just a smaller fixed count instead of a page param.
 _TRADES_REPLY_LIMIT = 10
 
-_COMMANDS = {"/start", "/stop", "/status", "/emergency_stop", "/trades", "/daily", "/help"}
+_COMMANDS = {"/start", "/stop", "/status", "/emergency_stop", "/trades", "/positions", "/daily", "/help"}
 
 _USAGE_TEXT = (
     "AutoTrade control commands:\n"
@@ -36,6 +46,7 @@ _USAGE_TEXT = (
     "/status - report loop/kill-switch/stop-flag state\n"
     "/emergency_stop - halt trading AND close every open position at market (requires confirmation)\n"
     "/trades - most recent 10 trades (paper mode)\n"
+    "/positions - currently open positions\n"
     "/daily - daily trade-autopsy report for the most recent recorded day"
 )
 
@@ -154,6 +165,34 @@ def _handle_trades() -> str:
     return "\n".join(lines)
 
 
+def _format_position_line(row: views.OpenPositionRow) -> str:
+    return (
+        f"{row.symbol} {row.direction} {row.volume} @{row.price_open:.2f} "
+        f"(now {row.price_current:.2f}) P/L={row.profit:+.2f} SL={row.sl:.2f} TP={row.tp:.2f}"
+    )
+
+
+def _handle_positions() -> str:
+    # get_open_positions_display() already catches its own MT5 failures
+    # (returning None rather than raising, per its own docstring), so this
+    # try/except is only a last line of defense against something outside
+    # that scope (e.g. a formatting bug in _format_position_line) -- same
+    # "must still guarantee a reply" reasoning as _handle_trades/_handle_daily,
+    # since run_poll_loop advances the update offset before this return
+    # value is used.
+    try:
+        rows = get_open_positions_display()
+    except Exception as exc:
+        return f"Failed to fetch open positions: {exc}. Try again."
+    if rows is None:
+        return "Could not reach MT5 -- open positions unavailable. Check the terminal/connection."
+    if not rows:
+        return "No open positions."
+    lines = [f"{len(rows)} open position(s):"]
+    lines.extend(_format_position_line(row) for row in rows)
+    return "\n".join(lines)
+
+
 def _handle_daily() -> str:
     # Same failure-reply guarantee as _handle_trades, and for the same
     # reason (run_poll_loop's offset advancement means an uncaught exception
@@ -195,6 +234,8 @@ def handle_update(
         )
     if command == "/trades":
         return _handle_trades()
+    if command == "/positions":
+        return _handle_positions()
     if command == "/daily":
         return _handle_daily()
     if command == "/help":

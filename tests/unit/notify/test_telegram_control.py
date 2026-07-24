@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from autotrade.auditor.daily_report import build_daily_report, format_daily_report
+from autotrade.dashboard import views
 from autotrade.notify import telegram_control
 from autotrade.notify.telegram_control import PendingConfirmation, handle_update, has_text_message, is_authorized, parse_command
 from autotrade.store import journal
@@ -337,6 +338,91 @@ def test_trades_command_caps_at_ten_most_recent(db_path):
     assert "SYM00" not in reply
 
 
+# --- /positions ---------------------------------------------------------
+
+
+def _open_position_row(**overrides):
+    kwargs = dict(
+        ticket=1, symbol="XAUUSD", direction="SELL", volume=0.01, price_open=4051.48,
+        price_current=4048.20, sl=4091.52, tp=3971.40, profit=15.60,
+    )
+    kwargs.update(overrides)
+    return views.OpenPositionRow(**kwargs)
+
+
+def test_positions_command_shows_no_open_positions_message_for_empty_list(monkeypatch):
+    monkeypatch.setattr(telegram_control, "get_open_positions_display", lambda: [])
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/positions"), "12345", pending, FixedClock(NOW))
+
+    assert reply == "No open positions."
+
+
+def test_positions_command_shows_distinct_message_when_mt5_unreachable(monkeypatch):
+    monkeypatch.setattr(telegram_control, "get_open_positions_display", lambda: None)
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/positions"), "12345", pending, FixedClock(NOW))
+
+    assert "mt5" in reply.lower()
+    assert reply != "No open positions."
+
+
+def test_positions_command_formats_seeded_position_field_values(monkeypatch):
+    monkeypatch.setattr(telegram_control, "get_open_positions_display", lambda: [_open_position_row()])
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/positions"), "12345", pending, FixedClock(NOW))
+
+    assert "XAUUSD" in reply
+    assert "SELL" in reply
+    assert "0.01" in reply
+    assert "4051.48" in reply
+    assert "4048.20" in reply
+    assert "+15.60" in reply
+    assert "4091.52" in reply
+    assert "3971.40" in reply
+
+
+def test_positions_command_lists_multiple_positions(monkeypatch):
+    rows = [
+        _open_position_row(ticket=1, symbol="XAUUSD"),
+        _open_position_row(ticket=2, symbol="EURUSD", direction="BUY"),
+    ]
+    monkeypatch.setattr(telegram_control, "get_open_positions_display", lambda: rows)
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/positions"), "12345", pending, FixedClock(NOW))
+
+    assert "2 open position(s)" in reply
+    assert "XAUUSD" in reply
+    assert "EURUSD" in reply
+
+
+def test_positions_command_returns_graceful_reply_not_exception_when_display_raises(monkeypatch):
+    def _raise():
+        raise Exception("MT5 terminal not running")
+
+    monkeypatch.setattr(telegram_control, "get_open_positions_display", _raise)
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/positions"), "12345", pending, FixedClock(NOW))
+
+    assert reply is not None
+    assert "Failed to fetch open positions" in reply
+    assert "MT5 terminal not running" in reply
+
+
+def test_unauthorized_sender_cannot_reach_positions_command(monkeypatch):
+    monkeypatch.setattr(telegram_control, "get_open_positions_display", lambda: [_open_position_row()])
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(99999, "/positions"), "12345", pending, FixedClock(NOW))
+
+    assert reply is None
+
+
 def test_daily_command_empty_db_returns_no_trades_message(db_path):
     pending = PendingConfirmation()
 
@@ -411,6 +497,7 @@ def test_help_command_lists_trades_and_daily_commands():
     reply = handle_update(_update(12345, "/help"), "12345", pending, FixedClock(NOW))
 
     assert "/trades" in reply
+    assert "/positions" in reply
     assert "/daily" in reply
 
 
