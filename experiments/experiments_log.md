@@ -4023,3 +4023,124 @@ best read as gold-bull regime beta, not established stable alpha, and should NOT
 Recommended next steps (each its OWN pre-registered experiment): (i) real-rate swap re-run of the full history;
 (ii) regime-awareness as an explicit hypothesis tested on 2009-2019 data; (iii) keep the free real out-of-sample
 (paper trading) running.
+
+## EXP-019 2026-07-24 — SWAP-ON full-pipeline re-run of the ADOPTED config (Option 1; cost-honesty, NO behavior change)
+Status: PRE-REGISTERED (running) — Train+Val only; Test (2025-07-21 → 2026-07-21) NOT touched (see Test-touch note).
+Follow-up to EXP-018 (swap capability built, default OFF). This is NOT a parameter tune and NOT a strategy change:
+it re-runs the CURRENT adopted config with the swap model ENABLED using EXP-018's sourced IC Markets demo rates
+(long −$53.2 / short +$36.8 per lot per night, 3× Wednesday) and asks what the promotion-gate picture looks like
+once total costs are complete, vs. the swap-OFF numbers already on record.
+Hypothesis / mechanism: live already pays swap (store/models.py folds it into TradeRecord.cost); the backtest did
+not. Folding it in can only REDUCE PF/avgR (long-swap drag > short-swap credit on a mildly long-biased book). The
+question is whether the drag changes any gate verdict.
+Metric that decides: Gate-1 (run_auditor promotion --gate backtest) criteria — PF ≥ 1.3, DD ≤ 15%, trades ≥ 200,
+PF_excl_top5 > 1.0 — evaluated on Train+Val (n≈1006 ≥ 200, so the numeric thresholds are meaningfully checkable
+without the held-out Test year). Report swap-OFF vs swap-ON side by side; per-year y1/y2/y3 + Val breakdown.
+Harness: experiments/exp019_020_swap_regime_harness.py (VERBATIM run_backtest loop; swap needs no loop change —
+CostModelConfig.swap_model is consumed by the reused _close_trade). Commission $0 (IC Markets Standard, current
+account per MEMORY), $10k equity (matches EXP-017's per-year baseline for direct comparability). FIDELITY:
+regime-OFF + swap-OFF re-sim == real run_backtest byte-for-byte on y1 (265 trades) — confirmed.
+Test-touch note (rule 2): a TRUE Gate-1 promotion run must be out-of-sample (is_out_of_sample=True), i.e. the
+held-out Test year. Per project convention Test has already been CONSUMED by other families (EXP-003 session,
+EXP-008 watchman) but each NEW family gets its own one-touch; this cost-honesty re-run is not a new tuning family
+and does not, by itself, justify spending a Test touch. Per the user's explicit instruction, Train+Val is
+reported as the gate PICTURE and the definitive Test-year gate run is flagged as needing explicit user sign-off.
+
+## EXP-020 2026-07-24 — Trend-REGIME filter (Option 2; a genuinely NEW pre-registered strategy hypothesis)
+Status: PRE-REGISTERED (running) — Train (y1/y2/y3) tune + Val confirm ONLY; Test NOT touched regardless of result.
+Hypothesis / mechanism: the cross-project finding + this repo's own per-year record (y2 2022-23 sideways PF 0.975,
+net −$406, LOSING; y3 2023-24 trending PF 1.224, +$3,321) say the edge is trend/bull-regime beta, near-absent in
+sideways/counter-trend regimes. A trend-ALIGNMENT gate that stands aside when price is not trending in the signal's
+direction should cut the sideways-regime losers (improve y2) without gutting the trending edge (preserve y3).
+Exact rule (pre-registered, causal, existing indicators only — features/indicators.ema): at the signalling closed
+bar i, ALLOW a Council BUY only if close[i] > EMA(period)[i] AND EMA[i] > EMA[i−k] (rising); ALLOW a SELL only if
+close[i] < EMA[i] AND EMA[i] < EMA[i−k] (falling); otherwise SKIP the signal. Applied at the accept step (before
+Shield); everything else unchanged. This is NOT a re-tune of any existing threshold (bull/bear 70, tp 2.0, etc.).
+Pre-registered grid (one coupled pair = the classifier): period ∈ {100,200,300} × k ∈ {12,24,48} = 9 configs
+(< 20, multiple-testing OK). PRIMARY candidate declared up front: period=200, k=24 (≈8 trading-day trend, 1-day
+slope). The other 8 exist ONLY for the plateau/robustness check, not to shop for a winner.
+Pass/fail bar (pre-registered BEFORE seeing results; ALL required for a RECOMMEND):
+ (a) y2 2022-23 (the losing sideways year): PF ≥ 1.00 (from 0.975) OR net loss cut ≥ 50% (from −$406) — i.e. it
+     MUST measurably reduce losses in the historically-losing period, the whole point of the filter;
+ (b) y3 2023-24 (trending): PF stays ≥ 1.04 (within 15% of baseline 1.224) AND net ≥ ~$1,650 (≥ ~50% of the
+     +$3,321 baseline retained) — the filter must NOT destroy the trending-period edge;
+ (c) y1 + Val: aggregate expectancy stays positive (PF ≥ 1.0), and the sample stays ≥ 100 trades/window (rule 6 —
+     a filter that starves trade count below the floor is "insufficient sample", not a win);
+ (d) Plateau (rule 5): the chosen (period,k) must have grid-neighbors behaving similarly — no lucky isolated spike.
+Decision policy: even if ALL of (a)-(d) clear on Train/Val, do NOT auto-adopt into config/base.yaml and do NOT
+touch any promotion gate (user instruction 3) — recommend back to the user with full evidence, same escalation
+pattern as every gate-adjacent decision in this project. Test year stays pristine for a future user-authorised
+confirmation. Harness: experiments/exp019_020_swap_regime_harness.py (regime gate OFF ⇒ byte-identical to the
+engine; fidelity-checked). Cumulative regime-filter family multiple-testing count: 9 / 9 (first-ever this family).
+
+### EXP-019 + EXP-020 RESULTS (run 2026-07-24) — raw output experiments/exp019_020_out.txt
+FIDELITY: regime-OFF + swap-OFF re-sim == real run_backtest on y1, 265 trades byte-for-byte (identical=true). And
+swap-OFF per-year PF/net reproduce EXP-017's baseline EXACTLY (y1 1.033/+502, y2 0.975/−406, y3 1.224/+3321) —
+harness trusted. ($10k equity, commission $0 IC Markets Standard.) trainval (23k-bar) single-run was NOT completed
+(the council precompute is ~O(n²) per-bar and impractically slow at 23k bars); EXP-018's already-recorded Train+Val
+single-run numbers (n=1006, $50k) are used for the aggregate gate picture and are consistent with these per-year runs.
+
+#### EXP-019 (Option 1 — swap ON vs OFF, NO behavior change), PF | net$ | avgR | DD% | PF_ex5:
+              swap OFF                              swap ON
+ y1   1.033 | +502  | 0.027 | 14.9 | 0.96      1.016 | +232  | 0.016 | 15.6 | 0.95
+ y2   0.975 | −406  | −0.016| 28.9 | 0.90      0.954 | −733  | −0.028| 30.5 | 0.88
+ y3   1.224 | +3321 | 0.139 | 14.5 | 1.13      1.212 | +3122 | 0.131 | 14.5 | 1.12
+ val  1.078 | +1158 | 0.050 | 10.3 | 0.999     1.050 | +715  | 0.037 | 10.8 | 0.97
+ Train+Val (EXP-018 recorded, n=1006, $50k):
+      1.072 | +25,303 | 0.0498 | 30.4          1.053 | +17,885 | 0.0393 | 31.8   (Δ PF −0.019, avgR −21%, DD +1.4pp)
+GATE-1 PICTURE on Train+Val (run_auditor promotion --gate backtest thresholds; PF≥1.3, DD≤15%, trades≥200,
+PF_ex5>1.0): swap OFF → trades 1006 PASS, PF 1.072 FAIL, DD 30.4% FAIL, PF_ex5<1.0 FAIL ⇒ GATE FAILS.
+swap ON → PF 1.053 FAIL, DD 31.8% FAIL, PF_ex5<1.0 FAIL, trades PASS ⇒ GATE FAILS (worse).
+VERDICT EXP-019: Swap ON does NOT change the Gate-1 pass/fail — the gate ALREADY fails on Train+Val without swap
+(PF 1.07 vs 1.3 required; DD ~30% vs 15%; PF_ex5 already <1.0). Swap makes the shortfall WIDER (−0.019 PF, −21%
+of expectancy, +1.4pp DD), reproducing EXP-018's materiality finding on a fresh full-pipeline per-year run and
+never flipping a year on its own but deepening y2's loss and eroding the Val edge. Cost-honesty CONFIRMED and now
+routinely runnable via the harness; no behavior change, nothing to adopt into config. NOTE (Test-touch, rule 2):
+a TRUE Gate-1 must be out-of-sample (the held-out Test year 2025-07-21→2026-07-21). Not run — flagged to user for
+explicit sign-off. Even so, the prior Test-year figure on record (PF ~1.28, gold-bull year) is ALSO < 1.3 and a
+swap haircut would push it further below, so a Test run is very unlikely to reverse the Train+Val FAIL.
+
+#### EXP-020 (Option 2 — trend-regime filter), swap OFF, PF | net$  (baseline = regime OFF):
+ config       y1 (2021-22)      y2 (2022-23)      y3 (2023-24)      VAL (deciding)
+ baseline     1.033 | +502      0.975 | −406      1.224 | +3321     1.078 | +1158
+ p100_k12     0.973 | −369      0.990 | −133      1.199 | +2755     1.120 | +1567
+ p100_k24     0.903 | −1230     1.050 | +693      1.279 | +3676     1.034 | +409
+ p100_k48     0.957 | −461      1.088 | +1109     1.252 | +3070     1.076 | +869
+ p200_k12     0.989 | −136      1.080 | +1078     1.269 | +3460     1.104 | +1301
+ p200_k24 *   1.084 | +996      1.142 | +1896     1.346 | +4100     1.050 | +602
+ p200_k48     1.064 | +667      1.123 | +1556     1.278 | +3098     0.983 | −203
+ p300_k12     1.002 | +24       1.041 | +501      1.303 | +3524     1.056 | +651
+ p300_k24     0.958 | −460      1.105 | +1278     1.304 | +3505     1.026 | +269
+ p300_k48     0.927 | −755      1.092 | +1080     1.276 | +2828     1.019 | +212
+ (* = pre-declared PRIMARY. All trade counts 174–252/window, ≥100 floor OK.)
+
+TRAIN story (encouraging, hypothesis DIRECTIONALLY REAL): nearly every config RESCUES the losing sideways year y2
+(0.975→1.04–1.14, all positive) AND PRESERVES/improves the trending year y3 (1.20–1.35 vs 1.224). The primary
+p200_k24 improves ALL THREE Train years (y1 +0.051 PF, y2 +0.167, y3 +0.122) — rare in this project. On Train the
+filter genuinely does what it was designed to do.
+VALIDATION story (the deciding window — REJECTS it): the primary p200_k24 falls to PF 1.050, BELOW the no-filter
+baseline (1.078), and its direct grid-neighbor p200_k48 LOSES money (0.983 / −$203). The Val-best cell is p100_k12
+(1.120) — but that cell is a Train UNDERPERFORMER (y1 0.973, y3 1.199, both below baseline), i.e. choosing it would
+be fishing the Val set. The Train ranking and the Val ranking INVERT (Train-best ≠ Val-best) — the textbook overfit
+signature this split exists to catch (same failure mode as EXP-001 C4, EXP-016). No config convincingly beats
+baseline on BOTH splits; the most cross-consistent (p200_k12: +0.026 PF on Val) is inside the multiple-testing
+noise band (rule 7: 9 configs, √ln9≈1.48; a ~0.03 PF gap on ~200 trades is ≲1 SE).
+Robustness: neighborhood/plateau ✗ (primary's neighbor p200_k48 loses on Val; response surface inverts Train→Val),
+per-year ✓ on Train only / ✗ out-of-sample (Val underperforms baseline), top-5 n.a. (rejected before Test), walk-
+forward n.a.
+Honest note on my own pre-registration: pass-bar (c) was under-strict — it required only Val PF ≥ 1.0, not Val >
+baseline. Under that literal (too-weak) letter the primary squeaks by; under the STANDING project discipline (a
+change must beat the no-filter baseline on the deciding Validation window, and sit on a plateau there) it does NOT.
+The standing rules govern; a weak pre-registration cannot license adopting a candidate that is worse than baseline OOS.
+
+### VERDICT EXP-020 — REJECT for adoption (config/base.yaml UNCHANGED; no gate touched; Test NOT touched)
+The trend-regime hypothesis is the most promising regime signal this project has produced — on Train it reliably
+converts the sideways-year loss to a profit and keeps the trending-year edge, across nearly the whole grid, which
+is qualitatively different from a pure curve-fit. BUT it does not survive out-of-sample: the Train-optimal
+parameterisation underperforms the no-filter baseline on Validation and the parameter ranking inverts across the
+split. Per plateau-beats-peak (rule 5) and multiple-testing honesty (rule 7): no parameterisation earns a live
+recommendation now. Do NOT adopt. RECOMMENDED (user decides): keep the idea alive and test it as its own pre-
+registered experiment on the cross-project pre-2021 (2009-2019) different-regime data — a genuine out-of-regime OOS
+— exactly EXP-018's next-step (ii); only if it beats baseline THERE should a Test-year confirmation be spent.
+Test set (2025-07-21→2026-07-21) left UNTOUCHED — this new family's one-touch budget is UNSPENT (nothing cleared
+Val, so nothing earned a Test confirmation). Auditor gate thresholds NOT touched (rule 8).
