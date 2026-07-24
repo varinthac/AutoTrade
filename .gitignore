@@ -45,3 +45,5 @@ experiments/*_trades.jsonl
 # Local scratch copies of VPS state (pulled down for one-off inspection,
 # never needed to run the system itself)
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal

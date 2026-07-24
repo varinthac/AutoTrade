@@ -129,6 +129,80 @@ def test_long_stale_file_returns_none(tmp_path):
     assert provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END) is None
 
 
+# --- 2026-07-25: staleness alerting (notify()) --------------------------------
+
+
+def _capture_notify(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(mcp, "notify", lambda text: calls.append(text))
+    return calls
+
+
+def test_going_stale_notifies_once(tmp_path, monkeypatch):
+    calls = _capture_notify(monkeypatch)
+    stale_mtime = NOW - timedelta(days=3)
+    _write_export(tmp_path, [_row()], mtime=stale_mtime)
+    provider = _provider(tmp_path)
+
+    provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END)
+
+    assert len(calls) == 1
+    assert "STALE" in calls[0]
+
+
+def test_repeated_calls_while_still_stale_do_not_re_notify(tmp_path, monkeypatch):
+    calls = _capture_notify(monkeypatch)
+    stale_mtime = NOW - timedelta(days=3)
+    _write_export(tmp_path, [_row()], mtime=stale_mtime)
+    provider = _provider(tmp_path)
+
+    provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END)
+    provider.get_high_impact_events("EUR", WINDOW_START, WINDOW_END)
+    provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END)
+
+    assert len(calls) == 1
+
+
+def test_recovering_from_stale_notifies_recovery(tmp_path, monkeypatch):
+    calls = _capture_notify(monkeypatch)
+    stale_mtime = NOW - timedelta(days=3)
+    _write_export(tmp_path, [_row()], mtime=stale_mtime)
+    provider = _provider(tmp_path)
+    provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END)  # goes stale, alerts
+
+    _write_export(tmp_path, [_row()], mtime=NOW)  # a fresh write "restarts" the export
+    provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END)
+
+    assert len(calls) == 2
+    assert "STALE" in calls[0]
+    assert "fresh again" in calls[1] or "✅" in calls[1]
+
+
+def test_never_stale_never_notifies(tmp_path, monkeypatch):
+    calls = _capture_notify(monkeypatch)
+    _write_export(tmp_path, [_row()], mtime=NOW)
+    provider = _provider(tmp_path)
+
+    provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END)
+    provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END)
+
+    assert calls == []
+
+
+def test_fresh_after_recovery_does_not_re_notify_recovery_again(tmp_path, monkeypatch):
+    calls = _capture_notify(monkeypatch)
+    stale_mtime = NOW - timedelta(days=3)
+    _write_export(tmp_path, [_row()], mtime=stale_mtime)
+    provider = _provider(tmp_path)
+    provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END)  # stale, alerts
+
+    _write_export(tmp_path, [_row()], mtime=NOW)
+    provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END)  # recovers, alerts
+    provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END)  # still fresh -- quiet
+
+    assert len(calls) == 2
+
+
 def test_malformed_rows_are_skipped_individually_not_fatal(tmp_path):
     rows = [
         _row(event_time="not-a-date"),  # unparseable timestamp

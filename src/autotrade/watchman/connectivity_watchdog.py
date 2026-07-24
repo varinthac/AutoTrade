@@ -40,6 +40,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from autotrade.common.clock import Clock
+from autotrade.notify.telegram import notify
 from autotrade.store import journal
 
 logger = logging.getLogger(__name__)
@@ -72,9 +73,16 @@ class ConnectivityWatchdog:
         """Call this immediately after any successful MT5 round-trip (e.g.
         once per Watchman loop cycle, right after `get_open_positions()`
         succeeds) -- resets the watchdog's clock and re-arms the alert for
-        the next outage."""
+        the next outage. If the outage just ending was one that already
+        alerted (past `timeout_minutes`), sends a matching "restored"
+        notification -- otherwise a human who saw the DOWN alert has no way
+        to know the system recovered short of watching logs."""
+        was_alerted = self._alerted_since_last_good
         self._last_known_good = self._clock.now()
         self._alerted_since_last_good = False
+        if was_alerted:
+            logger.warning("MT5 connectivity restored.")
+            notify("[AutoTrade] ✅ MT5 connectivity restored.")
 
     def check(self) -> bool:
         """Returns True if more than `timeout_minutes` has elapsed since the
@@ -98,6 +106,12 @@ class ConnectivityWatchdog:
                 "positions remain protected by their own broker-side hard stop-loss, "
                 "independent of this system's monitoring (Appendix A §4.7).",
                 elapsed_minutes, self._config.timeout_minutes,
+            )
+            notify(
+                f"[AutoTrade] \U0001F6A8 MT5 CONNECTIVITY LOST for {elapsed_minutes:.1f} minutes "
+                "(e.g. the MT5 terminal was closed) -- signals are not being evaluated and open "
+                "positions are not being actively monitored by this system, but they remain "
+                "protected by their own broker-side stop-loss regardless."
             )
             journal.record_anomaly_event(
                 timestamp=self._journal_clock.now(), event_type="reconnect",

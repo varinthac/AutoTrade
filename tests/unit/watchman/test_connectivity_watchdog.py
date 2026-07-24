@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from autotrade.store import journal
+from autotrade.watchman import connectivity_watchdog as connectivity_watchdog_module
 from autotrade.watchman.connectivity_watchdog import ConnectivityWatchdog, ConnectivityWatchdogConfig
 
 
@@ -177,3 +178,67 @@ def test_journal_clock_defaults_to_the_main_clock_when_not_given():
 
     events = journal.get_anomaly_events_for_day(BASE_TIME.date())
     assert len(events) == 1
+
+
+# --- 2026-07-25: notify() alerting (was log/journal-only before) -------------
+
+
+def _capture_notify(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(connectivity_watchdog_module, "notify", lambda text: calls.append(text))
+    return calls
+
+
+def test_outage_notifies_once_via_telegram(monkeypatch):
+    calls = _capture_notify(monkeypatch)
+    clock = FakeClock(BASE_TIME)
+    watchdog = ConnectivityWatchdog(clock, ConnectivityWatchdogConfig(timeout_minutes=5.0))
+
+    watchdog.record_connected()
+    clock.advance(minutes=10)
+    watchdog.check()
+    watchdog.check()  # same ongoing outage -- must not re-notify
+
+    assert len(calls) == 1
+    assert "CONNECTIVITY LOST" in calls[0]
+
+
+def test_recovery_after_an_alerted_outage_notifies_restored(monkeypatch):
+    calls = _capture_notify(monkeypatch)
+    clock = FakeClock(BASE_TIME)
+    watchdog = ConnectivityWatchdog(clock, ConnectivityWatchdogConfig(timeout_minutes=5.0))
+
+    watchdog.record_connected()
+    clock.advance(minutes=10)
+    watchdog.check()  # alerts DOWN
+    watchdog.record_connected()  # recovers
+
+    assert len(calls) == 2
+    assert "CONNECTIVITY LOST" in calls[0]
+    assert "restored" in calls[1] or "✅" in calls[1]
+
+
+def test_record_connected_without_a_prior_alert_does_not_notify(monkeypatch):
+    calls = _capture_notify(monkeypatch)
+    clock = FakeClock(BASE_TIME)
+    watchdog = ConnectivityWatchdog(clock, ConnectivityWatchdogConfig(timeout_minutes=5.0))
+
+    watchdog.record_connected()
+    clock.advance(minutes=2)  # still within timeout, never actually alerted
+    watchdog.record_connected()
+
+    assert calls == []
+
+
+def test_recovery_notification_does_not_re_fire_on_a_later_still_connected_call(monkeypatch):
+    calls = _capture_notify(monkeypatch)
+    clock = FakeClock(BASE_TIME)
+    watchdog = ConnectivityWatchdog(clock, ConnectivityWatchdogConfig(timeout_minutes=5.0))
+
+    watchdog.record_connected()
+    clock.advance(minutes=10)
+    watchdog.check()  # DOWN
+    watchdog.record_connected()  # restored
+    watchdog.record_connected()  # still fine -- must stay quiet
+
+    assert len(calls) == 2

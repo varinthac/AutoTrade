@@ -55,6 +55,18 @@ restarted without it) must fail safe exactly like a real fetch failure, not
 silently serve arbitrarily-old data. Individual malformed CSV rows are
 skipped and logged rather than failing the whole read.
 
+**2026-07-25: staleness now alerts, not just logs.** A real VPS incident
+(the exporter Service didn't survive an MT5 terminal restart -- it has no
+"start when the platform starts" flag set, a one-time MT5-side setting, not
+a code fix) silently fail-safe-vetoed every USD signal for hours with
+nothing but a log line nobody was watching. Staleness now also fires a
+Telegram `notify()`, transition-only (first time crossing stale, and once
+more when a fresh read succeeds again) -- same shape as
+`common/connectivity_watchdog.py`'s DOWN/UP alerting, deliberately in-memory
+(not file-persisted state) since this provider is instantiated once per
+`run_shadow_loop.py` process, unlike that watchdog's cross-invocation
+design.
+
 **No TTL cache, unlike `finnhub_news_calendar.py`.** Finnhub's cache exists
 to dodge a real external rate limit -- there is no such limit here (a local
 file read), and `risk_voice.py`'s own module docstring calls out that the
@@ -75,6 +87,7 @@ import MetaTrader5 as mt5
 
 from autotrade.common.clock import Clock, RealClock
 from autotrade.council.news_calendar import NewsEvent
+from autotrade.notify.telegram import notify
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +217,7 @@ class MQL5CalendarProvider:
         self._export_path = Path(commondata_path) / "Files" / filename
         self._clock = clock or RealClock()
         self._staleness_threshold = timedelta(minutes=staleness_threshold_minutes)
+        self._alerted_stale = False
 
         if self._clock.now().tzinfo is None:
             raise ValueError(
@@ -237,7 +251,20 @@ class MQL5CalendarProvider:
                 "failing safe (None). Is the NewsCalendarExporter MQL5 Service running in the terminal?",
                 self._export_path, age, self._staleness_threshold,
             )
+            if not self._alerted_stale:
+                notify(
+                    f"[AutoTrade] \U0001F6A8 Economic calendar export is STALE (last written {age} ago) -- "
+                    "every news-blackout check is now fail-safe VETOING signals for ALL currencies until "
+                    "this recovers. Is the NewsCalendarExporter Service still running in the MT5 terminal's "
+                    "Navigator panel?"
+                )
+                self._alerted_stale = True
             return None
+
+        if self._alerted_stale:
+            logger.warning("MQL5CalendarProvider: export file is fresh again -- calendar recovered.")
+            notify("[AutoTrade] ✅ Economic calendar export is fresh again -- news-blackout checks resumed normally.")
+            self._alerted_stale = False
 
         rows = _parse_export_csv(export.text)
         if rows is None:
