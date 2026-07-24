@@ -34,3 +34,14 @@ htmlcov/
 
 # Runtime logs
 logs/
+
+# Experiment run artifacts (raw output dumps / scratch trade exports) --
+# experiments/*_harness.py and experiments_log.md's written-up entries are
+# what's needed to reproduce/understand a result; the raw stdout capture or
+# per-trade export a harness happens to leave behind is not.
+experiments/*_out.txt
+experiments/*_trades.jsonl
+
+# Local scratch copies of VPS state (pulled down for one-off inspection,
+# never needed to run the system itself)
+*.sqlite
