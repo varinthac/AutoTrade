@@ -163,19 +163,28 @@ def parse_callback_data(data: str) -> str:
     return _CALLBACK_COMMAND_MAP.get(data, UNKNOWN_COMMAND)
 
 
-def _quick_access_keyboard() -> dict:
+def _quick_access_keyboard(webapp_url: str | None = None) -> dict:
     """Inline keyboard attached to /status and /help replies -- one-tap
     buttons for the read-only, always-safe commands only. See module
-    docstring for why /start, /stop, /emergency_stop are never offered here."""
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "Positions", "callback_data": _CALLBACK_DATA_POSITIONS},
-                {"text": "Trades", "callback_data": _CALLBACK_DATA_TRADES},
-                {"text": "Daily", "callback_data": _CALLBACK_DATA_DAILY},
-            ]
+    docstring for why /start, /stop, /emergency_stop are never offered here.
+
+    When `webapp_url` is provided (see `common/config.py`'s
+    `load_webapp_url()`), a second row adds a Telegram Web App button (Phase
+    3 of the Telegram bot UX upgrade -- opens the dashboard inside the
+    Telegram chat, gated by `dashboard/webapp_auth.py`'s `initData`
+    verification) -- `{"web_app": {"url": ...}}`, distinct from a plain
+    `{"url": ...}` button. Omitted entirely when not configured, never a
+    crash."""
+    keyboard = [
+        [
+            {"text": "Positions", "callback_data": _CALLBACK_DATA_POSITIONS},
+            {"text": "Trades", "callback_data": _CALLBACK_DATA_TRADES},
+            {"text": "Daily", "callback_data": _CALLBACK_DATA_DAILY},
         ]
-    }
+    ]
+    if webapp_url:
+        keyboard.append([{"text": "Open Dashboard", "web_app": {"url": webapp_url}}])
+    return {"inline_keyboard": keyboard}
 
 
 def _looks_like_confirmation_attempt(text: str) -> bool:
@@ -335,6 +344,7 @@ def _handle_daily() -> ControlReply:
 
 def handle_update(
     update: dict, configured_chat_id: str, pending: PendingConfirmation, clock: Clock,
+    webapp_url: str | None = None,
 ) -> ControlReply | None:
     if not is_authorized(update, configured_chat_id):
         return None
@@ -348,7 +358,8 @@ def handle_update(
         return ControlReply(text=_run_gui_action("/stop", gui_control.stop_bot, "Graceful stop requested."))
     if command == "/status":
         return ControlReply(
-            text=gui_control.format_status(gui_control.build_status()), reply_markup=_quick_access_keyboard()
+            text=gui_control.format_status(gui_control.build_status()),
+            reply_markup=_quick_access_keyboard(webapp_url),
         )
     if command == "/emergency_stop":
         code = pending.request(clock)
@@ -365,7 +376,7 @@ def handle_update(
     if command == "/daily":
         return _handle_daily()
     if command == "/help":
-        return ControlReply(text=_USAGE_TEXT, reply_markup=_quick_access_keyboard())
+        return ControlReply(text=_USAGE_TEXT, reply_markup=_quick_access_keyboard(webapp_url))
 
     had_pending = pending.code is not None
     if pending.confirm(text, clock):

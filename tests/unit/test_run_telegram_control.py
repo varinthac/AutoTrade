@@ -77,6 +77,41 @@ def test_main_polls_when_credentials_present(monkeypatch):
     assert poll_calls == [("TOKEN", 0, 0)]  # startup backlog-discard call only, 0 loop iterations
 
 
+def test_main_passes_webapp_url_from_config_to_run_poll_loop(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["run_telegram_control.py", "--max-iterations", "0"])
+    monkeypatch.setattr(run_telegram_control, "load_telegram_credentials", lambda: ("TOKEN", "12345"))
+    monkeypatch.setattr(run_telegram_control, "load_webapp_url", lambda: "https://trade.kylerlink.com")
+    monkeypatch.setattr(run_telegram_control.telegram, "set_my_commands", lambda *a, **kw: True)
+    captured = {}
+
+    def fake_run_poll_loop(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(run_telegram_control, "run_poll_loop", fake_run_poll_loop)
+
+    exit_code = run_telegram_control.main()
+
+    assert exit_code == 0
+    assert captured["webapp_url"] == "https://trade.kylerlink.com"
+
+
+def test_main_passes_none_webapp_url_when_not_configured(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["run_telegram_control.py", "--max-iterations", "0"])
+    monkeypatch.setattr(run_telegram_control, "load_telegram_credentials", lambda: ("TOKEN", "12345"))
+    monkeypatch.setattr(run_telegram_control, "load_webapp_url", lambda: None)
+    monkeypatch.setattr(run_telegram_control.telegram, "set_my_commands", lambda *a, **kw: True)
+    captured = {}
+
+    def fake_run_poll_loop(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(run_telegram_control, "run_poll_loop", fake_run_poll_loop)
+
+    run_telegram_control.main()
+
+    assert captured["webapp_url"] is None
+
+
 def test_main_registers_bot_commands_at_startup_before_polling(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["run_telegram_control.py", "--max-iterations", "0"])
     monkeypatch.setattr(run_telegram_control, "load_telegram_credentials", lambda: ("TOKEN", "12345"))
@@ -239,6 +274,27 @@ def test_default_send_photo_fn_is_telegram_send_photo_when_not_provided(monkeypa
     )
 
     assert calls == [(b"PNG-DEFAULT", "cap")]
+
+
+def test_run_poll_loop_forwards_webapp_url_to_handle_update(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        run_telegram_control, "handle_update",
+        lambda *a, **kw: captured.update(kw) or telegram_control.ControlReply(text="ok"),
+    )
+
+    def fake_poll(token, offset, timeout_sec):
+        if timeout_sec == 0:
+            return []
+        return [_update(10, text="/status")]
+
+    run_telegram_control.run_poll_loop(
+        "TOKEN", "12345", poll_fn=fake_poll, send_fn=lambda text, reply_markup=None: None,
+        sleep_fn=lambda s: None, clock=FixedClock(NOW), max_iterations=1,
+        webapp_url="https://trade.kylerlink.com",
+    )
+
+    assert captured["webapp_url"] == "https://trade.kylerlink.com"
 
 
 # --- run_poll_loop(): callback_query dispatch (inline-keyboard button taps) --

@@ -23,7 +23,7 @@ import time
 import urllib.request
 
 from autotrade.common.clock import RealClock
-from autotrade.common.config import load_telegram_credentials
+from autotrade.common.config import load_telegram_credentials, load_webapp_url
 from autotrade.notify import telegram
 from autotrade.notify.telegram_control import (
     ControlReply,
@@ -144,6 +144,7 @@ def run_poll_loop(
     sleep_fn=time.sleep,
     clock=None,
     max_iterations: int | None = None,
+    webapp_url: str | None = None,
 ) -> None:
     clock = clock or RealClock()
     send_fn = send_fn or telegram.send_message
@@ -167,7 +168,7 @@ def run_poll_loop(
                 offset = max(offset, update["update_id"] + 1)
 
                 if has_text_message(update):
-                    reply = handle_update(update, chat_id, pending, clock)
+                    reply = handle_update(update, chat_id, pending, clock, webapp_url=webapp_url)
                     if reply is not None:
                         _send_reply(reply, send_fn, send_photo_fn)
                     else:
@@ -207,6 +208,7 @@ def main() -> int:
         return 1
 
     token, chat_id = creds
+    webapp_url = load_webapp_url()
     logger.info("Telegram control listener starting (authorized chat_id=%s).", chat_id)
     telegram.set_my_commands(_BOT_COMMANDS, bot_token=token)
     run_poll_loop(
@@ -217,6 +219,7 @@ def main() -> int:
         ),
         sleep_fn=time.sleep, clock=RealClock(),
         max_iterations=args.max_iterations,
+        webapp_url=webapp_url,
     )
     return 0
 

@@ -11,6 +11,7 @@ from autotrade.common.config import (
     load_fmp_api_key,
     load_mt5_credentials,
     load_telegram_credentials,
+    load_webapp_url,
     load_yaml_config,
 )
 
@@ -200,6 +201,28 @@ def test_load_telegram_credentials_treats_blank_strings_as_missing(monkeypatch, 
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "")
 
     assert load_telegram_credentials(clean_telegram_env) is None
+
+
+@pytest.fixture
+def clean_webapp_url_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("WEBAPP_URL", raising=False)
+    return tmp_path / "does_not_exist.env"
+
+
+def test_load_webapp_url_returns_url_when_set(monkeypatch, clean_webapp_url_env):
+    monkeypatch.setenv("WEBAPP_URL", "https://trade.kylerlink.com")
+
+    assert load_webapp_url(clean_webapp_url_env) == "https://trade.kylerlink.com"
+
+
+def test_load_webapp_url_returns_none_when_unset(clean_webapp_url_env):
+    assert load_webapp_url(clean_webapp_url_env) is None
+
+
+def test_load_webapp_url_treats_blank_string_as_none(monkeypatch, clean_webapp_url_env):
+    monkeypatch.setenv("WEBAPP_URL", "")
+
+    assert load_webapp_url(clean_webapp_url_env) is None
 
 
 def test_load_yaml_config_reads_real_base_config():

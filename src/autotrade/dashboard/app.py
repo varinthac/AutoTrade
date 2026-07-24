@@ -16,6 +16,7 @@ function's own docstring.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 from datetime import date, datetime, timedelta
@@ -23,14 +24,14 @@ from pathlib import Path
 
 import MetaTrader5 as mt5
 import pandas as pd
-from flask import Flask, redirect, render_template, request, send_file, url_for
+from flask import Flask, abort, redirect, render_template, request, send_file, session, url_for
 
 from autotrade.auditor.daily_report import build_daily_report
-from autotrade.common.config import load_mt5_credentials, load_yaml_config
+from autotrade.common.config import load_mt5_credentials, load_telegram_credentials, load_yaml_config
 from autotrade.common.mt5_connection import mt5_session
 from autotrade.common.mt5_time import server_now
 from autotrade.common.symbols import to_broker_name
-from autotrade.dashboard import views
+from autotrade.dashboard import views, webapp_auth
 from autotrade.dashboard.positions import get_open_positions_display
 from autotrade.store import journal
 from autotrade.store.models import DEFAULT_PAPER_DB_PATH
@@ -38,6 +39,15 @@ from autotrade.store.models import DEFAULT_PAPER_DB_PATH
 logger = logging.getLogger(__name__)
 
 _SERVER_TIME_MT5_TIMEOUT_MS = 3000
+
+# Session key holding the authenticated operator's Telegram user id, and the
+# two places `initData` can arrive from (a header, for a future JS `fetch()`
+# call, or a query param, for the one-time redirect `templates/
+# webapp_unauthorized.html`'s bootstrap script performs -- see
+# `create_app()`'s `before_request` hook below for why both exist).
+SESSION_USER_ID_KEY = "webapp_user_id"
+_INIT_DATA_HEADER = "X-Telegram-Init-Data"
+_INIT_DATA_PARAM = "initData"
 
 
 def get_current_server_time() -> datetime | None:
@@ -83,6 +93,54 @@ def get_current_server_time() -> datetime | None:
 def create_app(db_path: Path | None = None) -> Flask:
     app = Flask(__name__)
     resolved_db_path = db_path if db_path is not None else DEFAULT_PAPER_DB_PATH
+
+    telegram_creds = load_telegram_credentials()
+    if telegram_creds is not None:
+        bot_token, _configured_chat_id = telegram_creds
+        # Deterministic, not `secrets.token_bytes()`: a random key generated
+        # fresh on every process start would invalidate every operator's
+        # signed session cookie on each dashboard restart, forcing a fresh
+        # `initData` round-trip from the Telegram Mini App every time.
+        # Deriving from the bot token (itself a protected `.env` secret,
+        # never logged) is a real per-deployment secret, not Flask's shared
+        # insecure default dev key, while staying stable across restarts.
+        app.secret_key = hashlib.sha256(f"autotrade-dashboard-webapp-session:{bot_token}".encode("utf-8")).digest()
+
+    @app.before_request
+    def _require_telegram_webapp_auth():
+        # Auth is opt-in, the same "unconfigured == feature doesn't exist
+        # yet" pattern every optional integration in common/config.py
+        # already follows: the Web App button (notify/telegram_control.py)
+        # can't exist without TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID configured
+        # in the first place, so there is no way to reach this dashboard
+        # through Telegram while they're unset -- gating in that case would
+        # only break this package's pre-existing local-only (127.0.0.1, no
+        # auth) workflow this whole test suite exercises, for no security
+        # benefit.
+        if telegram_creds is None:
+            return None
+        if session.get(SESSION_USER_ID_KEY) is not None:
+            return None
+
+        bot_token, configured_chat_id = telegram_creds
+        init_data = request.headers.get(_INIT_DATA_HEADER) or request.args.get(_INIT_DATA_PARAM, "")
+        parsed = webapp_auth.verify_init_data(init_data, bot_token)
+        if parsed is None or not webapp_auth.is_operator(parsed, configured_chat_id):
+            abort(401)
+
+        session[SESSION_USER_ID_KEY] = parsed["user"]["id"]
+        return None
+
+    @app.errorhandler(401)
+    def _webapp_auth_required(_error):
+        # Telegram never attaches initData to the page URL automatically --
+        # only `window.Telegram.WebApp.initData`, populated client-side once
+        # telegram-web-app.js runs, has it. This page's own script reads it
+        # and redirects once with it attached as a query param, letting
+        # _require_telegram_webapp_auth() above verify it and establish the
+        # session; a plain browser outside Telegram (no window.Telegram)
+        # just sees the fallback message instead of any real dashboard data.
+        return render_template("webapp_unauthorized.html"), 401
 
     @app.context_processor
     def inject_current_server_time():

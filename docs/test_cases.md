@@ -1,11 +1,11 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1249 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1287 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1249 (including all parametrized variants)
-- **Test Files**: ~57 files across `tests/unit/` subdirectories
+- **Total Test Count**: 1287 (including all parametrized variants)
+- **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
 **Important**: This document is a point-in-time reference snapshot, not automatically generated. As tests are added, modified, or removed, this file must be manually updated to stay in sync with the actual test suite. When adding or changing tests, please update the relevant section and adjust the summary table counts below.
@@ -37,9 +37,10 @@ This document provides a comprehensive list of all 1249 test cases in the AutoTr
 | | test_scoring.py | 25 |
 | | test_trivial_signal.py | 6 |
 | **Council Subtotal** | | **155** |
-| Dashboard | test_app.py | 41 |
+| Dashboard | test_app.py | 50 |
 | | test_positions.py | 6 |
-| **Dashboard Subtotal** | | **47** |
+| | test_webapp_auth.py | 20 |
+| **Dashboard Subtotal** | | **76** |
 | Execution | test_demo_adapter.py | 82 |
 | | test_noop_adapter.py | 8 |
 | **Execution Subtotal** | | **90** |
@@ -53,8 +54,8 @@ This document provides a comprehensive list of all 1249 test cases in the AutoTr
 | Notify | test_charts.py | 10 |
 | | test_gate_state.py | 16 |
 | | test_telegram.py | 45 |
-| | test_telegram_control.py | 79 |
-| **Notify Subtotal** | | **150** |
+| | test_telegram_control.py | 82 |
+| **Notify Subtotal** | | **153** |
 | Orchestrator | test_shadow_loop.py | 46 |
 | **Orchestrator Subtotal** | | **46** |
 | Risk | test_circuit_breaker.py | 32 |
@@ -77,7 +78,7 @@ This document provides a comprehensive list of all 1249 test cases in the AutoTr
 | **Watchman Subtotal** | | **138** |
 | Scripts & CLI | test_autotrade_control.py | 19 |
 | | test_clock.py | 1 |
-| | test_config.py | 26 |
+| | test_config.py | 29 |
 | | test_historical_download.py | 14 |
 | | test_historical_gaps.py | 4 |
 | | test_kill_switch_flag.py | 9 |
@@ -91,12 +92,12 @@ This document provides a comprehensive list of all 1249 test cases in the AutoTr
 | | test_run_backtest.py | 24 |
 | | test_run_scheduled_daily_report.py | 3 |
 | | test_run_shadow_loop.py | 33 |
-| | test_run_telegram_control.py | 20 |
+| | test_run_telegram_control.py | 23 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **292** |
+| **Scripts & CLI Subtotal** | | **298** |
 | | | |
-| **GRAND TOTAL** | | **1249** |
+| **GRAND TOTAL** | | **1287** |
 
 ---
 
@@ -517,6 +518,15 @@ This document provides a comprehensive list of all 1249 test cases in the AutoTr
 - test_trades_to_export_rows_empty_list
 - test_trades_to_export_rows_escapes_formula_injection_prefixes
 - test_trades_to_export_rows_does_not_touch_safe_string_values
+- test_dashboard_open_without_any_gate_when_telegram_not_configured
+- test_route_returns_401_with_no_session_and_no_init_data
+- test_unauthorized_response_includes_the_telegram_web_app_sdk_script
+- test_valid_init_data_grants_access_and_establishes_a_session
+- test_init_data_can_also_be_sent_as_a_header
+- test_tampered_init_data_is_rejected
+- test_init_data_for_a_non_operator_user_is_rejected
+- test_expired_init_data_is_rejected
+- test_established_session_grants_access_to_every_route
 
 ### tests/unit/dashboard/test_positions.py
 
@@ -526,6 +536,29 @@ This document provides a comprehensive list of all 1249 test cases in the AutoTr
 - test_get_open_positions_display_maps_broker_symbol_and_skips_unmapped
 - test_get_open_positions_display_maps_sell_type_to_sell_direction
 - test_get_open_positions_display_passes_a_short_timeout_ms_to_mt5_session
+
+### tests/unit/dashboard/test_webapp_auth.py
+
+- test_valid_init_data_returns_parsed_dict_with_decoded_user
+- test_valid_init_data_without_a_user_field_still_verifies
+- test_tampered_hash_is_rejected
+- test_tampered_field_value_is_rejected
+- test_wrong_bot_token_is_rejected
+- test_fresh_auth_date_within_window_is_accepted
+- test_auth_date_older_than_max_age_is_rejected
+- test_custom_max_age_seconds_is_respected
+- test_missing_auth_date_field_is_rejected
+- test_empty_init_data_returns_none
+- test_empty_bot_token_returns_none
+- test_garbage_init_data_returns_none_not_raises
+- test_init_data_missing_hash_field_returns_none
+- test_init_data_with_malformed_user_json_returns_none
+- test_non_integer_auth_date_returns_none
+- test_is_operator_true_when_user_id_matches_configured_chat_id
+- test_is_operator_false_when_user_id_does_not_match
+- test_is_operator_false_when_user_field_missing
+- test_is_operator_false_when_user_field_not_a_dict
+- test_is_operator_false_when_user_has_no_id
 
 ---
 
@@ -841,6 +874,9 @@ This document provides a comprehensive list of all 1249 test cases in the AutoTr
 - test_stop_command_calls_stop_bot_and_reports_success
 - test_status_command_calls_build_status_and_format_status
 - test_status_command_reply_carries_quick_access_inline_keyboard
+- test_status_command_reply_omits_webapp_button_when_webapp_url_not_provided
+- test_status_command_reply_includes_webapp_button_when_webapp_url_provided
+- test_help_command_reply_includes_webapp_button_when_webapp_url_provided
 - test_help_command_returns_usage_text_listing_all_four_commands
 - test_help_command_reply_carries_quick_access_inline_keyboard
 - test_quick_access_keyboard_never_offers_start_stop_or_emergency_stop_buttons
@@ -1270,6 +1306,9 @@ This document provides a comprehensive list of all 1249 test cases in the AutoTr
 - test_load_telegram_credentials_returns_none_when_only_token_set
 - test_load_telegram_credentials_returns_none_when_only_chat_id_set
 - test_load_telegram_credentials_treats_blank_strings_as_missing
+- test_load_webapp_url_returns_url_when_set
+- test_load_webapp_url_returns_none_when_unset
+- test_load_webapp_url_treats_blank_string_as_none
 - test_load_yaml_config_reads_real_base_config
 - test_load_yaml_config_missing_file_raises_file_not_found_error
 - test_load_yaml_config_empty_file_returns_empty_dict
@@ -1527,6 +1566,8 @@ This document provides a comprehensive list of all 1249 test cases in the AutoTr
 
 - test_main_returns_1_and_prints_error_when_credentials_missing
 - test_main_polls_when_credentials_present
+- test_main_passes_webapp_url_from_config_to_run_poll_loop
+- test_main_passes_none_webapp_url_when_not_configured
 - test_main_registers_bot_commands_at_startup_before_polling
 - test_startup_backlog_is_discarded_and_offset_advances_past_it
 - test_startup_backlog_discard_drains_multiple_pages
@@ -1534,6 +1575,7 @@ This document provides a comprehensive list of all 1249 test cases in the AutoTr
 - test_reply_with_photos_sends_text_then_each_photo_via_send_photo_fn
 - test_reply_with_no_photos_never_calls_send_photo_fn
 - test_default_send_photo_fn_is_telegram_send_photo_when_not_provided
+- test_run_poll_loop_forwards_webapp_url_to_handle_update
 - test_callback_query_dispatches_via_handle_callback_query_and_sends_reply
 - test_callback_query_calls_answer_callback_fn_with_the_callback_query_id
 - test_unauthorized_callback_query_gets_no_reply_but_is_still_answered

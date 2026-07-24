@@ -3,8 +3,13 @@ dashboard/views.py's pure logic -- same seeded-tmp_path DB convention as
 tests/unit/store/test_journal.py / tests/unit/test_run_auditor.py."""
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import time
 from contextlib import contextmanager
 from datetime import date, datetime
+from urllib.parse import urlencode
 
 import pandas as pd
 import pytest
@@ -14,6 +19,28 @@ from autotrade.dashboard import views
 from autotrade.dashboard import app as dashboard_app
 from autotrade.dashboard.app import create_app, get_current_server_time
 from autotrade.store import journal
+
+WEBAPP_BOT_TOKEN = "123456:test-bot-token"
+WEBAPP_CHAT_ID = "8978823598"
+
+
+def _build_init_data(bot_token, user_id, auth_date=None):
+    fields = {
+        "auth_date": str(int(auth_date if auth_date is not None else time.time())),
+        "user": json.dumps({"id": user_id, "first_name": "Op"}, separators=(",", ":")),
+    }
+    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(fields.items()))
+    secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
+    fields["hash"] = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    return urlencode(fields)
+
+
+def _trades_url_with_init_data(init_data):
+    # init_data is itself a `key=value&key=value...` query string -- must be
+    # embedded as a single query PARAM VALUE (percent-encoded via urlencode),
+    # not spliced directly into the URL, or its own `&`s would be parsed as
+    # extra top-level params instead of part of the initData value.
+    return "/trades?" + urlencode({"initData": init_data})
 
 
 @pytest.fixture
@@ -515,3 +542,106 @@ def test_trades_to_export_rows_does_not_touch_safe_string_values(db_path):
 
     assert rows[0]["exit_reason"] == "take_profit"
     assert rows[0]["symbol"] == "EURUSD"
+
+
+# --- Telegram Web App auth gate ---------------------------------------------
+# Opt-in: only engages when load_telegram_credentials() returns a real pair --
+# every test above this section relies on tests/conftest.py's autouse
+# _block_real_telegram_notifications fixture blanking TELEGRAM_BOT_TOKEN/
+# TELEGRAM_CHAT_ID, so the gate stays off and those 40+ route-behavior tests
+# are unaffected by its existence. These tests explicitly configure it.
+
+
+def _configure_webapp_auth(monkeypatch, bot_token=WEBAPP_BOT_TOKEN, chat_id=WEBAPP_CHAT_ID):
+    monkeypatch.setattr(dashboard_app, "load_telegram_credentials", lambda: (bot_token, chat_id))
+
+
+def test_dashboard_open_without_any_gate_when_telegram_not_configured(db_path, monkeypatch):
+    monkeypatch.setattr(dashboard_app, "load_telegram_credentials", lambda: None)
+    client = create_app(db_path=db_path).test_client()
+
+    resp = client.get("/trades")
+
+    assert resp.status_code == 200
+
+
+def test_route_returns_401_with_no_session_and_no_init_data(db_path, monkeypatch):
+    _configure_webapp_auth(monkeypatch)
+    client = create_app(db_path=db_path).test_client()
+
+    resp = client.get("/trades")
+
+    assert resp.status_code == 401
+
+
+def test_unauthorized_response_includes_the_telegram_web_app_sdk_script(db_path, monkeypatch):
+    _configure_webapp_auth(monkeypatch)
+    client = create_app(db_path=db_path).test_client()
+
+    resp = client.get("/trades")
+
+    assert b"telegram-web-app.js" in resp.data
+
+
+def test_valid_init_data_grants_access_and_establishes_a_session(db_path, monkeypatch):
+    _configure_webapp_auth(monkeypatch)
+    init_data = _build_init_data(WEBAPP_BOT_TOKEN, user_id=int(WEBAPP_CHAT_ID))
+    client = create_app(db_path=db_path).test_client()
+
+    first = client.get(_trades_url_with_init_data(init_data))
+    second = client.get("/trades")  # no initData this time -- relies on the session cookie
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+
+def test_init_data_can_also_be_sent_as_a_header(db_path, monkeypatch):
+    _configure_webapp_auth(monkeypatch)
+    init_data = _build_init_data(WEBAPP_BOT_TOKEN, user_id=int(WEBAPP_CHAT_ID))
+    client = create_app(db_path=db_path).test_client()
+
+    resp = client.get("/trades", headers={"X-Telegram-Init-Data": init_data})
+
+    assert resp.status_code == 200
+
+
+def test_tampered_init_data_is_rejected(db_path, monkeypatch):
+    _configure_webapp_auth(monkeypatch)
+    init_data = _build_init_data(WEBAPP_BOT_TOKEN, user_id=int(WEBAPP_CHAT_ID))
+    tampered = init_data.replace(WEBAPP_CHAT_ID, "111111111")
+    client = create_app(db_path=db_path).test_client()
+
+    resp = client.get(_trades_url_with_init_data(tampered))
+
+    assert resp.status_code == 401
+
+
+def test_init_data_for_a_non_operator_user_is_rejected(db_path, monkeypatch):
+    _configure_webapp_auth(monkeypatch)
+    init_data = _build_init_data(WEBAPP_BOT_TOKEN, user_id=999999999)
+    client = create_app(db_path=db_path).test_client()
+
+    resp = client.get(_trades_url_with_init_data(init_data))
+
+    assert resp.status_code == 401
+
+
+def test_expired_init_data_is_rejected(db_path, monkeypatch):
+    _configure_webapp_auth(monkeypatch)
+    stale_auth_date = time.time() - (dashboard_app.webapp_auth.MAX_INIT_DATA_AGE_SECONDS + 60)
+    init_data = _build_init_data(WEBAPP_BOT_TOKEN, user_id=int(WEBAPP_CHAT_ID), auth_date=stale_auth_date)
+    client = create_app(db_path=db_path).test_client()
+
+    resp = client.get(_trades_url_with_init_data(init_data))
+
+    assert resp.status_code == 401
+
+
+def test_established_session_grants_access_to_every_route(db_path, monkeypatch):
+    _configure_webapp_auth(monkeypatch)
+    init_data = _build_init_data(WEBAPP_BOT_TOKEN, user_id=int(WEBAPP_CHAT_ID))
+    client = create_app(db_path=db_path).test_client()
+    client.get(_trades_url_with_init_data(init_data))
+
+    assert client.get("/daily").status_code == 200
+    assert client.get("/trades/export").status_code == 200

@@ -364,6 +364,40 @@ def test_status_command_reply_carries_quick_access_inline_keyboard(monkeypatch):
     assert callback_data == {"cmd:positions", "cmd:trades", "cmd:daily"}
 
 
+def test_status_command_reply_omits_webapp_button_when_webapp_url_not_provided(monkeypatch):
+    monkeypatch.setattr(telegram_control.gui_control, "build_status", lambda: "REPORT")
+    monkeypatch.setattr(telegram_control.gui_control, "format_status", lambda report: "STATUS TEXT")
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/status"), "12345", pending, FixedClock(NOW))
+
+    assert len(reply.reply_markup["inline_keyboard"]) == 1
+
+
+def test_status_command_reply_includes_webapp_button_when_webapp_url_provided(monkeypatch):
+    monkeypatch.setattr(telegram_control.gui_control, "build_status", lambda: "REPORT")
+    monkeypatch.setattr(telegram_control.gui_control, "format_status", lambda report: "STATUS TEXT")
+    pending = PendingConfirmation()
+
+    reply = handle_update(
+        _update(12345, "/status"), "12345", pending, FixedClock(NOW), webapp_url="https://trade.kylerlink.com"
+    )
+
+    webapp_row = reply.reply_markup["inline_keyboard"][1]
+    assert webapp_row == [{"text": "Open Dashboard", "web_app": {"url": "https://trade.kylerlink.com"}}]
+
+
+def test_help_command_reply_includes_webapp_button_when_webapp_url_provided():
+    pending = PendingConfirmation()
+
+    reply = handle_update(
+        _update(12345, "/help"), "12345", pending, FixedClock(NOW), webapp_url="https://trade.kylerlink.com"
+    )
+
+    webapp_row = reply.reply_markup["inline_keyboard"][1]
+    assert webapp_row == [{"text": "Open Dashboard", "web_app": {"url": "https://trade.kylerlink.com"}}]
+
+
 def test_help_command_returns_usage_text_listing_all_four_commands():
     pending = PendingConfirmation()
 

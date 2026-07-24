@@ -177,6 +177,20 @@ def load_telegram_credentials(env_file: Path | None = None) -> tuple[str, str] |
     return token, chat_id
 
 
+def load_webapp_url(env_file: Path | None = None) -> str | None:
+    """Public HTTPS URL (Cloudflare Tunnel, see `ops/cloudflared_tunnel.ps1`)
+    the read-only trade dashboard is reachable at -- used only to add a Web
+    App button to `notify/telegram_control.py`'s `/status` inline keyboard.
+    Same optional/nullable pattern as `load_finnhub_api_key` -- a missing/
+    blank URL is not a hard error, the button is simply omitted. Note this
+    loader has no bearing on whether the dashboard is SAFE to expose there --
+    that's `dashboard/app.py`'s own `initData`-verifying auth gate (see
+    `dashboard/webapp_auth.py`), independent of whether this button exists."""
+    load_dotenv(env_file or REPO_ROOT / ".env")
+    url = os.environ.get("WEBAPP_URL")
+    return url or None
+
+
 def load_yaml_config(name: str) -> dict:
     """Load a YAML file from config/, e.g. load_yaml_config('base')."""
     path = CONFIG_DIR / f"{name}.yaml"
