@@ -4002,10 +4002,19 @@ MUST have swap_modeled=true (i.e. folding swap into `cost_model_complete` / the 
 decision. `cost_model_complete` is left UNCHANGED (still slippage-only). Escalated to user.
 
 Robustness: neighborhood n.a. (not a tuned parameter — a cost correction), per-year n.a. (see EXP-017 for the
-current-config per-year picture this corroborates), top-5 n.a., walk-forward n.a. On-our-data empirical swap-off
-vs swap-on re-run (Train+Val 2021-07→2025-07, Test year EXCLUDED, $50k equity per EXP-008 sizing-confound-free
-method) was LAUNCHED to quantify the exact PF/avgR drop; the full-Council engine over ~24k H1 bars is very slow,
-so that number is pending — the analytical estimate above stands regardless and does not depend on it.
+current-config per-year picture this corroborates), top-5 n.a., walk-forward n.a.
+EMPIRICAL on-our-data re-run (Train+Val 2021-07→2025-07, Test year EXCLUDED, $50k equity per EXP-008 sizing-
+confound-free method, commission $0 IC Markets Standard, swap long −53.2 / short +36.8):
+  SWAP OFF: n=1006, PF 1.0716, avgR 0.0498, net +$25,303, DD 30.40% (long 558 / short 448, avg 1.09 nights/trade)
+  SWAP ON : n=1006, PF 1.0532, avgR 0.0393, net +$17,885, DD 31.79%
+  DELTA   : PF −0.0185, avgR −0.0105 (= −21% of expectancy), net −$7,418, DD +1.4pp.
+So swap costs ~0.0105R/trade on average (blended: 45% are shorts earning the credit, which partly offsets the
+long drag — hence smaller than the ~0.035–0.066R per-LONG analytical figure, and consistent with it). On the
+gold-bull Train+Val window the edge SURVIVES (PF still 1.05, positive) but loses a fifth of its expectancy. The
+regime read is the sharp part: the report's 2009-2019 bear/sideways decade already sat at PF ~0.96–0.99 WITHOUT
+swap, so a −0.0185 PF haircut pushes it further underwater — corroborating the cross-project "swap flips the
+decade more negative" finding. And a more strongly long-biased bull run would take a larger hit than this
+mildly-biased (558/448) window did.
 
 Decision & rationale: ADOPT the swap-model CAPABILITY (code + tests), default OFF. Do NOT promote, do NOT change
 any gate. The evidence — verified parity gap + thin 0.0525R edge + swap drag of the same order + corroborating
