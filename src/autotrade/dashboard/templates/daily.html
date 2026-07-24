@@ -2,6 +2,10 @@
 {% block title %}Daily report -- AutoTrade Dashboard{% endblock %}
 {% block content %}
 <h1>Daily report</h1>
+<form class="filter-form" method="get" action="{{ url_for('daily') }}">
+  <label>Date <input type="date" name="date" value="{{ report.server_date.isoformat() if report is not none else '' }}"></label>
+  <button type="submit">View</button>
+</form>
 {% if report is none %}
 <div class="card empty-state">
   <p>No trades recorded yet.</p>
