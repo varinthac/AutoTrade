@@ -325,3 +325,189 @@ def test_send_message_failure_log_never_contains_raw_token(monkeypatch, caplog):
     assert result is False
     assert "TOKEN123" not in caplog.text
     assert "botTOKEN123" not in caplog.text
+
+
+# --- notify_photo() / send_photo() -------------------------------------------
+# Chart-image counterparts to notify()/send_message() -- same
+# gate/no-op/never-raises contracts, but posting a multipart/form-data body
+# (binary PNG upload) to sendPhoto instead of urlencoded text to sendMessage.
+
+
+def test_notify_photo_posts_correct_url_and_multipart_body(monkeypatch, configured):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["data"] = request.data
+        captured["method"] = request.get_method()
+        captured["content_type"] = request.get_header("Content-type")
+        captured["timeout"] = timeout
+        return _FakeResponse()
+
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", fake_urlopen)
+
+    result = telegram.notify_photo(b"\x89PNGDATA", caption="Equity curve", timeout_sec=3.0)
+
+    assert result is True
+    assert captured["url"] == "https://api.telegram.org/botTOKEN123/sendPhoto"
+    assert captured["method"] == "POST"
+    assert captured["timeout"] == 3.0
+    assert captured["content_type"].startswith("multipart/form-data; boundary=")
+    body = captured["data"]
+    assert b'name="chat_id"' in body
+    assert b"CHAT456" in body
+    assert b'name="caption"' in body
+    assert b"Equity curve" in body
+    assert b'name="photo"; filename="chart.png"' in body
+    assert b"Content-Type: image/png" in body
+    assert b"\x89PNGDATA" in body
+
+
+def test_notify_photo_without_caption_omits_caption_field(monkeypatch, configured):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["data"] = request.data
+        return _FakeResponse()
+
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", fake_urlopen)
+
+    telegram.notify_photo(b"\x89PNGDATA")
+
+    assert b'name="caption"' not in captured["data"]
+
+
+def test_notify_photo_swallows_network_exception_and_returns_false(monkeypatch, configured):
+    def fake_urlopen(request, timeout):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", fake_urlopen)
+
+    assert telegram.notify_photo(b"\x89PNGDATA") is False
+
+
+def test_notify_photo_makes_zero_http_calls_when_credentials_missing(monkeypatch):
+    monkeypatch.setattr(telegram, "load_telegram_credentials", lambda: None)
+    called = {"count": 0}
+
+    def fake_urlopen(*args, **kwargs):
+        called["count"] += 1
+        return _FakeResponse()
+
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", fake_urlopen)
+
+    result = telegram.notify_photo(b"\x89PNGDATA")
+
+    assert result is False
+    assert called["count"] == 0
+
+
+def test_notify_photo_makes_zero_http_calls_when_notifications_disabled(monkeypatch):
+    monkeypatch.setattr(telegram, "load_telegram_credentials", lambda: ("TOKEN123", "CHAT456"))
+    monkeypatch.setattr(telegram, "load_yaml_config", lambda name: {"notifications": {"enabled": False}})
+    called = {"count": 0}
+
+    def fake_urlopen(*args, **kwargs):
+        called["count"] += 1
+        return _FakeResponse()
+
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", fake_urlopen)
+
+    result = telegram.notify_photo(b"\x89PNGDATA")
+
+    assert result is False
+    assert called["count"] == 0
+
+
+def test_notify_photo_failure_log_never_contains_raw_token(monkeypatch, configured, caplog):
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", fake_urlopen)
+
+    with caplog.at_level(logging.WARNING):
+        result = telegram.notify_photo(b"\x89PNGDATA")
+
+    assert result is False
+    assert "TOKEN123" not in caplog.text
+    assert "botTOKEN123" not in caplog.text
+
+
+def test_send_photo_posts_correct_url_and_multipart_body(monkeypatch, configured):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["data"] = request.data
+        captured["timeout"] = timeout
+        return _FakeResponse()
+
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", fake_urlopen)
+
+    result = telegram.send_photo(b"\x89PNGDATA", caption="Daily net P/L", timeout_sec=5.0)
+
+    assert result is True
+    assert captured["url"] == "https://api.telegram.org/botTOKEN123/sendPhoto"
+    assert captured["timeout"] == 5.0
+    assert b"Daily net P/L" in captured["data"]
+    assert b"\x89PNGDATA" in captured["data"]
+
+
+def test_send_photo_sends_even_when_notifications_disabled(monkeypatch):
+    monkeypatch.setattr(telegram, "load_telegram_credentials", lambda: ("TOKEN123", "CHAT456"))
+    monkeypatch.setattr(telegram, "load_yaml_config", lambda name: {"notifications": {"enabled": False}})
+    called = {"count": 0}
+
+    def fake_urlopen(request, timeout):
+        called["count"] += 1
+        return _FakeResponse()
+
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", fake_urlopen)
+
+    result = telegram.send_photo(b"\x89PNGDATA")
+
+    assert result is True
+    assert called["count"] == 1
+
+
+def test_send_photo_makes_zero_http_calls_when_credentials_missing(monkeypatch):
+    monkeypatch.setattr(telegram, "load_telegram_credentials", lambda: None)
+    called = {"count": 0}
+
+    def fake_urlopen(*args, **kwargs):
+        called["count"] += 1
+        return _FakeResponse()
+
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", fake_urlopen)
+
+    result = telegram.send_photo(b"\x89PNGDATA")
+
+    assert result is False
+    assert called["count"] == 0
+
+
+def test_send_photo_swallows_network_exception_and_returns_false(monkeypatch):
+    monkeypatch.setattr(telegram, "load_telegram_credentials", lambda: ("TOKEN123", "CHAT456"))
+
+    def fake_urlopen(request, timeout):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", fake_urlopen)
+
+    assert telegram.send_photo(b"\x89PNGDATA") is False
+
+
+def test_send_photo_failure_log_never_contains_raw_token(monkeypatch, caplog):
+    monkeypatch.setattr(telegram, "load_telegram_credentials", lambda: ("TOKEN123", "CHAT456"))
+
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", fake_urlopen)
+
+    with caplog.at_level(logging.WARNING):
+        result = telegram.send_photo(b"\x89PNGDATA")
+
+    assert result is False
+    assert "TOKEN123" not in caplog.text
+    assert "botTOKEN123" not in caplog.text

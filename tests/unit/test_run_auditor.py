@@ -209,6 +209,140 @@ def test_cmd_daily_notify_message_contains_real_report_content(tmp_path, capsys,
     assert calls[0] == out.rstrip("\n")  # notify() sent the exact same report text that was printed
 
 
+# --- daily --notify: chart attachments (notify/charts.py) --------------------
+# charts.build_equity_curve_png/build_daily_pnl_png are always mocked here --
+# this module only needs to prove the CALL/ordering contract (charts sent
+# after text succeeds, over the full trade history, best-effort on failure),
+# not that matplotlib itself renders correctly (that's tests/unit/notify/
+# test_charts.py's job).
+
+
+def _mock_charts(monkeypatch):
+    calls = []
+
+    def _fake_equity(trades):
+        calls.append(("equity", trades))
+        return b"EQUITY-PNG"
+
+    def _fake_daily_pnl(trades):
+        calls.append(("daily_pnl", trades))
+        return b"DAILY-PNL-PNG"
+
+    monkeypatch.setattr(run_auditor.charts, "build_equity_curve_png", _fake_equity)
+    monkeypatch.setattr(run_auditor.charts, "build_daily_pnl_png", _fake_daily_pnl)
+    return calls
+
+
+def test_cmd_daily_notify_sends_both_charts_after_text_succeeds(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor, "DEFAULT_NOTIFY_DAILY_STATE_PATH", tmp_path / "notify_last_daily.json")
+    db_path = tmp_path / "journal.sqlite"
+    journal.record_closed_trade(
+        symbol="XAUUSD", direction="BUY", entry_time=datetime(2026, 7, 19, 9, 0),
+        entry_price=2400.0, exit_time=datetime(2026, 7, 19, 10, 0), exit_price=2410.0,
+        exit_reason="take_profit", lot_size=0.1, gross_pnl=100.0, cost=2.0, net_pnl=98.0,
+        r_multiple=1.96, recorded_at=datetime(2026, 7, 19, 10, 0, 1), broker_ticket=1, db_path=db_path,
+    )
+    chart_calls = _mock_charts(monkeypatch)
+    monkeypatch.setattr(run_auditor, "notify", lambda text: True)
+    photo_calls = []
+    monkeypatch.setattr(
+        run_auditor, "notify_photo",
+        lambda png, caption=None: photo_calls.append((png, caption)) or True,
+    )
+
+    args = argparse.Namespace(config="base", date="2026-07-19", mode=None, db_path=db_path, notify=True)
+    rc = run_auditor.cmd_daily(args)
+
+    assert rc == 0
+    assert [name for name, _ in chart_calls] == ["equity", "daily_pnl"]
+    assert photo_calls == [(b"EQUITY-PNG", "Equity curve"), (b"DAILY-PNL-PNG", "Daily net P/L")]
+
+
+def test_cmd_daily_notify_skips_charts_when_text_notify_fails(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor, "DEFAULT_NOTIFY_DAILY_STATE_PATH", tmp_path / "notify_last_daily.json")
+    db_path = tmp_path / "journal.sqlite"
+    journal.record_closed_trade(
+        symbol="XAUUSD", direction="BUY", entry_time=datetime(2026, 7, 19, 9, 0),
+        entry_price=2400.0, exit_time=datetime(2026, 7, 19, 10, 0), exit_price=2410.0,
+        exit_reason="take_profit", lot_size=0.1, gross_pnl=100.0, cost=2.0, net_pnl=98.0,
+        r_multiple=1.96, recorded_at=datetime(2026, 7, 19, 10, 0, 1), broker_ticket=1, db_path=db_path,
+    )
+    chart_calls = _mock_charts(monkeypatch)
+    monkeypatch.setattr(run_auditor, "notify", lambda text: False)
+
+    args = argparse.Namespace(config="base", date="2026-07-19", mode=None, db_path=db_path, notify=True)
+    run_auditor.cmd_daily(args)
+
+    assert chart_calls == []  # never even attempted -- the text report itself never sent
+
+
+def test_cmd_daily_notify_skips_charts_when_no_trades_at_all(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor, "DEFAULT_NOTIFY_DAILY_STATE_PATH", tmp_path / "notify_last_daily.json")
+    chart_calls = _mock_charts(monkeypatch)
+    monkeypatch.setattr(run_auditor, "notify", lambda text: True)
+
+    args = argparse.Namespace(
+        config="base", date="2026-07-19", mode=None, db_path=tmp_path / "journal.sqlite", notify=True,
+    )
+    run_auditor.cmd_daily(args)
+
+    assert chart_calls == []
+
+
+def test_cmd_daily_notify_chart_render_failure_does_not_crash_or_unmark_sent(tmp_path, capsys, monkeypatch):
+    # Best-effort: a chart RENDERING failure (e.g. matplotlib unavailable on
+    # this machine) must not crash cmd_daily or affect the dedup-on-server_date
+    # state, since the report TEXT is the notification of record.
+    monkeypatch.setattr(run_auditor, "DEFAULT_NOTIFY_DAILY_STATE_PATH", tmp_path / "notify_last_daily.json")
+    db_path = tmp_path / "journal.sqlite"
+    journal.record_closed_trade(
+        symbol="XAUUSD", direction="BUY", entry_time=datetime(2026, 7, 19, 9, 0),
+        entry_price=2400.0, exit_time=datetime(2026, 7, 19, 10, 0), exit_price=2410.0,
+        exit_reason="take_profit", lot_size=0.1, gross_pnl=100.0, cost=2.0, net_pnl=98.0,
+        r_multiple=1.96, recorded_at=datetime(2026, 7, 19, 10, 0, 1), broker_ticket=1, db_path=db_path,
+    )
+
+    def _raise(trades):
+        raise RuntimeError("matplotlib not available")
+
+    monkeypatch.setattr(run_auditor.charts, "build_equity_curve_png", _raise)
+    monkeypatch.setattr(run_auditor, "notify", lambda text: True)
+    photo_calls = []
+    monkeypatch.setattr(
+        run_auditor, "notify_photo",
+        lambda png, caption=None: photo_calls.append((png, caption)) or True,
+    )
+
+    args = argparse.Namespace(config="base", date="2026-07-19", mode=None, db_path=db_path, notify=True)
+    rc = run_auditor.cmd_daily(args)
+
+    assert rc == 0
+    assert photo_calls == []
+    state_path = tmp_path / "notify_last_daily.json"
+    assert json.loads(state_path.read_text(encoding="utf-8"))["server_date"] == "2026-07-19"
+
+
+def test_cmd_daily_notify_chart_send_failure_does_not_unmark_sent(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_auditor, "DEFAULT_NOTIFY_DAILY_STATE_PATH", tmp_path / "notify_last_daily.json")
+    db_path = tmp_path / "journal.sqlite"
+    journal.record_closed_trade(
+        symbol="XAUUSD", direction="BUY", entry_time=datetime(2026, 7, 19, 9, 0),
+        entry_price=2400.0, exit_time=datetime(2026, 7, 19, 10, 0), exit_price=2410.0,
+        exit_reason="take_profit", lot_size=0.1, gross_pnl=100.0, cost=2.0, net_pnl=98.0,
+        r_multiple=1.96, recorded_at=datetime(2026, 7, 19, 10, 0, 1), broker_ticket=1, db_path=db_path,
+    )
+    _mock_charts(monkeypatch)
+    monkeypatch.setattr(run_auditor, "notify", lambda text: True)
+    monkeypatch.setattr(run_auditor, "notify_photo", lambda png, caption=None: False)
+
+    args = argparse.Namespace(config="base", date="2026-07-19", mode=None, db_path=db_path, notify=True)
+    rc = run_auditor.cmd_daily(args)
+
+    assert rc == 0
+    state_path = tmp_path / "notify_last_daily.json"
+    assert json.loads(state_path.read_text(encoding="utf-8"))["server_date"] == "2026-07-19"
+
+
 def test_cmd_daily_notify_failure_does_not_mark_as_sent_and_retries_next_run(tmp_path, capsys, monkeypatch):
     # Regression guard: a Telegram outage during a daily report must not
     # permanently lose that day's notification -- unlike a genuinely

@@ -2,7 +2,8 @@
 """Telegram inbound control listener -- long-polls Telegram's getUpdates API
 and dispatches /start, /stop, /status, /emergency_stop (with confirmation)
 via autotrade.notify.telegram_control.handle_update(), replying through
-autotrade.notify.telegram.send_message(). See
+autotrade.notify.telegram.send_message() (text) and, for /daily's chart
+attachments, autotrade.notify.telegram.send_photo(). See
 AutoTrade_TelegramControl_Start.bat (repo root) for how this is normally
 launched -- the .bat's own console window IS the running listener; there is
 no separate PID/stop mechanism, closing the window stops it.
@@ -103,12 +104,14 @@ def run_poll_loop(
     chat_id: str,
     poll_fn=_get_updates,
     send_fn=None,
+    send_photo_fn=None,
     sleep_fn=time.sleep,
     clock=None,
     max_iterations: int | None = None,
 ) -> None:
     clock = clock or RealClock()
     send_fn = send_fn or telegram.send_message
+    send_photo_fn = send_photo_fn or telegram.send_photo
     pending = PendingConfirmation()
 
     offset = _discard_backlog(token, poll_fn, sleep_fn)
@@ -124,7 +127,9 @@ def run_poll_loop(
 
                 reply = handle_update(update, chat_id, pending, clock)
                 if reply is not None:
-                    send_fn(reply)
+                    send_fn(reply.text)
+                    for photo in reply.photos:
+                        send_photo_fn(photo.png, caption=photo.caption)
                 else:
                     logger.warning("Ignoring update from an unauthorized sender.")
         except Exception as exc:
@@ -158,7 +163,8 @@ def main() -> int:
     logger.info("Telegram control listener starting (authorized chat_id=%s).", chat_id)
     run_poll_loop(
         token, chat_id, poll_fn=_get_updates, send_fn=telegram.send_message,
-        sleep_fn=time.sleep, clock=RealClock(), max_iterations=args.max_iterations,
+        send_photo_fn=telegram.send_photo, sleep_fn=time.sleep, clock=RealClock(),
+        max_iterations=args.max_iterations,
     )
     return 0
 

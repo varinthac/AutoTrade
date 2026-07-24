@@ -1,11 +1,11 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1167 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1200 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1167 (including all parametrized variants)
-- **Test Files**: ~56 files across `tests/unit/` subdirectories
+- **Total Test Count**: 1200 (including all parametrized variants)
+- **Test Files**: ~57 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
 **Important**: This document is a point-in-time reference snapshot, not automatically generated. As tests are added, modified, or removed, this file must be manually updated to stay in sync with the actual test suite. When adding or changing tests, please update the relevant section and adjust the summary table counts below.
@@ -50,10 +50,11 @@ This document provides a comprehensive list of all 1167 test cases in the AutoTr
 | GUI | test_control.py | 16 |
 | | test_env_file.py | 16 |
 | **GUI Subtotal** | | **32** |
-| Notify | test_gate_state.py | 16 |
-| | test_telegram.py | 22 |
-| | test_telegram_control.py | 52 |
-| **Notify Subtotal** | | **90** |
+| Notify | test_charts.py | 10 |
+| | test_gate_state.py | 16 |
+| | test_telegram.py | 33 |
+| | test_telegram_control.py | 56 |
+| **Notify Subtotal** | | **115** |
 | Orchestrator | test_shadow_loop.py | 46 |
 | **Orchestrator Subtotal** | | **46** |
 | Risk | test_circuit_breaker.py | 32 |
@@ -86,16 +87,16 @@ This document provides a comprehensive list of all 1167 test cases in the AutoTr
 | | test_mt5_time.py | 4 |
 | | test_pid_file.py | 19 |
 | | test_poller.py | 10 |
-| | test_run_auditor.py | 37 |
+| | test_run_auditor.py | 42 |
 | | test_run_backtest.py | 24 |
 | | test_run_scheduled_daily_report.py | 3 |
 | | test_run_shadow_loop.py | 33 |
-| | test_run_telegram_control.py | 10 |
+| | test_run_telegram_control.py | 13 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **277** |
+| **Scripts & CLI Subtotal** | | **285** |
 | | | |
-| **GRAND TOTAL** | | **1167** |
+| **GRAND TOTAL** | | **1200** |
 
 ---
 
@@ -723,6 +724,19 @@ This document provides a comprehensive list of all 1167 test cases in the AutoTr
 
 ## Notify — Event notifications, Telegram control, gate state tracking
 
+### tests/unit/notify/test_charts.py
+
+- test_cumulative_equity_empty_trades
+- test_cumulative_equity_sums_in_exit_time_order_not_list_order
+- test_cumulative_equity_handles_losing_trades
+- test_daily_net_pnl_empty_trades
+- test_daily_net_pnl_sums_multiple_trades_on_the_same_day
+- test_daily_net_pnl_sorted_by_day_regardless_of_list_order
+- test_build_equity_curve_png_returns_valid_png_bytes (skipped if matplotlib can't render on this machine)
+- test_build_equity_curve_png_empty_trades_does_not_crash (skipped if matplotlib can't render on this machine)
+- test_build_daily_pnl_png_returns_valid_png_bytes (skipped if matplotlib can't render on this machine)
+- test_build_daily_pnl_png_empty_trades_does_not_crash (skipped if matplotlib can't render on this machine)
+
 ### tests/unit/notify/test_gate_state.py
 
 - test_promotion_gate_first_eval_always_changed
@@ -763,6 +777,17 @@ This document provides a comprehensive list of all 1167 test cases in the AutoTr
 - test_send_message_makes_zero_http_calls_when_credentials_missing
 - test_send_message_swallows_network_exception_and_returns_false
 - test_send_message_failure_log_never_contains_raw_token
+- test_notify_photo_posts_correct_url_and_multipart_body
+- test_notify_photo_without_caption_omits_caption_field
+- test_notify_photo_swallows_network_exception_and_returns_false
+- test_notify_photo_makes_zero_http_calls_when_credentials_missing
+- test_notify_photo_makes_zero_http_calls_when_notifications_disabled
+- test_notify_photo_failure_log_never_contains_raw_token
+- test_send_photo_posts_correct_url_and_multipart_body
+- test_send_photo_sends_even_when_notifications_disabled
+- test_send_photo_makes_zero_http_calls_when_credentials_missing
+- test_send_photo_swallows_network_exception_and_returns_false
+- test_send_photo_failure_log_never_contains_raw_token
 
 ### tests/unit/notify/test_telegram_control.py
 
@@ -802,6 +827,10 @@ This document provides a comprehensive list of all 1167 test cases in the AutoTr
 - test_positions_command_returns_graceful_reply_not_exception_when_display_raises
 - test_unauthorized_sender_cannot_reach_positions_command
 - test_daily_command_empty_db_returns_no_trades_message
+- test_daily_command_attaches_equity_and_daily_pnl_charts
+- test_daily_command_charts_built_from_full_trade_history_not_just_the_day
+- test_daily_command_degrades_to_text_only_reply_when_chart_rendering_fails
+- test_non_daily_commands_never_carry_photos
 - test_daily_command_cross_checks_against_build_daily_report_directly
 - test_trades_command_returns_graceful_reply_not_exception_when_journal_raises
 - test_daily_command_returns_graceful_reply_not_exception_when_journal_raises
@@ -1356,6 +1385,11 @@ This document provides a comprehensive list of all 1167 test cases in the AutoTr
 - test_cmd_daily_notify_corrupt_state_file_does_not_crash_and_still_sends
 - test_cmd_daily_notify_missing_state_dir_does_not_crash_and_still_sends
 - test_cmd_daily_notify_message_contains_real_report_content
+- test_cmd_daily_notify_sends_both_charts_after_text_succeeds
+- test_cmd_daily_notify_skips_charts_when_text_notify_fails
+- test_cmd_daily_notify_skips_charts_when_no_trades_at_all
+- test_cmd_daily_notify_chart_render_failure_does_not_crash_or_unmark_sent
+- test_cmd_daily_notify_chart_send_failure_does_not_unmark_sent
 - test_cmd_daily_notify_failure_does_not_mark_as_sent_and_retries_next_run
 - test_cmd_daily_defaults_to_server_date_not_local_today
 - test_server_today_uses_mt5_server_now_not_local_clock
@@ -1461,6 +1495,9 @@ This document provides a comprehensive list of all 1167 test cases in the AutoTr
 - test_startup_backlog_is_discarded_and_offset_advances_past_it
 - test_startup_backlog_discard_drains_multiple_pages
 - test_fresh_update_after_backlog_skip_produces_a_sent_reply
+- test_reply_with_photos_sends_text_then_each_photo_via_send_photo_fn
+- test_reply_with_no_photos_never_calls_send_photo_fn
+- test_default_send_photo_fn_is_telegram_send_photo_when_not_provided
 - test_backlog_discard_retries_on_transient_exception_then_succeeds
 - test_backlog_discard_gives_up_after_max_retries_and_still_starts_the_main_loop
 - test_backlog_discard_exception_message_never_logged_with_bot_token

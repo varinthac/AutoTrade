@@ -1,7 +1,11 @@
 """Unit tests for notify/telegram_control.py -- pure dispatch logic, no
 network I/O. gui.control's start_bot/stop_bot/emergency_stop_bot/build_status/
 format_status are always mocked (same "never actually launch a process"
-discipline as tests/unit/test_autotrade_control.py)."""
+discipline as tests/unit/test_autotrade_control.py). notify/charts.py's
+build_equity_curve_png/build_daily_pnl_png are likewise always mocked here --
+this module only needs to prove /daily ATTACHES whatever charts.py returns,
+not that matplotlib itself renders a correct PNG (that's charts.py's own
+test_charts.py's job)."""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
@@ -117,7 +121,7 @@ def test_emergency_stop_generates_code_and_does_not_call_emergency_stop_bot(monk
 
     assert calls == []
     assert pending.code is not None
-    assert pending.code in reply
+    assert pending.code in reply.text
 
 
 def test_correct_code_within_window_calls_emergency_stop_bot_exactly_once_and_clears_state(monkeypatch):
@@ -136,7 +140,7 @@ def test_correct_code_within_window_calls_emergency_stop_bot_exactly_once_and_cl
     assert len(calls) == 1
     assert pending.code is None
     assert pending.expires_at is None
-    assert "executed" in reply.lower()
+    assert "executed" in reply.text.lower()
 
 
 def test_wrong_code_does_not_call_emergency_stop_bot(monkeypatch):
@@ -216,8 +220,8 @@ def test_start_command_calls_start_bot_and_reports_success(monkeypatch):
 
     reply = handle_update(_update(12345, "/start"), "12345", pending, FixedClock(NOW))
 
-    assert "start" in reply.lower()
-    assert "fail" not in reply.lower()
+    assert "start" in reply.text.lower()
+    assert "fail" not in reply.text.lower()
 
 
 def test_start_command_reports_failure_with_returncode_and_stderr(monkeypatch):
@@ -229,8 +233,8 @@ def test_start_command_reports_failure_with_returncode_and_stderr(monkeypatch):
 
     reply = handle_update(_update(12345, "/start"), "12345", pending, FixedClock(NOW))
 
-    assert "1" in reply
-    assert "kill switch is active" in reply
+    assert "1" in reply.text
+    assert "kill switch is active" in reply.text
 
 
 def test_stop_command_calls_stop_bot_and_reports_success(monkeypatch):
@@ -244,7 +248,7 @@ def test_stop_command_calls_stop_bot_and_reports_success(monkeypatch):
     reply = handle_update(_update(12345, "/stop"), "12345", pending, FixedClock(NOW))
 
     assert len(calls) == 1
-    assert "fail" not in reply.lower()
+    assert "fail" not in reply.text.lower()
 
 
 def test_status_command_calls_build_status_and_format_status(monkeypatch):
@@ -258,7 +262,7 @@ def test_status_command_calls_build_status_and_format_status(monkeypatch):
 
     reply = handle_update(_update(12345, "/status"), "12345", pending, FixedClock(NOW))
 
-    assert reply == "STATUS TEXT"
+    assert reply.text == "STATUS TEXT"
 
 
 def test_help_command_returns_usage_text_listing_all_four_commands():
@@ -267,7 +271,7 @@ def test_help_command_returns_usage_text_listing_all_four_commands():
     reply = handle_update(_update(12345, "/help"), "12345", pending, FixedClock(NOW))
 
     for cmd in ("/start", "/stop", "/status", "/emergency_stop"):
-        assert cmd in reply
+        assert cmd in reply.text
 
 
 def test_unknown_command_returns_usage_text():
@@ -275,7 +279,7 @@ def test_unknown_command_returns_usage_text():
 
     reply = handle_update(_update(12345, "gibberish"), "12345", pending, FixedClock(NOW))
 
-    assert "/start" in reply
+    assert "/start" in reply.text
 
 
 # --- /trades, /daily ---------------------------------------------------------
@@ -304,7 +308,7 @@ def test_trades_command_empty_db_returns_no_trades_message(db_path):
 
     reply = handle_update(_update(12345, "/trades"), "12345", pending, FixedClock(NOW))
 
-    assert reply == "No trades recorded yet."
+    assert reply.text == "No trades recorded yet."
 
 
 def test_trades_command_shows_seeded_trade_field_values(db_path):
@@ -316,10 +320,10 @@ def test_trades_command_shows_seeded_trade_field_values(db_path):
 
     reply = handle_update(_update(12345, "/trades"), "12345", pending, FixedClock(NOW))
 
-    assert "EURUSD" in reply
-    assert "SELL" in reply
-    assert "-12.5" in reply
-    assert "stop_loss" in reply
+    assert "EURUSD" in reply.text
+    assert "SELL" in reply.text
+    assert "-12.5" in reply.text
+    assert "stop_loss" in reply.text
 
 
 def test_trades_command_caps_at_ten_most_recent(db_path):
@@ -331,11 +335,11 @@ def test_trades_command_caps_at_ten_most_recent(db_path):
 
     reply = handle_update(_update(12345, "/trades"), "12345", pending, FixedClock(NOW))
 
-    assert "Most recent 10 trade(s)" in reply
-    assert "SYM11" in reply
-    assert "SYM02" in reply
-    assert "SYM01" not in reply
-    assert "SYM00" not in reply
+    assert "Most recent 10 trade(s)" in reply.text
+    assert "SYM11" in reply.text
+    assert "SYM02" in reply.text
+    assert "SYM01" not in reply.text
+    assert "SYM00" not in reply.text
 
 
 # --- /positions ---------------------------------------------------------
@@ -356,7 +360,7 @@ def test_positions_command_shows_no_open_positions_message_for_empty_list(monkey
 
     reply = handle_update(_update(12345, "/positions"), "12345", pending, FixedClock(NOW))
 
-    assert reply == "No open positions."
+    assert reply.text == "No open positions."
 
 
 def test_positions_command_shows_distinct_message_when_mt5_unreachable(monkeypatch):
@@ -365,8 +369,8 @@ def test_positions_command_shows_distinct_message_when_mt5_unreachable(monkeypat
 
     reply = handle_update(_update(12345, "/positions"), "12345", pending, FixedClock(NOW))
 
-    assert "mt5" in reply.lower()
-    assert reply != "No open positions."
+    assert "mt5" in reply.text.lower()
+    assert reply.text != "No open positions."
 
 
 def test_positions_command_formats_seeded_position_field_values(monkeypatch):
@@ -375,14 +379,14 @@ def test_positions_command_formats_seeded_position_field_values(monkeypatch):
 
     reply = handle_update(_update(12345, "/positions"), "12345", pending, FixedClock(NOW))
 
-    assert "XAUUSD" in reply
-    assert "SELL" in reply
-    assert "0.01" in reply
-    assert "4051.48" in reply
-    assert "4048.20" in reply
-    assert "+15.60" in reply
-    assert "4091.52" in reply
-    assert "3971.40" in reply
+    assert "XAUUSD" in reply.text
+    assert "SELL" in reply.text
+    assert "0.01" in reply.text
+    assert "4051.48" in reply.text
+    assert "4048.20" in reply.text
+    assert "+15.60" in reply.text
+    assert "4091.52" in reply.text
+    assert "3971.40" in reply.text
 
 
 def test_positions_command_lists_multiple_positions(monkeypatch):
@@ -395,9 +399,9 @@ def test_positions_command_lists_multiple_positions(monkeypatch):
 
     reply = handle_update(_update(12345, "/positions"), "12345", pending, FixedClock(NOW))
 
-    assert "2 open position(s)" in reply
-    assert "XAUUSD" in reply
-    assert "EURUSD" in reply
+    assert "2 open position(s)" in reply.text
+    assert "XAUUSD" in reply.text
+    assert "EURUSD" in reply.text
 
 
 def test_positions_command_returns_graceful_reply_not_exception_when_display_raises(monkeypatch):
@@ -410,8 +414,8 @@ def test_positions_command_returns_graceful_reply_not_exception_when_display_rai
     reply = handle_update(_update(12345, "/positions"), "12345", pending, FixedClock(NOW))
 
     assert reply is not None
-    assert "Failed to fetch open positions" in reply
-    assert "MT5 terminal not running" in reply
+    assert "Failed to fetch open positions" in reply.text
+    assert "MT5 terminal not running" in reply.text
 
 
 def test_unauthorized_sender_cannot_reach_positions_command(monkeypatch):
@@ -428,7 +432,78 @@ def test_daily_command_empty_db_returns_no_trades_message(db_path):
 
     reply = handle_update(_update(12345, "/daily"), "12345", pending, FixedClock(NOW))
 
-    assert reply == "No trades recorded yet."
+    assert reply.text == "No trades recorded yet."
+    assert reply.photos == []
+
+
+def _mock_charts(monkeypatch):
+    calls = []
+
+    def _fake_equity(trades):
+        calls.append(("equity", trades))
+        return b"EQUITY-PNG-BYTES"
+
+    def _fake_daily_pnl(trades):
+        calls.append(("daily_pnl", trades))
+        return b"DAILY-PNL-PNG-BYTES"
+
+    monkeypatch.setattr(telegram_control.charts, "build_equity_curve_png", _fake_equity)
+    monkeypatch.setattr(telegram_control.charts, "build_daily_pnl_png", _fake_daily_pnl)
+    return calls
+
+
+def test_daily_command_attaches_equity_and_daily_pnl_charts(db_path, monkeypatch):
+    calls = _mock_charts(monkeypatch)
+    _record_trade(db_path, broker_ticket=1)
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/daily"), "12345", pending, FixedClock(NOW))
+
+    assert len(reply.photos) == 2
+    assert reply.photos[0].png == b"EQUITY-PNG-BYTES"
+    assert reply.photos[0].caption == "Equity curve"
+    assert reply.photos[1].png == b"DAILY-PNL-PNG-BYTES"
+    assert reply.photos[1].caption == "Daily net P/L"
+    assert [name for name, _ in calls] == ["equity", "daily_pnl"]
+
+
+def test_daily_command_charts_built_from_full_trade_history_not_just_the_day(db_path, monkeypatch):
+    # Charts must reflect the WHOLE recorded history, not just the single
+    # server_date the text report is scoped to -- an equity curve/daily P/L
+    # bar chart with only one day's data would be a near-useless image.
+    calls = _mock_charts(monkeypatch)
+    _record_trade(db_path, exit_time=datetime(2026, 7, 18, 10, 0), broker_ticket=1)
+    _record_trade(db_path, exit_time=datetime(2026, 7, 19, 10, 0), broker_ticket=2)
+    pending = PendingConfirmation()
+
+    handle_update(_update(12345, "/daily"), "12345", pending, FixedClock(NOW))
+
+    equity_trades = calls[0][1]
+    assert len(equity_trades) == 2
+
+
+def test_daily_command_degrades_to_text_only_reply_when_chart_rendering_fails(db_path, monkeypatch):
+    def _raise(trades):
+        raise RuntimeError("matplotlib not available")
+
+    monkeypatch.setattr(telegram_control.charts, "build_equity_curve_png", _raise)
+    _record_trade(db_path, broker_ticket=1)
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/daily"), "12345", pending, FixedClock(NOW))
+
+    assert reply.photos == []
+    assert "Daily report" in reply.text  # the text report itself must still come through
+
+
+def test_non_daily_commands_never_carry_photos(monkeypatch):
+    monkeypatch.setattr(telegram_control.gui_control, "build_status", lambda: "REPORT")
+    monkeypatch.setattr(telegram_control.gui_control, "format_status", lambda report: "STATUS TEXT")
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/status"), "12345", pending, FixedClock(NOW))
+
+    assert reply.photos == []
 
 
 def test_daily_command_cross_checks_against_build_daily_report_directly(db_path):
@@ -444,7 +519,7 @@ def test_daily_command_cross_checks_against_build_daily_report_directly(db_path)
     reply = handle_update(_update(12345, "/daily"), "12345", pending, FixedClock(NOW))
 
     expected_report = build_daily_report(date(2026, 7, 19), db_path=db_path)
-    assert reply == format_daily_report(expected_report)
+    assert reply.text == format_daily_report(expected_report)
 
 
 def test_trades_command_returns_graceful_reply_not_exception_when_journal_raises(db_path, monkeypatch):
@@ -457,8 +532,8 @@ def test_trades_command_returns_graceful_reply_not_exception_when_journal_raises
     reply = handle_update(_update(12345, "/trades"), "12345", pending, FixedClock(NOW))
 
     assert reply is not None
-    assert "Failed to fetch trade data" in reply
-    assert "database is locked" in reply
+    assert "Failed to fetch trade data" in reply.text
+    assert "database is locked" in reply.text
 
 
 def test_daily_command_returns_graceful_reply_not_exception_when_journal_raises(db_path, monkeypatch):
@@ -471,8 +546,8 @@ def test_daily_command_returns_graceful_reply_not_exception_when_journal_raises(
     reply = handle_update(_update(12345, "/daily"), "12345", pending, FixedClock(NOW))
 
     assert reply is not None
-    assert "Failed to fetch trade data" in reply
-    assert "database is locked" in reply
+    assert "Failed to fetch trade data" in reply.text
+    assert "database is locked" in reply.text
 
 
 def test_daily_command_returns_graceful_reply_when_build_daily_report_raises(db_path, monkeypatch):
@@ -487,8 +562,8 @@ def test_daily_command_returns_graceful_reply_when_build_daily_report_raises(db_
     reply = handle_update(_update(12345, "/daily"), "12345", pending, FixedClock(NOW))
 
     assert reply is not None
-    assert "Failed to fetch trade data" in reply
-    assert "database is locked" in reply
+    assert "Failed to fetch trade data" in reply.text
+    assert "database is locked" in reply.text
 
 
 def test_help_command_lists_trades_and_daily_commands():
@@ -496,9 +571,9 @@ def test_help_command_lists_trades_and_daily_commands():
 
     reply = handle_update(_update(12345, "/help"), "12345", pending, FixedClock(NOW))
 
-    assert "/trades" in reply
-    assert "/positions" in reply
-    assert "/daily" in reply
+    assert "/trades" in reply.text
+    assert "/positions" in reply.text
+    assert "/daily" in reply.text
 
 
 # --- unauthorized sender ------------------------------------------------------
@@ -542,8 +617,8 @@ def test_unrelated_message_while_pending_clears_state_with_explicit_reply(monkey
     reply = handle_update(_update(12345, "oops wrong chat"), "12345", pending, clock)
 
     assert pending.code is None
-    assert "cancelled" in reply.lower()
-    assert "/emergency_stop" in reply
+    assert "cancelled" in reply.text.lower()
+    assert "/emergency_stop" in reply.text
 
 
 def test_correct_code_after_interleaved_message_no_longer_works(monkeypatch):
@@ -567,8 +642,8 @@ def test_wrong_code_guess_still_gets_the_original_did_not_match_reply():
 
     reply = handle_update(_update(12345, "0000"), "12345", pending, clock)
 
-    assert "did not match" in reply.lower()
-    assert "cancelled" not in reply.lower()
+    assert "did not match" in reply.text.lower()
+    assert "cancelled" not in reply.text.lower()
 
 
 def test_unrelated_message_with_no_pending_confirmation_gets_usage_text():
@@ -576,8 +651,8 @@ def test_unrelated_message_with_no_pending_confirmation_gets_usage_text():
 
     reply = handle_update(_update(12345, "hello there"), "12345", pending, FixedClock(NOW))
 
-    assert "/start" in reply
-    assert "cancelled" not in reply.lower()
+    assert "/start" in reply.text
+    assert "cancelled" not in reply.text.lower()
 
 
 # --- confirmation code generation (secrets) ------------------------------------
@@ -616,8 +691,8 @@ def test_start_command_gui_control_raising_returns_graceful_reply_not_exception(
 
     reply = handle_update(_update(12345, "/start"), "12345", pending, FixedClock(NOW))
 
-    assert "Failed to execute /start" in reply
-    assert "bad interpreter path" in reply
+    assert "Failed to execute /start" in reply.text
+    assert "bad interpreter path" in reply.text
 
 
 def test_stop_command_gui_control_raising_returns_graceful_reply(monkeypatch):
@@ -629,7 +704,7 @@ def test_stop_command_gui_control_raising_returns_graceful_reply(monkeypatch):
 
     reply = handle_update(_update(12345, "/stop"), "12345", pending, FixedClock(NOW))
 
-    assert "Failed to execute /stop" in reply
+    assert "Failed to execute /stop" in reply.text
 
 
 def test_emergency_stop_confirm_gui_control_raising_returns_graceful_reply(monkeypatch):
@@ -644,4 +719,4 @@ def test_emergency_stop_confirm_gui_control_raising_returns_graceful_reply(monke
 
     reply = handle_update(_update(12345, code), "12345", pending, clock)
 
-    assert "Failed to execute /emergency_stop" in reply
+    assert "Failed to execute /emergency_stop" in reply.text

@@ -140,6 +140,74 @@ def test_fresh_update_after_backlog_skip_produces_a_sent_reply(monkeypatch):
     assert sent == ["STATUS: REPORT"]
 
 
+# --- run_poll_loop(): photo-carrying replies (/daily's charts) ---------------
+
+
+def test_reply_with_photos_sends_text_then_each_photo_via_send_photo_fn(monkeypatch):
+    photo1 = telegram_control.ChartPhoto(png=b"PNG-EQUITY", caption="Equity curve")
+    photo2 = telegram_control.ChartPhoto(png=b"PNG-DAILY", caption="Daily net P/L")
+    reply = telegram_control.ControlReply(text="Daily report text", photos=[photo1, photo2])
+    monkeypatch.setattr(run_telegram_control, "handle_update", lambda *a, **kw: reply)
+
+    def fake_poll(token, offset, timeout_sec):
+        if timeout_sec == 0:
+            return []
+        return [_update(10, text="/daily")]
+
+    sent_text = []
+    sent_photos = []
+    run_telegram_control.run_poll_loop(
+        "TOKEN", "12345", poll_fn=fake_poll, send_fn=lambda text: sent_text.append(text),
+        send_photo_fn=lambda png, caption=None: sent_photos.append((png, caption)),
+        sleep_fn=lambda s: None, clock=FixedClock(NOW), max_iterations=1,
+    )
+
+    assert sent_text == ["Daily report text"]
+    assert sent_photos == [(b"PNG-EQUITY", "Equity curve"), (b"PNG-DAILY", "Daily net P/L")]
+
+
+def test_reply_with_no_photos_never_calls_send_photo_fn(monkeypatch):
+    monkeypatch.setattr(telegram_control.gui_control, "build_status", lambda: "REPORT")
+    monkeypatch.setattr(telegram_control.gui_control, "format_status", lambda report: f"STATUS: {report}")
+
+    def fake_poll(token, offset, timeout_sec):
+        if timeout_sec == 0:
+            return []
+        return [_update(10, text="/status")]
+
+    sent_photos = []
+    run_telegram_control.run_poll_loop(
+        "TOKEN", "12345", poll_fn=fake_poll, send_fn=lambda text: None,
+        send_photo_fn=lambda png, caption=None: sent_photos.append((png, caption)),
+        sleep_fn=lambda s: None, clock=FixedClock(NOW), max_iterations=1,
+    )
+
+    assert sent_photos == []
+
+
+def test_default_send_photo_fn_is_telegram_send_photo_when_not_provided(monkeypatch):
+    photo = telegram_control.ChartPhoto(png=b"PNG-DEFAULT", caption="cap")
+    reply = telegram_control.ControlReply(text="ok", photos=[photo])
+    monkeypatch.setattr(run_telegram_control, "handle_update", lambda *a, **kw: reply)
+    calls = []
+    monkeypatch.setattr(
+        run_telegram_control.telegram, "send_photo",
+        lambda png, caption=None: calls.append((png, caption)) or True,
+    )
+
+    def fake_poll(token, offset, timeout_sec):
+        if timeout_sec == 0:
+            return []
+        return [_update(10, text="/daily")]
+
+    run_telegram_control.run_poll_loop(
+        "TOKEN", "12345", poll_fn=fake_poll, send_fn=lambda text: None,
+        sleep_fn=lambda s: None, clock=FixedClock(NOW), max_iterations=1,
+    )
+
+    assert calls == [(b"PNG-DEFAULT", "cap")]
+
+
 # --- run_poll_loop(): backlog-discard exception handling ---------------------
 
 

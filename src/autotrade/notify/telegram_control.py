@@ -12,11 +12,18 @@ query shared with `dashboard/app.py`'s `/trades` page, rather than
 duplicating the mt5.positions_get() + symbol-mapping + None-vs-empty-list
 logic here or importing `dashboard/app.py` itself (which would pull in a
 transitive Flask dependency this listener has no other reason to need).
+
+`handle_update()` returns a `ControlReply` (text + optional chart `photos`),
+not a plain `str`, so /daily's equity-curve/daily-P&L chart PNGs
+(notify/charts.py -- pure PNG-bytes rendering, still no network I/O) can
+travel alongside its text report through the same single reply shape every
+other command already uses (with an empty `photos` list).
 """
 from __future__ import annotations
 
+import logging
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from autotrade.auditor.daily_report import build_daily_report, format_daily_report
@@ -24,8 +31,11 @@ from autotrade.common.clock import Clock
 from autotrade.dashboard import views
 from autotrade.dashboard.positions import get_open_positions_display
 from autotrade.gui import control as gui_control
+from autotrade.notify import charts
 from autotrade.store import journal
 from autotrade.store.models import DEFAULT_PAPER_DB_PATH
+
+logger = logging.getLogger(__name__)
 
 UNKNOWN_COMMAND = "unknown"
 
@@ -49,6 +59,27 @@ _USAGE_TEXT = (
     "/positions - currently open positions\n"
     "/daily - daily trade-autopsy report for the most recent recorded day"
 )
+
+
+@dataclass(frozen=True)
+class ChartPhoto:
+    png: bytes
+    caption: str
+
+
+@dataclass(frozen=True)
+class ControlReply:
+    """`handle_update()`'s return type -- `text` alone for every command
+    except `/daily`, which additionally carries `photos` (the equity-curve
+    and daily-P/L chart PNGs, see notify/charts.py) so
+    scripts/run_telegram_control.py's poll loop has exactly ONE reply shape
+    to send instead of branching on which command produced it. A list
+    (rather than a single `photo_png`) because /daily always produces TWO
+    distinct charts, not one; captions are per-photo since each chart needs
+    its own short label, not one caption shared across both."""
+
+    text: str
+    photos: list[ChartPhoto] = field(default_factory=list)
 
 
 def is_authorized(update: dict, configured_chat_id: str) -> bool:
@@ -193,7 +224,7 @@ def _handle_positions() -> str:
     return "\n".join(lines)
 
 
-def _handle_daily() -> str:
+def _handle_daily() -> ControlReply:
     # Same failure-reply guarantee as _handle_trades, and for the same
     # reason (run_poll_loop's offset advancement means an uncaught exception
     # here silently drops the operator's message).
@@ -204,16 +235,36 @@ def _handle_daily() -> str:
         all_trades = journal.get_trades_in_range(views.EPOCH, views.FAR_FUTURE, db_path=DEFAULT_PAPER_DB_PATH)
         server_date = views.default_daily_date(all_trades)
         if server_date is None:
-            return "No trades recorded yet."
+            return ControlReply(text="No trades recorded yet.")
         report = build_daily_report(server_date, db_path=DEFAULT_PAPER_DB_PATH)
-        return format_daily_report(report)
+        text = format_daily_report(report)
     except Exception as exc:
-        return f"Failed to fetch trade data: {exc}. Try again."
+        return ControlReply(text=f"Failed to fetch trade data: {exc}. Try again.")
+
+    try:
+        # Charts are built from the FULL trade history already fetched above
+        # (all_trades), not just server_date's single day -- an equity
+        # curve/daily P/L bar chart is only meaningful across the whole
+        # recorded history, unlike the day-scoped report text itself. A
+        # separate try/except from the fetch/report block above: a chart
+        # RENDERING failure must not swallow an otherwise-successful text
+        # report into the "Failed to fetch trade data" message -- same
+        # "must still guarantee a reply" reasoning, just degrading to a
+        # text-only reply here instead of no reply at all.
+        photos = [
+            ChartPhoto(png=charts.build_equity_curve_png(all_trades), caption="Equity curve"),
+            ChartPhoto(png=charts.build_daily_pnl_png(all_trades), caption="Daily net P/L"),
+        ]
+    except Exception as exc:
+        logger.warning("/daily: chart rendering failed (%s) -- replying with text only.", exc)
+        return ControlReply(text=text)
+
+    return ControlReply(text=text, photos=photos)
 
 
 def handle_update(
     update: dict, configured_chat_id: str, pending: PendingConfirmation, clock: Clock,
-) -> str | None:
+) -> ControlReply | None:
     if not is_authorized(update, configured_chat_id):
         return None
 
@@ -221,41 +272,47 @@ def handle_update(
     command = parse_command(text)
 
     if command == "/start":
-        return _run_gui_action("/start", gui_control.start_bot, "AutoTrade start requested.")
+        return ControlReply(text=_run_gui_action("/start", gui_control.start_bot, "AutoTrade start requested."))
     if command == "/stop":
-        return _run_gui_action("/stop", gui_control.stop_bot, "Graceful stop requested.")
+        return ControlReply(text=_run_gui_action("/stop", gui_control.stop_bot, "Graceful stop requested."))
     if command == "/status":
-        return gui_control.format_status(gui_control.build_status())
+        return ControlReply(text=gui_control.format_status(gui_control.build_status()))
     if command == "/emergency_stop":
         code = pending.request(clock)
-        return (
-            "EMERGENCY STOP requested -- this halts trading AND closes every open "
-            f"position at market. Reply with {code} within 60 seconds to confirm."
+        return ControlReply(
+            text=(
+                "EMERGENCY STOP requested -- this halts trading AND closes every open "
+                f"position at market. Reply with {code} within 60 seconds to confirm."
+            )
         )
     if command == "/trades":
-        return _handle_trades()
+        return ControlReply(text=_handle_trades())
     if command == "/positions":
-        return _handle_positions()
+        return ControlReply(text=_handle_positions())
     if command == "/daily":
         return _handle_daily()
     if command == "/help":
-        return _USAGE_TEXT
+        return ControlReply(text=_USAGE_TEXT)
 
     had_pending = pending.code is not None
     if pending.confirm(text, clock):
-        return _run_gui_action("/emergency_stop", gui_control.emergency_stop_bot, "Emergency stop executed.")
+        return ControlReply(
+            text=_run_gui_action("/emergency_stop", gui_control.emergency_stop_bot, "Emergency stop executed.")
+        )
 
     if _looks_like_confirmation_attempt(text):
-        return "Confirmation code did not match or has expired -- emergency stop NOT executed."
+        return ControlReply(text="Confirmation code did not match or has expired -- emergency stop NOT executed.")
 
     if had_pending:
         # PendingConfirmation.confirm() already cleared the state above (same
         # single-guess-then-clear property as a wrong code) -- this branch
         # only changes the REPLY, so the operator knows an interleaved
         # message cancelled it rather than reading it as their code timing out.
-        return (
-            "Emergency-stop confirmation cancelled (a different message was received first). "
-            "Re-issue /emergency_stop if you still want to close all positions."
+        return ControlReply(
+            text=(
+                "Emergency-stop confirmation cancelled (a different message was received first). "
+                "Re-issue /emergency_stop if you still want to close all positions."
+            )
         )
 
-    return _USAGE_TEXT
+    return ControlReply(text=_USAGE_TEXT)

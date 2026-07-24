@@ -14,7 +14,10 @@ demotion-rule evaluation (§5.3), and borderline-case expectancy tracking
 `--notify` (daily/promotion/demotion only) sends a Telegram message
 (notify/telegram.py) -- `daily --notify` de-dupes on the report's own
 `server_date` via a small state file (`data/db/notify_last_daily.json`) so a
-double-invocation can't double-send; `promotion --notify`/`demotion --notify`
+double-invocation can't double-send, and (once the report text itself has
+sent successfully) also attaches the equity-curve/daily-P&L chart images
+(notify/charts.py) as a best-effort follow-up, not part of the dedup state
+itself (see `_send_daily_charts`); `promotion --notify`/`demotion --notify`
 only send when the evaluated result differs from the last-known one
 (notify/gate_state.py). This CLI does not build or run a scheduler itself --
 `daily --notify` is meant to be invoked once per day, comfortably after the
@@ -65,8 +68,8 @@ from autotrade.common.mt5_connection import mt5_session
 from autotrade.common.mt5_time import server_now
 from autotrade.common.symbols import get_symbol_spec, to_broker_name
 from autotrade.feed.historical import HISTORICAL_DIR
-from autotrade.notify import gate_state
-from autotrade.notify.telegram import notify
+from autotrade.notify import charts, gate_state
+from autotrade.notify.telegram import notify, notify_photo
 from autotrade.orchestrator.shadow_loop import DEFAULT_BORDERLINE_LOG_PATH
 from autotrade.risk.circuit_breaker import HEAVY_CB_MARKER
 from autotrade.store import journal
@@ -140,6 +143,31 @@ def _print_gate_result(title: str, result) -> None:
         print(f"recommendation: {result.recommendation}")
 
 
+def _send_daily_charts(db_path: Path | None) -> None:
+    """Best-effort equity-curve/daily-P&L chart attachments for the daily
+    --notify flow, sent after the report text itself already succeeded --
+    over the FULL trade history (not just server_date's single day), same
+    reasoning notify/telegram_control.py's _handle_daily() charts use. Both
+    a chart-RENDERING failure and a chart-SEND failure are only logged, never
+    un-mark the daily report as sent (see cmd_daily): the report TEXT is the
+    notification of record for the existing dedup-on-server_date state;
+    charts are a supplementary attachment on top of it, not a second thing
+    to dedupe/retry separately."""
+    trades = journal.get_trades_in_range(_EPOCH, _FAR_FUTURE, db_path=db_path)
+    if not trades:
+        return
+    try:
+        equity_png = charts.build_equity_curve_png(trades)
+        daily_pnl_png = charts.build_daily_pnl_png(trades)
+    except Exception as exc:
+        logger.warning("daily --notify: chart rendering failed (%s) -- skipping chart attachments.", exc)
+        return
+    if not notify_photo(equity_png, caption="Equity curve"):
+        logger.warning("daily --notify: equity-curve chart send failed.")
+    if not notify_photo(daily_pnl_png, caption="Daily net P/L"):
+        logger.warning("daily --notify: daily P/L chart send failed.")
+
+
 def cmd_daily(args: argparse.Namespace) -> int:
     cfg = load_yaml_config(args.config)
     server_date = _parse_date(args.date) if args.date else _server_today(cfg)
@@ -153,6 +181,7 @@ def cmd_daily(args: argparse.Namespace) -> int:
             logger.info("daily --notify: already sent for server_date=%s -- skipping", server_date)
         elif notify(format_daily_report(report)):
             _save_last_notified_daily_date(server_date, DEFAULT_NOTIFY_DAILY_STATE_PATH)
+            _send_daily_charts(db_path)
         else:
             logger.warning(
                 "daily --notify: Telegram send failed for server_date=%s -- NOT marking it sent, so "
