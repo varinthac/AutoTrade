@@ -38,12 +38,12 @@
       <tr>
         <td>{{ position.symbol }}</td>
         <td><span class="badge {{ 'badge-buy' if position.direction == 'BUY' else 'badge-sell' }}">{{ position.direction }}</span></td>
-        <td>{{ position.volume }}</td>
-        <td>{{ position.price_open }}</td>
-        <td>{{ position.price_current }}</td>
-        <td>{{ position.sl }}</td>
-        <td>{{ position.tp }}</td>
-        <td class="{{ 'pnl-positive' if position.profit > 0 else ('pnl-negative' if position.profit < 0 else '') }}">{{ position.profit }}</td>
+        <td>{{ position.volume | round(4) }}</td>
+        <td>{{ position.price_open | round(4) }}</td>
+        <td>{{ position.price_current | round(4) }}</td>
+        <td>{{ position.sl | round(4) }}</td>
+        <td>{{ position.tp | round(4) }}</td>
+        <td class="{{ 'pnl-positive' if position.profit > 0 else ('pnl-negative' if position.profit < 0 else '') }}">{{ position.profit | round(4) }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -78,12 +78,12 @@
         <td>{{ row.symbol }}</td>
         <td><span class="badge {{ 'badge-buy' if row.direction == 'BUY' else 'badge-sell' }}">{{ row.direction }}</span></td>
         <td>{{ row.entry_time }}</td>
-        <td>{{ row.entry_price }}</td>
-        <td>{{ row.exit_price }}</td>
-        <td>{{ row.lot_size }}</td>
-        <td class="{{ 'pnl-negative' if row.cost > 0 else '' }}">{{ row.cost }}</td>
-        <td class="{{ 'pnl-positive' if row.net_pnl > 0 else ('pnl-negative' if row.net_pnl < 0 else '') }}">{{ row.net_pnl }}</td>
-        <td class="{{ 'pnl-positive' if row.r_multiple > 0 else ('pnl-negative' if row.r_multiple < 0 else '') }}">{{ row.r_multiple }}</td>
+        <td>{{ row.entry_price | round(4) }}</td>
+        <td>{{ row.exit_price | round(4) }}</td>
+        <td>{{ row.lot_size | round(4) }}</td>
+        <td class="{{ 'pnl-negative' if row.cost > 0 else '' }}">{{ row.cost | round(4) }}</td>
+        <td class="{{ 'pnl-positive' if row.net_pnl > 0 else ('pnl-negative' if row.net_pnl < 0 else '') }}">{{ row.net_pnl | round(4) }}</td>
+        <td class="{{ 'pnl-positive' if row.r_multiple > 0 else ('pnl-negative' if row.r_multiple < 0 else '') }}">{{ row.r_multiple | round(4) }}</td>
         <td>{{ row.exit_reason }}</td>
       </tr>
       {% endfor %}

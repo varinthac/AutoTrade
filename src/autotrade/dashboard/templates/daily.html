@@ -21,11 +21,11 @@
   </div>
   <div class="stat-card">
     <div class="label">Net P&amp;L</div>
-    <div class="value {{ 'pnl-positive' if report.net_pnl > 0 else ('pnl-negative' if report.net_pnl < 0 else '') }}">{{ report.net_pnl }}</div>
+    <div class="value {{ 'pnl-positive' if report.net_pnl > 0 else ('pnl-negative' if report.net_pnl < 0 else '') }}">{{ report.net_pnl | round(4) }}</div>
   </div>
   <div class="stat-card">
     <div class="label">Avg R multiple</div>
-    <div class="value">{{ report.avg_r_multiple if report.avg_r_multiple is not none else "n/a" }}</div>
+    <div class="value">{{ report.avg_r_multiple | round(4) if report.avg_r_multiple is not none else "n/a" }}</div>
   </div>
 </div>
 
@@ -41,8 +41,8 @@
 <div class="detail-list">
   <h3>Execution quality</h3>
   <ul>
-    <li>Avg entry spread (expected slippage): {{ report.avg_entry_spread_points if report.avg_entry_spread_points is not none else "n/a" }} points</li>
-    <li>Avg actual slippage: {{ report.avg_actual_slippage if report.avg_actual_slippage is not none else "n/a" }} points</li>
+    <li>Avg entry spread (expected slippage): {{ report.avg_entry_spread_points | round(4) if report.avg_entry_spread_points is not none else "n/a" }} points</li>
+    <li>Avg actual slippage: {{ report.avg_actual_slippage | round(4) if report.avg_actual_slippage is not none else "n/a" }} points</li>
   </ul>
 </div>
 
