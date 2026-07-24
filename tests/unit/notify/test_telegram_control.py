@@ -15,7 +15,16 @@ import pytest
 from autotrade.auditor.daily_report import build_daily_report, format_daily_report
 from autotrade.dashboard import views
 from autotrade.notify import telegram_control
-from autotrade.notify.telegram_control import PendingConfirmation, handle_update, has_text_message, is_authorized, parse_command
+from autotrade.notify.telegram_control import (
+    PendingConfirmation,
+    handle_callback_query,
+    handle_update,
+    has_callback_query,
+    has_text_message,
+    is_authorized,
+    parse_callback_data,
+    parse_command,
+)
 from autotrade.store import journal
 
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
@@ -37,6 +46,18 @@ class _FakeCompletedProcess:
 
 def _update(chat_id, text, update_id: int = 1) -> dict:
     return {"update_id": update_id, "message": {"chat": {"id": chat_id}, "text": text}}
+
+
+def _callback_update(chat_id, data, update_id: int = 1, callback_query_id: str = "cbq1") -> dict:
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": callback_query_id,
+            "data": data,
+            "from": {"id": chat_id},
+            "message": {"chat": {"id": chat_id}},
+        },
+    }
 
 
 # --- is_authorized() --------------------------------------------------------
@@ -70,6 +91,23 @@ def test_is_authorized_never_raises_on_completely_malformed_update():
     assert is_authorized({"message": "not a dict"}, "12345") is False
 
 
+def test_is_authorized_matches_callback_query_chat_id():
+    update = _callback_update(12345, "cmd:positions")
+
+    assert is_authorized(update, "12345") is True
+
+
+def test_is_authorized_rejects_non_matching_callback_query_chat_id():
+    update = _callback_update(99999, "cmd:positions")
+
+    assert is_authorized(update, "12345") is False
+
+
+def test_is_authorized_never_raises_on_malformed_callback_query():
+    assert is_authorized({"callback_query": "not a dict"}, "12345") is False
+    assert is_authorized({"callback_query": {"message": "not a dict"}}, "12345") is False
+
+
 # --- has_text_message() -----------------------------------------------------
 
 
@@ -83,6 +121,25 @@ def test_has_text_message_false_when_no_message():
 
 def test_has_text_message_false_when_message_has_no_text():
     assert has_text_message({"update_id": 1, "message": {"chat": {"id": 1}, "sticker": {}}}) is False
+
+
+# --- has_callback_query() -----------------------------------------------------
+
+
+def test_has_callback_query_true_for_valid_callback_query():
+    assert has_callback_query(_callback_update(12345, "cmd:positions")) is True
+
+
+def test_has_callback_query_false_when_no_callback_query():
+    assert has_callback_query(_update(12345, "/status")) is False
+
+
+def test_has_callback_query_false_when_callback_query_has_no_data():
+    assert has_callback_query({"update_id": 1, "callback_query": {"id": "cbq1"}}) is False
+
+
+def test_has_callback_query_false_when_callback_query_is_not_a_dict():
+    assert has_callback_query({"update_id": 1, "callback_query": "not a dict"}) is False
 
 
 # --- parse_command() ---------------------------------------------------------
@@ -106,6 +163,36 @@ def test_parse_command_unknown_text():
 
 def test_parse_command_empty_string():
     assert parse_command("") == telegram_control.UNKNOWN_COMMAND
+
+
+# --- parse_callback_data() ----------------------------------------------------
+
+
+def test_parse_callback_data_positions_maps_to_positions_command():
+    assert parse_callback_data("cmd:positions") == "/positions"
+
+
+def test_parse_callback_data_trades_maps_to_trades_command():
+    assert parse_callback_data("cmd:trades") == "/trades"
+
+
+def test_parse_callback_data_daily_maps_to_daily_command():
+    assert parse_callback_data("cmd:daily") == "/daily"
+
+
+def test_parse_callback_data_unknown_string_returns_unknown_command():
+    assert parse_callback_data("cmd:emergency_stop") == telegram_control.UNKNOWN_COMMAND
+
+
+def test_parse_callback_data_empty_string_returns_unknown_command():
+    assert parse_callback_data("") == telegram_control.UNKNOWN_COMMAND
+
+
+def test_parse_callback_data_never_maps_to_a_consequential_command():
+    # /start, /stop, /emergency_stop must never be reachable via a button
+    # tap -- a deliberate safety boundary, not an oversight.
+    for data in ("cmd:start", "cmd:stop", "cmd:emergency_stop"):
+        assert parse_callback_data(data) == telegram_control.UNKNOWN_COMMAND
 
 
 # --- PendingConfirmation ------------------------------------------------------
@@ -265,6 +352,18 @@ def test_status_command_calls_build_status_and_format_status(monkeypatch):
     assert reply.text == "STATUS TEXT"
 
 
+def test_status_command_reply_carries_quick_access_inline_keyboard(monkeypatch):
+    monkeypatch.setattr(telegram_control.gui_control, "build_status", lambda: "REPORT")
+    monkeypatch.setattr(telegram_control.gui_control, "format_status", lambda report: "STATUS TEXT")
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/status"), "12345", pending, FixedClock(NOW))
+
+    buttons = reply.reply_markup["inline_keyboard"][0]
+    callback_data = {button["callback_data"] for button in buttons}
+    assert callback_data == {"cmd:positions", "cmd:trades", "cmd:daily"}
+
+
 def test_help_command_returns_usage_text_listing_all_four_commands():
     pending = PendingConfirmation()
 
@@ -274,12 +373,43 @@ def test_help_command_returns_usage_text_listing_all_four_commands():
         assert cmd in reply.text
 
 
+def test_help_command_reply_carries_quick_access_inline_keyboard():
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/help"), "12345", pending, FixedClock(NOW))
+
+    buttons = reply.reply_markup["inline_keyboard"][0]
+    callback_data = {button["callback_data"] for button in buttons}
+    assert callback_data == {"cmd:positions", "cmd:trades", "cmd:daily"}
+
+
+def test_quick_access_keyboard_never_offers_start_stop_or_emergency_stop_buttons():
+    # A deliberate safety boundary -- consequential actions must stay
+    # explicit-typed-command-only, never reachable via a one-tap button.
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/status"), "12345", pending, FixedClock(NOW))
+
+    buttons = reply.reply_markup["inline_keyboard"][0]
+    callback_data = {button["callback_data"] for button in buttons}
+    assert callback_data.isdisjoint({"cmd:start", "cmd:stop", "cmd:emergency_stop"})
+
+
 def test_unknown_command_returns_usage_text():
     pending = PendingConfirmation()
 
     reply = handle_update(_update(12345, "gibberish"), "12345", pending, FixedClock(NOW))
 
     assert "/start" in reply.text
+
+
+def test_non_status_help_commands_do_not_carry_reply_markup(monkeypatch):
+    monkeypatch.setattr(telegram_control.gui_control, "start_bot", lambda: _FakeCompletedProcess(0))
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/start"), "12345", pending, FixedClock(NOW))
+
+    assert reply.reply_markup is None
 
 
 # --- /trades, /daily ---------------------------------------------------------
@@ -574,6 +704,70 @@ def test_help_command_lists_trades_and_daily_commands():
     assert "/trades" in reply.text
     assert "/positions" in reply.text
     assert "/daily" in reply.text
+
+
+# --- handle_callback_query() (tapped inline-keyboard buttons) ----------------
+
+
+def test_handle_callback_query_positions_matches_typed_command_reply(monkeypatch):
+    rows = [_open_position_row()]
+    monkeypatch.setattr(telegram_control, "get_open_positions_display", lambda: rows)
+
+    typed_reply = handle_update(_update(12345, "/positions"), "12345", PendingConfirmation(), FixedClock(NOW))
+    tapped_reply = handle_callback_query(_callback_update(12345, "cmd:positions"), "12345")
+
+    assert tapped_reply.text == typed_reply.text
+    assert tapped_reply.photos == []
+
+
+def test_handle_callback_query_trades_matches_typed_command_reply(db_path):
+    _record_trade(db_path, symbol="EURUSD", broker_ticket=1)
+
+    typed_reply = handle_update(_update(12345, "/trades"), "12345", PendingConfirmation(), FixedClock(NOW))
+    tapped_reply = handle_callback_query(_callback_update(12345, "cmd:trades"), "12345")
+
+    assert tapped_reply.text == typed_reply.text
+
+
+def test_handle_callback_query_daily_matches_typed_command_reply(db_path, monkeypatch):
+    _mock_charts(monkeypatch)
+    _record_trade(db_path, broker_ticket=1)
+
+    typed_reply = handle_update(_update(12345, "/daily"), "12345", PendingConfirmation(), FixedClock(NOW))
+    tapped_reply = handle_callback_query(_callback_update(12345, "cmd:daily"), "12345")
+
+    assert tapped_reply.text == typed_reply.text
+    assert [p.png for p in tapped_reply.photos] == [p.png for p in typed_reply.photos]
+
+
+def test_handle_callback_query_unknown_data_returns_usage_text():
+    reply = handle_callback_query(_callback_update(12345, "cmd:nonsense"), "12345")
+
+    assert "/start" in reply.text
+
+
+def test_handle_callback_query_unauthorized_sender_returns_none(monkeypatch):
+    monkeypatch.setattr(telegram_control, "get_open_positions_display", lambda: [])
+
+    reply = handle_callback_query(_callback_update(99999, "cmd:positions"), "12345")
+
+    assert reply is None
+
+
+def test_handle_callback_query_never_dispatches_to_gui_control_for_consequential_commands(monkeypatch):
+    # cmd:start/cmd:stop/cmd:emergency_stop are never emitted by this
+    # project's own keyboard, but a hand-crafted callback data string must
+    # still never reach gui_control -- parse_callback_data() maps anything
+    # outside the three read-only commands to UNKNOWN_COMMAND.
+    calls = []
+    monkeypatch.setattr(telegram_control.gui_control, "start_bot", lambda: calls.append("start"))
+    monkeypatch.setattr(telegram_control.gui_control, "stop_bot", lambda: calls.append("stop"))
+    monkeypatch.setattr(telegram_control.gui_control, "emergency_stop_bot", lambda: calls.append("estop"))
+
+    reply = handle_callback_query(_callback_update(12345, "cmd:emergency_stop"), "12345")
+
+    assert calls == []
+    assert reply is not None
 
 
 # --- unauthorized sender ------------------------------------------------------

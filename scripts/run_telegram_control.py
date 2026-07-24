@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Telegram inbound control listener -- long-polls Telegram's getUpdates API
-and dispatches /start, /stop, /status, /emergency_stop (with confirmation)
-via autotrade.notify.telegram_control.handle_update(), replying through
-autotrade.notify.telegram.send_message() (text) and, for /daily's chart
-attachments, autotrade.notify.telegram.send_photo(). See
+and dispatches /start, /stop, /status, /emergency_stop (with confirmation),
+plus tapped inline-keyboard buttons (`callback_query` updates), via
+autotrade.notify.telegram_control.handle_update()/handle_callback_query(),
+replying through autotrade.notify.telegram.send_message() (text, optionally
+carrying an inline keyboard) and, for /daily's chart attachments,
+autotrade.notify.telegram.send_photo(). A tapped button's loading spinner is
+cleared via autotrade.notify.telegram.answer_callback_query(). See
 AutoTrade_TelegramControl_Start.bat (repo root) for how this is normally
 launched -- the .bat's own console window IS the running listener; there is
 no separate PID/stop mechanism, closing the window stops it.
@@ -22,7 +25,14 @@ import urllib.request
 from autotrade.common.clock import RealClock
 from autotrade.common.config import load_telegram_credentials
 from autotrade.notify import telegram
-from autotrade.notify.telegram_control import PendingConfirmation, handle_update, has_text_message
+from autotrade.notify.telegram_control import (
+    ControlReply,
+    PendingConfirmation,
+    handle_callback_query,
+    handle_update,
+    has_callback_query,
+    has_text_message,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -31,6 +41,22 @@ _POLL_TIMEOUT_SEC = 30
 _SOCKET_TIMEOUT_SEC = 40
 _ERROR_BACKOFF_SEC = 4
 _BACKLOG_DISCARD_MAX_ATTEMPTS = 3
+
+# Registers Telegram's persistent bottom-of-keyboard command menu (see
+# telegram.set_my_commands()) -- command names given WITHOUT the leading
+# slash, matching that endpoint's own convention. Kept in sync with
+# telegram_control.py's _USAGE_TEXT/_COMMANDS by hand (no shared source of
+# truth to derive this from without importing MT5-adjacent GUI text).
+_BOT_COMMANDS = [
+    ("start", "Launch the shadow loop"),
+    ("stop", "Request a graceful stop"),
+    ("status", "Report loop/kill-switch/stop-flag state"),
+    ("emergency_stop", "Halt trading AND close every open position at market"),
+    ("trades", "Most recent 10 trades (paper mode)"),
+    ("positions", "Currently open positions"),
+    ("daily", "Daily trade-autopsy report for the most recent recorded day"),
+    ("help", "Show this help text"),
+]
 
 
 def _get_updates(token: str, offset: int, timeout_sec: int) -> list[dict]:
@@ -99,12 +125,22 @@ def _discard_backlog(token: str, poll_fn, sleep_fn) -> int:
     return 0
 
 
+def _send_reply(reply: ControlReply, send_fn, send_photo_fn) -> None:
+    if reply.reply_markup is not None:
+        send_fn(reply.text, reply_markup=reply.reply_markup)
+    else:
+        send_fn(reply.text)
+    for photo in reply.photos:
+        send_photo_fn(photo.png, caption=photo.caption)
+
+
 def run_poll_loop(
     token: str,
     chat_id: str,
     poll_fn=_get_updates,
     send_fn=None,
     send_photo_fn=None,
+    answer_callback_fn=None,
     sleep_fn=time.sleep,
     clock=None,
     max_iterations: int | None = None,
@@ -112,6 +148,9 @@ def run_poll_loop(
     clock = clock or RealClock()
     send_fn = send_fn or telegram.send_message
     send_photo_fn = send_photo_fn or telegram.send_photo
+    answer_callback_fn = answer_callback_fn or (
+        lambda callback_query_id: telegram.answer_callback_query(callback_query_id, bot_token=token)
+    )
     pending = PendingConfirmation()
 
     offset = _discard_backlog(token, poll_fn, sleep_fn)
@@ -121,17 +160,25 @@ def run_poll_loop(
         try:
             updates = poll_fn(token, offset, _POLL_TIMEOUT_SEC)
             for update in sorted(updates, key=lambda u: u["update_id"]):
+                # Offset advances before the reply is used, for EVERY update
+                # kind (text message or callback_query) -- an uncaught
+                # exception below must never cause the same update to be
+                # reprocessed forever.
                 offset = max(offset, update["update_id"] + 1)
-                if not has_text_message(update):
-                    continue
 
-                reply = handle_update(update, chat_id, pending, clock)
-                if reply is not None:
-                    send_fn(reply.text)
-                    for photo in reply.photos:
-                        send_photo_fn(photo.png, caption=photo.caption)
-                else:
-                    logger.warning("Ignoring update from an unauthorized sender.")
+                if has_text_message(update):
+                    reply = handle_update(update, chat_id, pending, clock)
+                    if reply is not None:
+                        _send_reply(reply, send_fn, send_photo_fn)
+                    else:
+                        logger.warning("Ignoring update from an unauthorized sender.")
+                elif has_callback_query(update):
+                    reply = handle_callback_query(update, chat_id)
+                    if reply is not None:
+                        _send_reply(reply, send_fn, send_photo_fn)
+                    else:
+                        logger.warning("Ignoring callback query from an unauthorized sender.")
+                    answer_callback_fn(update["callback_query"]["id"])
         except Exception as exc:
             # Never log exc itself/its args -- HTTPError/URLError instances
             # can carry the request URL, which embeds the bot token.
@@ -161,9 +208,14 @@ def main() -> int:
 
     token, chat_id = creds
     logger.info("Telegram control listener starting (authorized chat_id=%s).", chat_id)
+    telegram.set_my_commands(_BOT_COMMANDS, bot_token=token)
     run_poll_loop(
         token, chat_id, poll_fn=_get_updates, send_fn=telegram.send_message,
-        send_photo_fn=telegram.send_photo, sleep_fn=time.sleep, clock=RealClock(),
+        send_photo_fn=telegram.send_photo,
+        answer_callback_fn=lambda callback_query_id: telegram.answer_callback_query(
+            callback_query_id, bot_token=token
+        ),
+        sleep_fn=time.sleep, clock=RealClock(),
         max_iterations=args.max_iterations,
     )
     return 0

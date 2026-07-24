@@ -13,6 +13,7 @@ carries correct timestamps); do not re-stamp with `datetime.now()`/
 """
 from __future__ import annotations
 
+import json
 import logging
 import urllib.error
 import urllib.parse
@@ -31,9 +32,16 @@ Telegram's API have been observed to take longer than plain urlencoded
 text."""
 
 
-def _post_message(token: str, chat_id: str, text: str, timeout_sec: float) -> None:
+def _post_message(
+    token: str, chat_id: str, text: str, timeout_sec: float, reply_markup: dict | None = None,
+) -> None:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_markup is not None:
+        # Telegram's sendMessage takes reply_markup as a JSON-encoded string
+        # field within the same urlencoded body, not a nested structure.
+        payload["reply_markup"] = json.dumps(reply_markup)
+    data = urllib.parse.urlencode(payload).encode("utf-8")
 
     request = urllib.request.Request(url, data=data, method="POST")
     with urllib.request.urlopen(request, timeout=timeout_sec) as response:
@@ -151,14 +159,18 @@ def notify_photo(png_bytes: bytes, *, caption: str | None = None, timeout_sec: f
         return False
 
 
-def send_message(text: str, *, timeout_sec: float = 4.0) -> bool:
+def send_message(text: str, *, reply_markup: dict | None = None, timeout_sec: float = 4.0) -> bool:
     """Send `text` to the configured Telegram chat unconditionally of
     `notifications.enabled` -- this is for command REPLIES on the inbound
     control channel (scripts/run_telegram_control.py), where the user is
     actively waiting for a response to a command they just sent, not a
     best-effort outbound notification `notify()`'s toggle is meant to gate.
     Still a no-op (returns False) if credentials are missing, same as
-    `notify()`."""
+    `notify()`.
+
+    `reply_markup`, when given, is Telegram's inline-keyboard structure (see
+    `notify/telegram_control.py`'s `ControlReply.reply_markup`) attached to
+    the sent message -- omitted from the request entirely when `None`."""
     try:
         creds = load_telegram_credentials()
         if creds is None:
@@ -168,7 +180,7 @@ def send_message(text: str, *, timeout_sec: float = 4.0) -> bool:
             return False
 
         token, chat_id = creds
-        _post_message(token, chat_id, text, timeout_sec)
+        _post_message(token, chat_id, text, timeout_sec, reply_markup=reply_markup)
         return True
     except Exception as exc:
         truncated = text if len(text) <= _LOG_TRUNCATE_CHARS else text[:_LOG_TRUNCATE_CHARS] + "..."
@@ -196,4 +208,78 @@ def send_photo(png_bytes: bytes, *, caption: str | None = None, timeout_sec: flo
         return True
     except Exception as exc:
         logger.warning("send_photo: failed (%s)", exc)
+        return False
+
+
+def _post_answer_callback_query(token: str, callback_query_id: str, timeout_sec: float) -> None:
+    url = f"https://api.telegram.org/bot{token}/answerCallbackQuery"
+    data = urllib.parse.urlencode({"callback_query_id": callback_query_id}).encode("utf-8")
+
+    request = urllib.request.Request(url, data=data, method="POST")
+    with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+        response.read()
+
+
+def answer_callback_query(callback_query_id: str, *, bot_token: str | None = None, timeout_sec: float = 4.0) -> bool:
+    """Clears an inline-keyboard button tap's loading spinner (Telegram shows
+    it indefinitely until answerCallbackQuery is called) -- see
+    scripts/run_telegram_control.py's poll loop, which calls this once per
+    dispatched callback_query update, regardless of whether the tap produced
+    a reply. Same never-raises/returns-bool contract and same
+    never-log-the-token discipline as every other function in this module.
+
+    `bot_token`, when given (the normal case: scripts/run_telegram_control.py
+    already holds the token from its own startup credential load), is used
+    directly instead of reloading credentials from `.env` on every callback."""
+    try:
+        token = bot_token
+        if token is None:
+            creds = load_telegram_credentials()
+            if creds is None:
+                logger.debug(
+                    "answer_callback_query: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not configured -- skipping"
+                )
+                return False
+            token, _ = creds
+
+        _post_answer_callback_query(token, callback_query_id, timeout_sec)
+        return True
+    except Exception as exc:
+        logger.warning("answer_callback_query: failed (%s)", exc)
+        return False
+
+
+def _post_set_my_commands(token: str, commands: list[tuple[str, str]], timeout_sec: float) -> None:
+    url = f"https://api.telegram.org/bot{token}/setMyCommands"
+    payload = [{"command": command, "description": description} for command, description in commands]
+    data = urllib.parse.urlencode({"commands": json.dumps(payload)}).encode("utf-8")
+
+    request = urllib.request.Request(url, data=data, method="POST")
+    with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+        response.read()
+
+
+def set_my_commands(commands: list[tuple[str, str]], *, bot_token: str | None = None, timeout_sec: float = 4.0) -> bool:
+    """Registers Telegram's persistent bottom-of-keyboard command menu --
+    `commands` is a list of `(command, description)` pairs, command names
+    given WITHOUT the leading slash (Telegram's own convention for this
+    endpoint). Meant to be called once at listener startup (see
+    scripts/run_telegram_control.py's `main()`), not per-update. Same
+    never-raises/returns-bool contract and same `bot_token` override as
+    `answer_callback_query()`."""
+    try:
+        token = bot_token
+        if token is None:
+            creds = load_telegram_credentials()
+            if creds is None:
+                logger.debug(
+                    "set_my_commands: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not configured -- skipping"
+                )
+                return False
+            token, _ = creds
+
+        _post_set_my_commands(token, commands, timeout_sec)
+        return True
+    except Exception as exc:
+        logger.warning("set_my_commands: failed (%s)", exc)
         return False

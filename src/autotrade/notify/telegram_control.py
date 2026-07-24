@@ -18,6 +18,19 @@ not a plain `str`, so /daily's equity-curve/daily-P&L chart PNGs
 (notify/charts.py -- pure PNG-bytes rendering, still no network I/O) can
 travel alongside its text report through the same single reply shape every
 other command already uses (with an empty `photos` list).
+
+`ControlReply` additionally carries an optional `reply_markup` -- Telegram's
+inline-keyboard structure -- for /status and /help, offering one-tap buttons
+for the read-only, always-safe commands (/positions, /trades, /daily) only.
+/start, /stop, and /emergency_stop are deliberately NEVER offered as
+buttons: those are consequential actions and must stay explicit-typed-command
+-only, matching this project's "no bypassing manual safety gates" caution
+elsewhere in the codebase. `handle_callback_query()` handles a tapped
+button's resulting `callback_query` update -- `parse_callback_data()` maps
+its stable `"cmd:..."` callback data back to the same command tokens
+`parse_command()` already produces, and dispatch reuses the exact same
+`_handle_positions`/`_handle_trades`/`_handle_daily` functions `handle_update()`
+uses, so a tapped button produces an identical reply to typing the command.
 """
 from __future__ import annotations
 
@@ -76,15 +89,26 @@ class ControlReply:
     to send instead of branching on which command produced it. A list
     (rather than a single `photo_png`) because /daily always produces TWO
     distinct charts, not one; captions are per-photo since each chart needs
-    its own short label, not one caption shared across both."""
+    its own short label, not one caption shared across both.
+
+    `reply_markup`, when not `None`, is Telegram's inline-keyboard structure
+    (see module docstring) attached to `/status`/`/help` replies only --
+    `notify/telegram.py`'s `send_message()` sends it as-is."""
 
     text: str
     photos: list[ChartPhoto] = field(default_factory=list)
+    reply_markup: dict | None = None
 
 
 def is_authorized(update: dict, configured_chat_id: str) -> bool:
     try:
-        sender_chat_id = update["message"]["chat"]["id"]
+        if "callback_query" in update:
+            # A callback_query update has a different shape than a message
+            # update -- the chat lives at update["callback_query"]["message"]
+            # ["chat"]["id"], not update["message"]["chat"]["id"].
+            sender_chat_id = update["callback_query"]["message"]["chat"]["id"]
+        else:
+            sender_chat_id = update["message"]["chat"]["id"]
     except (KeyError, TypeError):
         return False
     return str(sender_chat_id) == str(configured_chat_id)
@@ -97,6 +121,13 @@ def has_text_message(update: dict) -> bool:
     return isinstance(message.get("text"), str)
 
 
+def has_callback_query(update: dict) -> bool:
+    callback_query = update.get("callback_query")
+    if not isinstance(callback_query, dict):
+        return False
+    return isinstance(callback_query.get("data"), str)
+
+
 def parse_command(text: str) -> str:
     stripped = text.strip()
     if not stripped:
@@ -105,6 +136,46 @@ def parse_command(text: str) -> str:
     token = stripped.split()[0].lower()
     token = token.split("@", 1)[0]
     return token if token in _COMMANDS else UNKNOWN_COMMAND
+
+
+# Inline-keyboard callback data is a small stable string per button (rather
+# than the command text itself) so the wire format never changes shape even
+# if a command's display text/wording changes later. Restricted to the
+# read-only, always-safe commands -- see module docstring for why /start,
+# /stop, /emergency_stop are deliberately excluded.
+_CALLBACK_DATA_POSITIONS = "cmd:positions"
+_CALLBACK_DATA_TRADES = "cmd:trades"
+_CALLBACK_DATA_DAILY = "cmd:daily"
+
+_CALLBACK_COMMAND_MAP = {
+    _CALLBACK_DATA_POSITIONS: "/positions",
+    _CALLBACK_DATA_TRADES: "/trades",
+    _CALLBACK_DATA_DAILY: "/daily",
+}
+
+
+def parse_callback_data(data: str) -> str:
+    """Maps an inline-keyboard button's callback data back to the same
+    command token `parse_command()` would produce for the equivalent typed
+    command (e.g. `"cmd:positions"` -> `"/positions"`), so
+    `handle_callback_query()` can dispatch through the identical
+    `_handle_*` functions `handle_update()` uses."""
+    return _CALLBACK_COMMAND_MAP.get(data, UNKNOWN_COMMAND)
+
+
+def _quick_access_keyboard() -> dict:
+    """Inline keyboard attached to /status and /help replies -- one-tap
+    buttons for the read-only, always-safe commands only. See module
+    docstring for why /start, /stop, /emergency_stop are never offered here."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Positions", "callback_data": _CALLBACK_DATA_POSITIONS},
+                {"text": "Trades", "callback_data": _CALLBACK_DATA_TRADES},
+                {"text": "Daily", "callback_data": _CALLBACK_DATA_DAILY},
+            ]
+        ]
+    }
 
 
 def _looks_like_confirmation_attempt(text: str) -> bool:
@@ -276,7 +347,9 @@ def handle_update(
     if command == "/stop":
         return ControlReply(text=_run_gui_action("/stop", gui_control.stop_bot, "Graceful stop requested."))
     if command == "/status":
-        return ControlReply(text=gui_control.format_status(gui_control.build_status()))
+        return ControlReply(
+            text=gui_control.format_status(gui_control.build_status()), reply_markup=_quick_access_keyboard()
+        )
     if command == "/emergency_stop":
         code = pending.request(clock)
         return ControlReply(
@@ -292,7 +365,7 @@ def handle_update(
     if command == "/daily":
         return _handle_daily()
     if command == "/help":
-        return ControlReply(text=_USAGE_TEXT)
+        return ControlReply(text=_USAGE_TEXT, reply_markup=_quick_access_keyboard())
 
     had_pending = pending.code is not None
     if pending.confirm(text, clock):
@@ -314,5 +387,30 @@ def handle_update(
                 "Re-issue /emergency_stop if you still want to close all positions."
             )
         )
+
+    return ControlReply(text=_USAGE_TEXT)
+
+
+def handle_callback_query(update: dict, configured_chat_id: str) -> ControlReply | None:
+    """`handle_update()`'s counterpart for a tapped inline-keyboard button
+    (a `callback_query` update, not a `message` update -- see
+    `has_callback_query()`). Only ever reachable via `_quick_access_keyboard()`
+    's buttons, so only /positions, /trades, /daily are dispatched here --
+    reuses the exact same `_handle_*` functions `handle_update()` uses, so a
+    tapped button produces an identical reply to typing the command. No
+    `PendingConfirmation`/`Clock` needed: none of these three commands ever
+    enter the /emergency_stop confirmation flow."""
+    if not is_authorized(update, configured_chat_id):
+        return None
+
+    data = update["callback_query"].get("data", "")
+    command = parse_callback_data(data)
+
+    if command == "/trades":
+        return ControlReply(text=_handle_trades())
+    if command == "/positions":
+        return ControlReply(text=_handle_positions())
+    if command == "/daily":
+        return _handle_daily()
 
     return ControlReply(text=_USAGE_TEXT)

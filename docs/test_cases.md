@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1200 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1249 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1200 (including all parametrized variants)
+- **Total Test Count**: 1249 (including all parametrized variants)
 - **Test Files**: ~57 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -52,9 +52,9 @@ This document provides a comprehensive list of all 1200 test cases in the AutoTr
 | **GUI Subtotal** | | **32** |
 | Notify | test_charts.py | 10 |
 | | test_gate_state.py | 16 |
-| | test_telegram.py | 33 |
-| | test_telegram_control.py | 56 |
-| **Notify Subtotal** | | **115** |
+| | test_telegram.py | 45 |
+| | test_telegram_control.py | 79 |
+| **Notify Subtotal** | | **150** |
 | Orchestrator | test_shadow_loop.py | 46 |
 | **Orchestrator Subtotal** | | **46** |
 | Risk | test_circuit_breaker.py | 32 |
@@ -91,12 +91,12 @@ This document provides a comprehensive list of all 1200 test cases in the AutoTr
 | | test_run_backtest.py | 24 |
 | | test_run_scheduled_daily_report.py | 3 |
 | | test_run_shadow_loop.py | 33 |
-| | test_run_telegram_control.py | 13 |
+| | test_run_telegram_control.py | 20 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **285** |
+| **Scripts & CLI Subtotal** | | **292** |
 | | | |
-| **GRAND TOTAL** | | **1200** |
+| **GRAND TOTAL** | | **1249** |
 
 ---
 
@@ -788,6 +788,18 @@ This document provides a comprehensive list of all 1200 test cases in the AutoTr
 - test_send_photo_makes_zero_http_calls_when_credentials_missing
 - test_send_photo_swallows_network_exception_and_returns_false
 - test_send_photo_failure_log_never_contains_raw_token
+- test_send_message_reply_markup_is_json_encoded_in_the_request_body
+- test_send_message_without_reply_markup_omits_the_field_entirely
+- test_answer_callback_query_posts_correct_url_and_payload_with_explicit_bot_token
+- test_answer_callback_query_falls_back_to_loaded_credentials_when_bot_token_not_given
+- test_answer_callback_query_makes_zero_http_calls_when_credentials_missing
+- test_answer_callback_query_swallows_network_exception_and_returns_false
+- test_answer_callback_query_failure_log_never_contains_raw_token
+- test_set_my_commands_posts_correct_url_and_json_encoded_payload
+- test_set_my_commands_falls_back_to_loaded_credentials_when_bot_token_not_given
+- test_set_my_commands_makes_zero_http_calls_when_credentials_missing
+- test_set_my_commands_swallows_network_exception_and_returns_false
+- test_set_my_commands_failure_log_never_contains_raw_token
 
 ### tests/unit/notify/test_telegram_control.py
 
@@ -797,14 +809,27 @@ This document provides a comprehensive list of all 1200 test cases in the AutoTr
 - test_is_authorized_false_when_no_chat_key
 - test_is_authorized_false_when_no_id_key
 - test_is_authorized_never_raises_on_completely_malformed_update
+- test_is_authorized_matches_callback_query_chat_id
+- test_is_authorized_rejects_non_matching_callback_query_chat_id
+- test_is_authorized_never_raises_on_malformed_callback_query
 - test_has_text_message_true_for_plain_text_message
 - test_has_text_message_false_when_no_message
 - test_has_text_message_false_when_message_has_no_text
+- test_has_callback_query_true_for_valid_callback_query
+- test_has_callback_query_false_when_no_callback_query
+- test_has_callback_query_false_when_callback_query_has_no_data
+- test_has_callback_query_false_when_callback_query_is_not_a_dict
 - test_parse_command_start
 - test_parse_command_case_insensitive
 - test_parse_command_strips_botname_suffix
 - test_parse_command_unknown_text
 - test_parse_command_empty_string
+- test_parse_callback_data_positions_maps_to_positions_command
+- test_parse_callback_data_trades_maps_to_trades_command
+- test_parse_callback_data_daily_maps_to_daily_command
+- test_parse_callback_data_unknown_string_returns_unknown_command
+- test_parse_callback_data_empty_string_returns_unknown_command
+- test_parse_callback_data_never_maps_to_a_consequential_command
 - test_emergency_stop_generates_code_and_does_not_call_emergency_stop_bot
 - test_correct_code_within_window_calls_emergency_stop_bot_exactly_once_and_clears_state
 - test_wrong_code_does_not_call_emergency_stop_bot
@@ -815,8 +840,12 @@ This document provides a comprehensive list of all 1200 test cases in the AutoTr
 - test_start_command_reports_failure_with_returncode_and_stderr
 - test_stop_command_calls_stop_bot_and_reports_success
 - test_status_command_calls_build_status_and_format_status
+- test_status_command_reply_carries_quick_access_inline_keyboard
 - test_help_command_returns_usage_text_listing_all_four_commands
+- test_help_command_reply_carries_quick_access_inline_keyboard
+- test_quick_access_keyboard_never_offers_start_stop_or_emergency_stop_buttons
 - test_unknown_command_returns_usage_text
+- test_non_status_help_commands_do_not_carry_reply_markup
 - test_trades_command_empty_db_returns_no_trades_message
 - test_trades_command_shows_seeded_trade_field_values
 - test_trades_command_caps_at_ten_most_recent
@@ -836,6 +865,12 @@ This document provides a comprehensive list of all 1200 test cases in the AutoTr
 - test_daily_command_returns_graceful_reply_not_exception_when_journal_raises
 - test_daily_command_returns_graceful_reply_when_build_daily_report_raises
 - test_help_command_lists_trades_and_daily_commands
+- test_handle_callback_query_positions_matches_typed_command_reply
+- test_handle_callback_query_trades_matches_typed_command_reply
+- test_handle_callback_query_daily_matches_typed_command_reply
+- test_handle_callback_query_unknown_data_returns_usage_text
+- test_handle_callback_query_unauthorized_sender_returns_none
+- test_handle_callback_query_never_dispatches_to_gui_control_for_consequential_commands
 - test_unauthorized_sender_never_dispatches_to_any_gui_control_function
 - test_unauthorized_sender_cannot_reach_trades_or_daily_commands
 - test_unrelated_message_while_pending_clears_state_with_explicit_reply
@@ -1492,12 +1527,19 @@ This document provides a comprehensive list of all 1200 test cases in the AutoTr
 
 - test_main_returns_1_and_prints_error_when_credentials_missing
 - test_main_polls_when_credentials_present
+- test_main_registers_bot_commands_at_startup_before_polling
 - test_startup_backlog_is_discarded_and_offset_advances_past_it
 - test_startup_backlog_discard_drains_multiple_pages
 - test_fresh_update_after_backlog_skip_produces_a_sent_reply
 - test_reply_with_photos_sends_text_then_each_photo_via_send_photo_fn
 - test_reply_with_no_photos_never_calls_send_photo_fn
 - test_default_send_photo_fn_is_telegram_send_photo_when_not_provided
+- test_callback_query_dispatches_via_handle_callback_query_and_sends_reply
+- test_callback_query_calls_answer_callback_fn_with_the_callback_query_id
+- test_unauthorized_callback_query_gets_no_reply_but_is_still_answered
+- test_callback_query_reply_with_reply_markup_is_forwarded_to_send_fn
+- test_default_answer_callback_fn_is_telegram_answer_callback_query_when_not_provided
+- test_text_message_and_callback_query_in_same_batch_both_dispatch
 - test_backlog_discard_retries_on_transient_exception_then_succeeds
 - test_backlog_discard_gives_up_after_max_retries_and_still_starts_the_main_loop
 - test_backlog_discard_exception_message_never_logged_with_bot_token

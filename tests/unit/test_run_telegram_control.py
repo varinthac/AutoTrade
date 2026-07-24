@@ -36,6 +36,18 @@ def _update(update_id: int, chat_id=12345, text: str = "/status") -> dict:
     return {"update_id": update_id, "message": {"chat": {"id": chat_id}, "text": text}}
 
 
+def _callback_update(update_id: int, chat_id=12345, data: str = "cmd:positions", callback_query_id: str = "cbq1") -> dict:
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": callback_query_id,
+            "data": data,
+            "from": {"id": chat_id},
+            "message": {"chat": {"id": chat_id}},
+        },
+    }
+
+
 # --- main() ------------------------------------------------------------------
 
 
@@ -55,6 +67,7 @@ def test_main_returns_1_and_prints_error_when_credentials_missing(monkeypatch, c
 def test_main_polls_when_credentials_present(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["run_telegram_control.py", "--max-iterations", "0"])
     monkeypatch.setattr(run_telegram_control, "load_telegram_credentials", lambda: ("TOKEN", "12345"))
+    monkeypatch.setattr(run_telegram_control.telegram, "set_my_commands", lambda *a, **kw: True)
     poll_calls = []
     monkeypatch.setattr(run_telegram_control, "_get_updates", lambda token, offset, timeout_sec: poll_calls.append((token, offset, timeout_sec)) or [])
 
@@ -62,6 +75,25 @@ def test_main_polls_when_credentials_present(monkeypatch):
 
     assert exit_code == 0
     assert poll_calls == [("TOKEN", 0, 0)]  # startup backlog-discard call only, 0 loop iterations
+
+
+def test_main_registers_bot_commands_at_startup_before_polling(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["run_telegram_control.py", "--max-iterations", "0"])
+    monkeypatch.setattr(run_telegram_control, "load_telegram_credentials", lambda: ("TOKEN", "12345"))
+    monkeypatch.setattr(run_telegram_control, "_get_updates", lambda token, offset, timeout_sec: [])
+    set_commands_calls = []
+    monkeypatch.setattr(
+        run_telegram_control.telegram, "set_my_commands",
+        lambda commands, **kw: set_commands_calls.append((commands, kw)) or True,
+    )
+
+    exit_code = run_telegram_control.main()
+
+    assert exit_code == 0
+    assert len(set_commands_calls) == 1
+    commands, kwargs = set_commands_calls[0]
+    assert commands == run_telegram_control._BOT_COMMANDS
+    assert kwargs == {"bot_token": "TOKEN"}
 
 
 # --- run_poll_loop(): startup backlog discard --------------------------------
@@ -133,7 +165,8 @@ def test_fresh_update_after_backlog_skip_produces_a_sent_reply(monkeypatch):
 
     sent = []
     run_telegram_control.run_poll_loop(
-        "TOKEN", "12345", poll_fn=fake_poll, send_fn=lambda text: sent.append(text),
+        "TOKEN", "12345", poll_fn=fake_poll,
+        send_fn=lambda text, reply_markup=None: sent.append(text),
         sleep_fn=lambda s: None, clock=FixedClock(NOW), max_iterations=1,
     )
 
@@ -177,7 +210,7 @@ def test_reply_with_no_photos_never_calls_send_photo_fn(monkeypatch):
 
     sent_photos = []
     run_telegram_control.run_poll_loop(
-        "TOKEN", "12345", poll_fn=fake_poll, send_fn=lambda text: None,
+        "TOKEN", "12345", poll_fn=fake_poll, send_fn=lambda text, reply_markup=None: None,
         send_photo_fn=lambda png, caption=None: sent_photos.append((png, caption)),
         sleep_fn=lambda s: None, clock=FixedClock(NOW), max_iterations=1,
     )
@@ -206,6 +239,141 @@ def test_default_send_photo_fn_is_telegram_send_photo_when_not_provided(monkeypa
     )
 
     assert calls == [(b"PNG-DEFAULT", "cap")]
+
+
+# --- run_poll_loop(): callback_query dispatch (inline-keyboard button taps) --
+
+
+def test_callback_query_dispatches_via_handle_callback_query_and_sends_reply(monkeypatch):
+    reply = telegram_control.ControlReply(text="POSITIONS TEXT")
+    calls = []
+    monkeypatch.setattr(
+        run_telegram_control, "handle_callback_query",
+        lambda update, chat_id: calls.append((update, chat_id)) or reply,
+    )
+
+    def fake_poll(token, offset, timeout_sec):
+        if timeout_sec == 0:
+            return []
+        return [_callback_update(10)]
+
+    sent = []
+    run_telegram_control.run_poll_loop(
+        "TOKEN", "12345", poll_fn=fake_poll, send_fn=lambda text, reply_markup=None: sent.append(text),
+        answer_callback_fn=lambda callback_query_id: None,
+        sleep_fn=lambda s: None, clock=FixedClock(NOW), max_iterations=1,
+    )
+
+    assert sent == ["POSITIONS TEXT"]
+    assert len(calls) == 1
+    assert calls[0][1] == "12345"
+
+
+def test_callback_query_calls_answer_callback_fn_with_the_callback_query_id(monkeypatch):
+    reply = telegram_control.ControlReply(text="ok")
+    monkeypatch.setattr(run_telegram_control, "handle_callback_query", lambda update, chat_id: reply)
+
+    def fake_poll(token, offset, timeout_sec):
+        if timeout_sec == 0:
+            return []
+        return [_callback_update(10, callback_query_id="cbq-xyz")]
+
+    answered = []
+    run_telegram_control.run_poll_loop(
+        "TOKEN", "12345", poll_fn=fake_poll, send_fn=lambda text, reply_markup=None: None,
+        answer_callback_fn=lambda callback_query_id: answered.append(callback_query_id),
+        sleep_fn=lambda s: None, clock=FixedClock(NOW), max_iterations=1,
+    )
+
+    assert answered == ["cbq-xyz"]
+
+
+def test_unauthorized_callback_query_gets_no_reply_but_is_still_answered(monkeypatch):
+    # A tapped button's loading spinner must clear even for a sender the
+    # config doesn't authorize -- same "must still respond somehow" reasoning
+    # as an unauthorized text command getting a log warning, just also
+    # needing the spinner cleared since Telegram shows it until answered.
+    monkeypatch.setattr(run_telegram_control, "handle_callback_query", lambda update, chat_id: None)
+
+    def fake_poll(token, offset, timeout_sec):
+        if timeout_sec == 0:
+            return []
+        return [_callback_update(10, callback_query_id="cbq-unauth")]
+
+    sent = []
+    answered = []
+    run_telegram_control.run_poll_loop(
+        "TOKEN", "12345", poll_fn=fake_poll, send_fn=lambda text, reply_markup=None: sent.append(text),
+        answer_callback_fn=lambda callback_query_id: answered.append(callback_query_id),
+        sleep_fn=lambda s: None, clock=FixedClock(NOW), max_iterations=1,
+    )
+
+    assert sent == []
+    assert answered == ["cbq-unauth"]
+
+
+def test_callback_query_reply_with_reply_markup_is_forwarded_to_send_fn(monkeypatch):
+    keyboard = {"inline_keyboard": [[{"text": "Positions", "callback_data": "cmd:positions"}]]}
+    reply = telegram_control.ControlReply(text="STATUS TEXT", reply_markup=keyboard)
+    monkeypatch.setattr(run_telegram_control, "handle_callback_query", lambda update, chat_id: reply)
+
+    def fake_poll(token, offset, timeout_sec):
+        if timeout_sec == 0:
+            return []
+        return [_callback_update(10)]
+
+    captured = []
+    run_telegram_control.run_poll_loop(
+        "TOKEN", "12345", poll_fn=fake_poll,
+        send_fn=lambda text, reply_markup=None: captured.append((text, reply_markup)),
+        answer_callback_fn=lambda callback_query_id: None,
+        sleep_fn=lambda s: None, clock=FixedClock(NOW), max_iterations=1,
+    )
+
+    assert captured == [("STATUS TEXT", keyboard)]
+
+
+def test_default_answer_callback_fn_is_telegram_answer_callback_query_when_not_provided(monkeypatch):
+    reply = telegram_control.ControlReply(text="ok")
+    monkeypatch.setattr(run_telegram_control, "handle_callback_query", lambda update, chat_id: reply)
+    calls = []
+    monkeypatch.setattr(
+        run_telegram_control.telegram, "answer_callback_query",
+        lambda callback_query_id, bot_token=None: calls.append((callback_query_id, bot_token)) or True,
+    )
+
+    def fake_poll(token, offset, timeout_sec):
+        if timeout_sec == 0:
+            return []
+        return [_callback_update(10, callback_query_id="cbq-default")]
+
+    run_telegram_control.run_poll_loop(
+        "TOKEN", "12345", poll_fn=fake_poll, send_fn=lambda text, reply_markup=None: None,
+        sleep_fn=lambda s: None, clock=FixedClock(NOW), max_iterations=1,
+    )
+
+    assert calls == [("cbq-default", "TOKEN")]
+
+
+def test_text_message_and_callback_query_in_same_batch_both_dispatch(monkeypatch):
+    monkeypatch.setattr(telegram_control.gui_control, "build_status", lambda: "REPORT")
+    monkeypatch.setattr(telegram_control.gui_control, "format_status", lambda report: f"STATUS: {report}")
+    reply = telegram_control.ControlReply(text="POSITIONS TEXT")
+    monkeypatch.setattr(run_telegram_control, "handle_callback_query", lambda update, chat_id: reply)
+
+    def fake_poll(token, offset, timeout_sec):
+        if timeout_sec == 0:
+            return []
+        return [_update(10, text="/status"), _callback_update(11)]
+
+    sent = []
+    run_telegram_control.run_poll_loop(
+        "TOKEN", "12345", poll_fn=fake_poll, send_fn=lambda text, reply_markup=None: sent.append(text),
+        answer_callback_fn=lambda callback_query_id: None,
+        sleep_fn=lambda s: None, clock=FixedClock(NOW), max_iterations=1,
+    )
+
+    assert sent == ["STATUS: REPORT", "POSITIONS TEXT"]
 
 
 # --- run_poll_loop(): backlog-discard exception handling ---------------------
