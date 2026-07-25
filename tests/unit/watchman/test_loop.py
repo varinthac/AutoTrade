@@ -288,6 +288,98 @@ def test_close_decision_failure_leaves_metadata_intact(tmp_path, monkeypatch):
     assert position_metadata.get_position_metadata(1, tmp_path / "position_metadata.json") is not None
 
 
+# --- 2026-07-25: CLOSE retry backoff after a failure ------------------------
+# Real incident: with the market closed over a weekend, Watchman kept
+# re-deciding CLOSE (structure invalidation still true) and re-attempting
+# close_position() every ~5s poll cycle, each failure re-triggering
+# journal.record_anomaly_event() (which itself notify()s unconditionally on
+# every call) -- spamming Telegram continuously for two straight days.
+
+
+def test_close_decision_failure_is_not_retried_within_backoff_window(tmp_path, monkeypatch):
+    _record_metadata(tmp_path, ticket=1)
+    adapter = SpyAdapter([_position(ticket=1)])
+    adapter.close_result = OrderResult(
+        success=False, broker_ticket=None, filled_price=None, filled_volume=None,
+        retcode=10018, message="market closed",
+    )
+    wl = _loop(adapter, tmp_path)
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(action="CLOSE", new_stop_loss=None, reason="structure invalidation"),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+    wl.run_cycle({"XAUUSD": _history()}, NOW + timedelta(seconds=5))
+    wl.run_cycle({"XAUUSD": _history()}, NOW + timedelta(minutes=10))
+
+    assert len(adapter.close_calls) == 1
+
+
+def test_close_decision_retries_again_once_backoff_window_elapses(tmp_path, monkeypatch):
+    _record_metadata(tmp_path, ticket=1)
+    adapter = SpyAdapter([_position(ticket=1)])
+    adapter.close_result = OrderResult(
+        success=False, broker_ticket=None, filled_price=None, filled_volume=None,
+        retcode=10018, message="market closed",
+    )
+    wl = _loop(adapter, tmp_path)
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(action="CLOSE", new_stop_loss=None, reason="structure invalidation"),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+    wl.run_cycle({"XAUUSD": _history()}, NOW + timedelta(minutes=16))
+
+    assert len(adapter.close_calls) == 2
+
+
+def test_close_decision_success_after_a_prior_failure_clears_backoff_state(tmp_path, monkeypatch):
+    _record_metadata(tmp_path, ticket=1)
+    adapter = SpyAdapter([_position(ticket=1)])
+    adapter.close_result = OrderResult(
+        success=False, broker_ticket=None, filled_price=None, filled_volume=None,
+        retcode=10018, message="market closed",
+    )
+    wl = _loop(adapter, tmp_path)
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(action="CLOSE", new_stop_loss=None, reason="structure invalidation"),
+    )
+    wl.run_cycle({"XAUUSD": _history()}, NOW)  # fails, backoff starts
+
+    adapter.close_result = OrderResult(
+        success=True, broker_ticket=None, filled_price=2400.0, filled_volume=0.05,
+        retcode=None, message="closed",
+    )
+    wl.run_cycle({"XAUUSD": _history()}, NOW + timedelta(minutes=16))  # succeeds
+
+    assert len(adapter.close_calls) == 2
+    assert position_metadata.get_position_metadata(1, tmp_path / "position_metadata.json") is None
+
+
+def test_close_decision_backoff_is_per_ticket_not_global(tmp_path, monkeypatch):
+    _record_metadata(tmp_path, ticket=1)
+    _record_metadata(tmp_path, ticket=2)
+    adapter = SpyAdapter([_position(ticket=1), _position(ticket=2, symbol="EURUSD")])
+    adapter.close_result = OrderResult(
+        success=False, broker_ticket=None, filled_price=None, filled_volume=None,
+        retcode=10018, message="market closed",
+    )
+    wl = _loop(adapter, tmp_path)
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(action="CLOSE", new_stop_loss=None, reason="structure invalidation"),
+    )
+    wl.run_cycle({"XAUUSD": _history(), "EURUSD": _history()}, NOW)  # both fail, both backed off
+
+    wl.run_cycle({"XAUUSD": _history(), "EURUSD": _history()}, NOW + timedelta(seconds=5))
+
+    assert adapter.close_calls.count((1, None)) == 1
+    assert adapter.close_calls.count((2, None)) == 1
+
+
 def test_modify_sl_decision_calls_modify_stop_loss(tmp_path, monkeypatch):
     _record_metadata(tmp_path, ticket=1)
     adapter = SpyAdapter([_position(ticket=1)])

@@ -170,6 +170,15 @@ def _signed_gross_pnl(
     return signed_diff * point_value * lot_size
 
 
+# How long to back off re-attempting a CLOSE on the same ticket after it
+# just failed, before trying again -- see WatchmanLoop.__init__'s own
+# comment on self._last_failed_close_attempt for the full incident this
+# fixes. 15 minutes bounds the spam to a small fraction of its previous
+# ~5-second cadence while still recovering promptly once the underlying
+# cause (e.g. a weekend market closure) resolves.
+_CLOSE_RETRY_BACKOFF = timedelta(minutes=15)
+
+
 class WatchmanLoop:
     def __init__(
         self,
@@ -206,6 +215,19 @@ class WatchmanLoop:
         )
         self._state_path = state_path
         self._journal_db_path = journal_db_path
+        # 2026-07-25 fix: a failed CLOSE isn't remembered anywhere, so an
+        # unchanged decision (e.g. structure invalidation still true) gets
+        # re-attempted and re-alerted EVERY cycle (~5s) for as long as the
+        # underlying cause persists -- observed live over a weekend market
+        # closure (retcode 10018 "market closed"), where it would otherwise
+        # have hammered order_send() and journal.record_anomaly_event()
+        # (which itself notify()s on every call, unconditionally -- see that
+        # function's own docstring) roughly every 5 seconds for two straight
+        # days. In-memory only (not file-persisted): a shadow_loop.py
+        # restart re-establishing this dict from empty is fine, it just
+        # means one immediate retry attempt post-restart, never a safety
+        # issue since the position stays broker-SL-protected regardless.
+        self._last_failed_close_attempt: dict[int, datetime] = {}
 
     def run_cycle(self, history_by_symbol: dict[str, pd.DataFrame], now: datetime) -> None:
         """One Watchman pass over every currently open position, across
@@ -531,22 +553,37 @@ class WatchmanLoop:
         self, position: BrokerPosition, decision: WatchmanDecision, metadata: PositionMetadata, now: datetime,
     ) -> bool:
         """Returns True if the position was closed (so the caller skips any
-        further per-cycle action on it)."""
+        further per-cycle action on it) -- also True while a recent CLOSE
+        failure's backoff is still active (see _CLOSE_RETRY_BACKOFF), since
+        skipping the retry this cycle means "nothing further to do for this
+        position this cycle" either way."""
         if decision.action == "CLOSE":
+            last_failure = self._last_failed_close_attempt.get(position.ticket)
+            if last_failure is not None and (now - last_failure) < _CLOSE_RETRY_BACKOFF:
+                logger.debug(
+                    "Watchman CLOSE ticket=%s symbol=%s -- skipping re-attempt, still within "
+                    "backoff (%s ago, threshold %s) after a recent failure.",
+                    position.ticket, position.symbol, now - last_failure, _CLOSE_RETRY_BACKOFF,
+                )
+                return True
+
             result = self._adapter.close_position(position.ticket)
             if result.success:
                 self._record_explicit_close(
                     metadata, result, _classify_watchman_close_reason(decision.reason), now,
                 )
                 remove_position_metadata(position.ticket, self._state_path)
+                self._last_failed_close_attempt.pop(position.ticket, None)
                 logger.info(
                     "Watchman CLOSE ticket=%s symbol=%s -- %s",
                     position.ticket, position.symbol, decision.reason,
                 )
             else:
+                self._last_failed_close_attempt[position.ticket] = now
                 logger.error(
-                    "Watchman CLOSE FAILED ticket=%s symbol=%s -- intended reason: %s; close error: %s",
-                    position.ticket, position.symbol, decision.reason, result.message,
+                    "Watchman CLOSE FAILED ticket=%s symbol=%s -- intended reason: %s; close error: %s "
+                    "-- will not re-attempt for %s.",
+                    position.ticket, position.symbol, decision.reason, result.message, _CLOSE_RETRY_BACKOFF,
                 )
             return True
 

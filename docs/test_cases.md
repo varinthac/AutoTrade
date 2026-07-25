@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1339 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1344 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1339 (including all parametrized variants)
+- **Total Test Count**: 1344 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -68,14 +68,14 @@ This document provides a comprehensive list of all 1339 test cases in the AutoTr
 | | test_models.py | 3 |
 | **Store Subtotal** | | **20** |
 | Watchman | test_autotrading_watchdog.py | 10 |
-| | test_connectivity_watchdog.py | 14 |
+| | test_connectivity_watchdog.py | 15 |
 | | test_evaluate.py | 7 |
 | | test_exit_conditions.py | 19 |
-| | test_loop.py | 40 |
+| | test_loop.py | 44 |
 | | test_news_protection.py | 10 |
 | | test_position_metadata.py | 11 |
 | | test_stop_logic.py | 38 |
-| **Watchman Subtotal** | | **149** |
+| **Watchman Subtotal** | | **154** |
 | Scripts & CLI | test_autotrade_control.py | 20 |
 | | test_clock.py | 1 |
 | | test_config.py | 29 |
@@ -100,7 +100,7 @@ This document provides a comprehensive list of all 1339 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **316** |
 | | | |
-| **GRAND TOTAL** | | **1339** |
+| **GRAND TOTAL** | | **1344** |
 
 ---
 
@@ -1145,9 +1145,10 @@ This document provides a comprehensive list of all 1339 test cases in the AutoTr
 - test_check_records_one_anomaly_event_per_outage_not_every_call
 - test_journal_timestamp_uses_journal_clock_not_the_elapsed_duration_clock
 - test_journal_clock_defaults_to_the_main_clock_when_not_given
-- test_outage_notifies_once_via_telegram
 - test_recovery_after_an_alerted_outage_notifies_restored
 - test_record_connected_without_a_prior_alert_does_not_notify
+- test_going_down_does_not_call_this_modules_own_notify_directly
+- test_journal_module_notify_is_not_called_directly_from_this_module
 - test_recovery_notification_does_not_re_fire_on_a_later_still_connected_call
 
 ### tests/unit/watchman/test_evaluate.py
@@ -1192,6 +1193,10 @@ This document provides a comprehensive list of all 1339 test cases in the AutoTr
 - test_missing_history_for_symbol_skips_that_position
 - test_close_decision_closes_position_and_removes_metadata
 - test_close_decision_failure_leaves_metadata_intact
+- test_close_decision_failure_is_not_retried_within_backoff_window
+- test_close_decision_retries_again_once_backoff_window_elapses
+- test_close_decision_success_after_a_prior_failure_clears_backoff_state
+- test_close_decision_backoff_is_per_ticket_not_global
 - test_modify_sl_decision_calls_modify_stop_loss
 - test_no_action_decision_still_runs_news_protection_check
 - test_close_decision_skips_news_protection_entirely

@@ -181,26 +181,26 @@ def test_journal_clock_defaults_to_the_main_clock_when_not_given():
 
 
 # --- 2026-07-25: notify() alerting (was log/journal-only before) -------------
+#
+# The DOWN alert is deliberately NOT a direct notify() call in this module --
+# journal.record_anomaly_event() (called right below it, in the same
+# `if not self._alerted_since_last_good` branch) already notify()s
+# unconditionally on every call (see that function's own docstring); an
+# earlier version of this fix called notify() directly here TOO and was
+# found double-notifying on a single connectivity-loss event once deployed.
+# So the DOWN path is exercised by test_check_records_one_anomaly_event_per_outage_not_every_call
+# above (one journal write == one notify, transition-only) and by
+# test_journal_module_notify_is_not_called_directly_from_this_module below
+# (proving there's no SECOND, redundant call). Only the recovery (UP) path
+# calls this module's own `notify` directly (record_connected() has no
+# journal write to piggyback on), so that's the only path captured via
+# _capture_notify.
 
 
 def _capture_notify(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(connectivity_watchdog_module, "notify", lambda text: calls.append(text))
     return calls
-
-
-def test_outage_notifies_once_via_telegram(monkeypatch):
-    calls = _capture_notify(monkeypatch)
-    clock = FakeClock(BASE_TIME)
-    watchdog = ConnectivityWatchdog(clock, ConnectivityWatchdogConfig(timeout_minutes=5.0))
-
-    watchdog.record_connected()
-    clock.advance(minutes=10)
-    watchdog.check()
-    watchdog.check()  # same ongoing outage -- must not re-notify
-
-    assert len(calls) == 1
-    assert "CONNECTIVITY LOST" in calls[0]
 
 
 def test_recovery_after_an_alerted_outage_notifies_restored(monkeypatch):
@@ -210,12 +210,11 @@ def test_recovery_after_an_alerted_outage_notifies_restored(monkeypatch):
 
     watchdog.record_connected()
     clock.advance(minutes=10)
-    watchdog.check()  # alerts DOWN
-    watchdog.record_connected()  # recovers
+    watchdog.check()  # alerts DOWN via journal.record_anomaly_event(), not this module's notify
+    watchdog.record_connected()  # recovers -- this module's OWN notify fires
 
-    assert len(calls) == 2
-    assert "CONNECTIVITY LOST" in calls[0]
-    assert "restored" in calls[1] or "✅" in calls[1]
+    assert len(calls) == 1
+    assert "restored" in calls[0] or "✅" in calls[0]
 
 
 def test_record_connected_without_a_prior_alert_does_not_notify(monkeypatch):
@@ -230,6 +229,41 @@ def test_record_connected_without_a_prior_alert_does_not_notify(monkeypatch):
     assert calls == []
 
 
+def test_going_down_does_not_call_this_modules_own_notify_directly(monkeypatch):
+    # Regression test for the double-notify bug this same fix introduced and
+    # then removed: the DOWN transition must route through
+    # journal.record_anomaly_event()'s own notify() only, never a second,
+    # direct call from this module.
+    calls = _capture_notify(monkeypatch)
+    clock = FakeClock(BASE_TIME)
+    watchdog = ConnectivityWatchdog(clock, ConnectivityWatchdogConfig(timeout_minutes=5.0))
+
+    watchdog.record_connected()
+    clock.advance(minutes=10)
+    watchdog.check()
+
+    assert calls == []
+
+
+def test_journal_module_notify_is_not_called_directly_from_this_module(monkeypatch):
+    # journal.record_anomaly_event() is trusted to notify() on its own (and
+    # is independently tested doing so elsewhere) -- this only proves this
+    # module doesn't ALSO call it a second time for the same DOWN event.
+    import autotrade.store.journal as journal_module
+
+    journal_notify_calls: list[str] = []
+    monkeypatch.setattr(journal_module, "notify", lambda text: journal_notify_calls.append(text))
+    clock = FakeClock(BASE_TIME)
+    watchdog = ConnectivityWatchdog(clock, ConnectivityWatchdogConfig(timeout_minutes=5.0))
+
+    watchdog.record_connected()
+    clock.advance(minutes=10)
+    watchdog.check()
+    watchdog.check()  # same ongoing outage -- must not re-notify
+
+    assert len(journal_notify_calls) == 1
+
+
 def test_recovery_notification_does_not_re_fire_on_a_later_still_connected_call(monkeypatch):
     calls = _capture_notify(monkeypatch)
     clock = FakeClock(BASE_TIME)
@@ -237,8 +271,8 @@ def test_recovery_notification_does_not_re_fire_on_a_later_still_connected_call(
 
     watchdog.record_connected()
     clock.advance(minutes=10)
-    watchdog.check()  # DOWN
-    watchdog.record_connected()  # restored
+    watchdog.check()  # DOWN (via journal, not this module's own notify)
+    watchdog.record_connected()  # restored -- this module's own notify fires once
     watchdog.record_connected()  # still fine -- must stay quiet
 
-    assert len(calls) == 2
+    assert len(calls) == 1

@@ -107,17 +107,19 @@ class ConnectivityWatchdog:
                 "independent of this system's monitoring (Appendix A §4.7).",
                 elapsed_minutes, self._config.timeout_minutes,
             )
-            notify(
-                f"[AutoTrade] \U0001F6A8 MT5 CONNECTIVITY LOST for {elapsed_minutes:.1f} minutes "
-                "(e.g. the MT5 terminal was closed) -- signals are not being evaluated and open "
-                "positions are not being actively monitored by this system, but they remain "
-                "protected by their own broker-side stop-loss regardless."
-            )
+            # NOT calling notify() directly here (2026-07-25 fix) --
+            # journal.record_anomaly_event() below already sends its own
+            # notify() unconditionally on every call (see that function's
+            # own docstring); an explicit call here as well as the one
+            # earlier in this same commit was found double-notifying on a
+            # single connectivity-loss event once actually deployed.
             journal.record_anomaly_event(
                 timestamp=self._journal_clock.now(), event_type="reconnect",
                 details=(
                     f"MT5 connectivity lost for {elapsed_minutes:.1f} minutes "
-                    f"(timeout={self._config.timeout_minutes:.1f} min)"
+                    f"(timeout={self._config.timeout_minutes:.1f} min) -- this system is not "
+                    "currently monitoring open positions, but they remain protected by their own "
+                    "broker-side hard stop-loss regardless."
                 ),
                 db_path=self._journal_db_path,
             )
