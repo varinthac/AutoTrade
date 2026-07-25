@@ -23,6 +23,7 @@ from autotrade.watchman.loop import WatchmanLoop
 from autotrade.watchman.news_protection import NewsProtectionConfig, NewsProtectionDecision
 
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+OWN_MAGIC = 234_000  # matches execution.demo_adapter.DEFAULT_MAGIC
 
 
 class FakeClock:
@@ -79,10 +80,13 @@ class RaisingAdapter(SpyAdapter):
         raise RuntimeError("MT5 unreachable (simulated)")
 
 
-def _position(ticket=1, symbol="XAUUSD", direction="BUY", volume=0.1, current_sl=2395.0, current_price=2400.0):
+def _position(
+    ticket=1, symbol="XAUUSD", direction="BUY", volume=0.1, current_sl=2395.0, current_price=2400.0,
+    magic=0,
+):
     return BrokerPosition(
         ticket=ticket, symbol=symbol, direction=direction, risk_pct=1.0,
-        current_sl=current_sl, current_price=current_price, volume=volume,
+        current_sl=current_sl, current_price=current_price, volume=volume, magic=magic,
     )
 
 
@@ -117,6 +121,7 @@ def _loop(adapter, tmp_path, watchdog=None, news_provider=None, circuit_breaker=
         news_protection_config=NewsProtectionConfig(),
         connectivity_watchdog=watchdog or ConnectivityWatchdog(FakeClock(NOW)),
         circuit_breaker=circuit_breaker or _circuit_breaker(tmp_path),
+        own_magic=OWN_MAGIC,
         resolve_symbol_spec=lambda symbol: _symbol_spec(symbol),
         state_path=tmp_path / "position_metadata.json",
         journal_db_path=tmp_path / "trade_journal.sqlite",
@@ -1090,3 +1095,156 @@ def test_duplicate_close_write_does_not_double_count_circuit_breaker(tmp_path, m
 
     trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
     assert len(trades) == 1
+
+
+# --- Fix C (2026-07-25): orphan-position reconciliation ---------------------
+# A broker position that IS open, carries this system's own magic, but has
+# NO PositionMetadata at all -- the mirror gap of the reconciliation above
+# (which only handles "metadata says open, broker says closed").
+
+
+def test_orphan_position_with_matching_magic_seeds_metadata_and_alerts(tmp_path, monkeypatch):
+    adapter = SpyAdapter([
+        _position(ticket=50, symbol="XAUUSD", direction="BUY", volume=0.1,
+                  current_sl=2395.0, current_price=2400.0, magic=OWN_MAGIC),
+    ])
+    wl = _loop(adapter, tmp_path)
+    calls = []
+    monkeypatch.setattr(loop_module, "notify", lambda text: calls.append(text))
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    metadata = position_metadata.get_position_metadata(50, tmp_path / "position_metadata.json")
+    assert metadata is not None
+    assert metadata.symbol == "XAUUSD"
+    assert metadata.direction == "BUY"
+    assert metadata.entry_price == pytest.approx(2400.0)
+    assert metadata.initial_stop_distance == pytest.approx(5.0)  # |2400.0 - 2395.0|
+
+    assert len(calls) == 1
+    assert "50" in calls[0]
+    assert "NO recorded entry-time metadata" in calls[0]
+
+    events = journal.get_anomaly_events_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert any(e.event_type == "orphan_position_found" for e in events)
+
+
+def test_orphan_position_with_non_matching_magic_is_left_alone(tmp_path, monkeypatch):
+    # Not this system's own -- could be a genuine manual trade placed
+    # directly in the terminal. Must NOT be seeded/managed/alerted on.
+    adapter = SpyAdapter([
+        _position(ticket=51, symbol="XAUUSD", direction="BUY", magic=999_999),
+    ])
+    wl = _loop(adapter, tmp_path)
+    calls = []
+    monkeypatch.setattr(loop_module, "notify", lambda text: calls.append(text))
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    assert position_metadata.get_position_metadata(51, tmp_path / "position_metadata.json") is None
+    assert calls == []
+    events = journal.get_anomaly_events_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert not any(e.event_type == "orphan_position_found" for e in events)
+
+
+def test_orphan_position_default_magic_zero_is_left_alone(tmp_path, monkeypatch):
+    # _position()'s own default (magic=0, matching BrokerPosition's default
+    # for an adapter that never populated it) must also be treated as "not
+    # confirmed ours" -- never silently seeded/managed.
+    adapter = SpyAdapter([_position(ticket=52, symbol="XAUUSD", direction="BUY")])
+    wl = _loop(adapter, tmp_path)
+    calls = []
+    monkeypatch.setattr(loop_module, "notify", lambda text: calls.append(text))
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    assert position_metadata.get_position_metadata(52, tmp_path / "position_metadata.json") is None
+    assert calls == []
+
+
+def test_orphan_reconciliation_skips_already_tracked_tickets(tmp_path, monkeypatch):
+    _record_metadata(tmp_path, ticket=1, symbol="XAUUSD", entry_price=2395.0)
+    adapter = SpyAdapter([_position(ticket=1, symbol="XAUUSD", magic=OWN_MAGIC)])
+    wl = _loop(adapter, tmp_path)
+    calls = []
+    monkeypatch.setattr(loop_module, "notify", lambda text: calls.append(text))
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(action="NO_ACTION", new_stop_loss=None, reason="no change"),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    assert calls == []
+    events = journal.get_anomaly_events_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert not any(e.event_type == "orphan_position_found" for e in events)
+
+
+def test_orphan_reconciliation_corrupt_metadata_store_skips_without_crashing(tmp_path, caplog):
+    state_path = tmp_path / "position_metadata.json"
+    state_path.write_text("{not valid json", encoding="utf-8")
+
+    adapter = SpyAdapter([_position(ticket=53, symbol="XAUUSD", magic=OWN_MAGIC)])
+    wl = _loop(adapter, tmp_path)
+
+    with caplog.at_level(logging.ERROR):
+        wl.run_cycle({"XAUUSD": _history()}, NOW)  # must not raise
+
+    events = journal.get_anomaly_events_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert not any(e.event_type == "orphan_position_found" for e in events)
+
+
+def test_orphan_reconciliation_one_ticket_raising_does_not_stop_others(tmp_path, monkeypatch, caplog):
+    adapter = SpyAdapter([
+        _position(ticket=60, symbol="XAUUSD", magic=OWN_MAGIC),
+        _position(ticket=61, symbol="XAUUSD", magic=OWN_MAGIC),
+    ])
+    wl = _loop(adapter, tmp_path)
+
+    real_record_position_opened = position_metadata.record_position_opened
+
+    def _flaky_record(ticket, *args, **kwargs):
+        if ticket == 60:
+            raise RuntimeError("simulated failure seeding orphan metadata")
+        return real_record_position_opened(ticket, *args, **kwargs)
+
+    monkeypatch.setattr(loop_module, "record_position_opened", _flaky_record)
+
+    with caplog.at_level(logging.ERROR):
+        wl.run_cycle({"XAUUSD": _history()}, NOW)  # must not raise
+
+    assert position_metadata.get_position_metadata(60, tmp_path / "position_metadata.json") is None
+    assert position_metadata.get_position_metadata(61, tmp_path / "position_metadata.json") is not None
+    assert any("unhandled exception seeding metadata" in r.message for r in caplog.records)
+
+
+def test_orphan_position_seeded_metadata_lets_reconciliation_capture_its_eventual_close_next_cycle(
+    tmp_path, monkeypatch,
+):
+    # The actual bug Fix C closes: WITHOUT seeding metadata here, this
+    # ticket would be invisible to _reconcile_closed_positions forever (it
+    # only walks get_all_tracked_tickets()) -- its eventual close would
+    # never produce a trade_records row at all.
+    adapter = SpyAdapter([
+        _position(ticket=70, symbol="XAUUSD", direction="BUY", volume=0.1,
+                  current_sl=2395.0, current_price=2400.0, magic=OWN_MAGIC),
+    ])
+    wl = _loop(adapter, tmp_path)
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)  # cycle 1: discovers + seeds metadata
+    assert position_metadata.get_position_metadata(70, tmp_path / "position_metadata.json") is not None
+    assert journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite") == []
+
+    # cycle 2: the position has now genuinely closed (broker-side SL hit)
+    adapter._open_positions = []
+    adapter.closed_trade_info[70] = ClosedTradeInfo(
+        close_price=2395.0, close_time=NOW, closed_volume=0.1,
+        gross_pnl=-50.0, cost=1.0, exit_reason="stop_loss",
+    )
+    wl.run_cycle({}, NOW)
+
+    assert position_metadata.get_position_metadata(70, tmp_path / "position_metadata.json") is None
+    trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert len(trades) == 1
+    assert trades[0].broker_ticket == 70
+    assert trades[0].exit_reason == "stop_loss"

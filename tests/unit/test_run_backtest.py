@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from autotrade.auditor.backtest_results import load_backtest_report_envelope
-from autotrade.backtest.cost_model import CostModelConfig
+from autotrade.backtest.cost_model import CostModelConfig, SwapModelConfig
 from autotrade.common.config import MT5Credentials
 from autotrade.common.symbol_spec import SymbolSpec
 from autotrade.council.order_construction import OrderPlan
@@ -113,18 +113,22 @@ def test_filter_by_date_range_returns_reindexed_copy_does_not_mutate_input():
     assert list(filtered.index) == list(range(len(filtered)))  # reindexed from 0
 
 
-def test_build_envelope_cost_model_complete_true_when_commission_set_and_min_spread_convention():
+_SWAP_MODEL = SwapModelConfig(long_per_lot_per_night=-53.2, short_per_lot_per_night=36.8)
+
+
+def test_build_envelope_cost_model_complete_true_when_commission_set_min_spread_and_swap_modeled():
     df = _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}])
     report = run_backtest_script.generate_report([], 10_000.0)
     envelope = run_backtest_script.build_envelope(
-        "XAUUSD", df, report, CostModelConfig(commission_per_lot=3.5, slippage_points=None),
+        "XAUUSD", df, report,
+        CostModelConfig(commission_per_lot=3.5, slippage_points=None, swap_model=_SWAP_MODEL),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
         shield_modeled=True, min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is True
 
 
-def test_build_envelope_cost_model_complete_true_when_commission_zero_and_min_spread_convention():
+def test_build_envelope_cost_model_complete_true_when_commission_zero_min_spread_and_swap_modeled():
     # 0.0 is a legitimate real commission for a commission-free account (e.g.
     # IC Markets Standard, which recovers cost via a wider spread instead) --
     # it must NOT be treated as an unconfigured placeholder by build_envelope
@@ -133,7 +137,8 @@ def test_build_envelope_cost_model_complete_true_when_commission_zero_and_min_sp
     df = _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}])
     report = run_backtest_script.generate_report([], 10_000.0)
     envelope = run_backtest_script.build_envelope(
-        "XAUUSD", df, report, CostModelConfig(commission_per_lot=0.0, slippage_points=None),
+        "XAUUSD", df, report,
+        CostModelConfig(commission_per_lot=0.0, slippage_points=None, swap_model=_SWAP_MODEL),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
         shield_modeled=True, min_lot_risk_cap_pct=None,
     )
@@ -146,11 +151,27 @@ def test_build_envelope_cost_model_complete_false_when_slippage_explicitly_overr
     df = _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}])
     report = run_backtest_script.generate_report([], 10_000.0)
     envelope = run_backtest_script.build_envelope(
-        "XAUUSD", df, report, CostModelConfig(commission_per_lot=3.5, slippage_points=2.0),
+        "XAUUSD", df, report,
+        CostModelConfig(commission_per_lot=3.5, slippage_points=2.0, swap_model=_SWAP_MODEL),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
         shield_modeled=True, min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is False
+
+
+def test_build_envelope_cost_model_complete_false_when_swap_not_modeled():
+    # 2026-07-25: cost_model_complete now ALSO requires swap_modeled -- an
+    # otherwise-complete cost model (real commission + min-1-spread
+    # convention) is still incomplete if swap/rollover isn't modeled.
+    df = _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}])
+    report = run_backtest_script.generate_report([], 10_000.0)
+    envelope = run_backtest_script.build_envelope(
+        "XAUUSD", df, report, CostModelConfig(commission_per_lot=3.5, slippage_points=None, swap_model=None),
+        10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
+        shield_modeled=True, min_lot_risk_cap_pct=None,
+    )
+    assert envelope["cost_model_complete"] is False
+    assert envelope["swap_modeled"] is False
 
 
 def test_run_and_persist_writes_a_loadable_envelope(tmp_path, monkeypatch):
@@ -161,7 +182,7 @@ def test_run_and_persist_writes_a_loadable_envelope(tmp_path, monkeypatch):
 
     out_path = run_backtest_script.run_and_persist(
         "XAUUSD", df, SYMBOL, 10_000.0, 1.0,
-        CostModelConfig(commission_per_lot=2.0, slippage_points=None),
+        CostModelConfig(commission_per_lot=2.0, slippage_points=None, swap_model=_SWAP_MODEL),
         False, output_dir,
     )
 
@@ -534,6 +555,7 @@ def test_main_with_commission_zero_writes_envelope_with_cost_model_complete_true
     output_dir = tmp_path / "backtest_reports"
     monkeypatch.setattr(sys, "argv", [
         "run_backtest.py", "XAUUSD", "--commission-per-lot", "0.0", "--output-dir", str(output_dir),
+        "--swap-long-per-lot", "-53.2", "--swap-short-per-lot", "36.8",
     ])
 
     exit_code = run_backtest_script.main()

@@ -80,6 +80,11 @@ class _FakeSendResult:
         self.comment = comment
 
 
+class _FakeTerminalInfo:
+    def __init__(self, trade_allowed: bool):
+        self.trade_allowed = trade_allowed
+
+
 class FakeClock:
     def __init__(self, start: datetime):
         self._now = start
@@ -1680,6 +1685,319 @@ def test_close_position_ambiguous_ground_truth_requery_itself_fails_reports_fail
 
     assert result.success is False
     assert any("ground-truth re-query" in r.message for r in caplog.records)
+
+
+# --- 2026-07-25 incident fixes: Fix A (pre-flight AutoTrading check) and   --
+# --- Fix B (idempotent, ground-truth-gated close retries)                  --
+
+
+def test_place_order_blocked_when_autotrading_disabled_never_calls_order_send(monkeypatch, caplog):
+    # Real incident (2026-07-22 07:00/08:00 UTC): retcode 10027 fell through
+    # as an ordinary rejection with no loud alert. _send_with_retry's
+    # pre-flight check must now skip order_send() entirely and report a
+    # clear failure.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(mt5, "terminal_info", lambda: _FakeTerminalInfo(trade_allowed=False))
+
+    def boom(request):
+        pytest.fail("order_send must not be called while AutoTrading is disabled")
+
+    monkeypatch.setattr(mt5, "order_send", boom)
+
+    notify_calls = []
+    monkeypatch.setattr(demo_adapter_module, "notify", lambda text: notify_calls.append(text))
+
+    clock = FakeClock(datetime(2026, 7, 22, 7, 0))
+    adapter = _adapter(clock=clock)
+    with caplog.at_level(logging.CRITICAL):
+        result = adapter.place_order(_request())
+
+    assert result.success is False
+    assert result.retcode == mt5.TRADE_RETCODE_CLIENT_DISABLES_AT
+    assert "AutoTrading" in result.message
+    assert any(r.levelno == logging.CRITICAL for r in caplog.records)
+    assert len(notify_calls) == 1
+    assert "AutoTrading is OFF" in notify_calls[0]
+
+    events = journal.get_anomaly_events_for_day(date(2026, 7, 22))
+    assert any(e.event_type == "autotrading_disabled" for e in events)
+
+
+def test_close_position_blocked_when_autotrading_disabled_never_calls_order_send(monkeypatch):
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.1,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+        ) if kwargs.get("ticket") == 8 else (),
+    )
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(mt5, "terminal_info", lambda: _FakeTerminalInfo(trade_allowed=False))
+
+    def boom(request):
+        pytest.fail("order_send must not be called while AutoTrading is disabled")
+
+    monkeypatch.setattr(mt5, "order_send", boom)
+
+    adapter = _adapter()
+    result = adapter.close_position(8)
+
+    assert result.success is False
+    assert result.retcode == mt5.TRADE_RETCODE_CLIENT_DISABLES_AT
+
+
+def test_modify_stop_loss_blocked_when_autotrading_disabled_never_calls_order_send(monkeypatch):
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.1,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=5, tp=2410.0),
+        ) if kwargs.get("ticket") == 5 else (),
+    )
+    monkeypatch.setattr(mt5, "terminal_info", lambda: _FakeTerminalInfo(trade_allowed=False))
+
+    def boom(request):
+        pytest.fail("order_send must not be called while AutoTrading is disabled")
+
+    monkeypatch.setattr(mt5, "order_send", boom)
+
+    adapter = _adapter()
+    result = adapter.modify_stop_loss(5, 2397.0)
+
+    assert result.success is False
+    assert result.retcode == mt5.TRADE_RETCODE_CLIENT_DISABLES_AT
+
+
+def test_terminal_info_none_does_not_block_send(monkeypatch):
+    # terminal_info() returning None (can't tell) must fail SOFT -- proceed
+    # with the send as normal, same as this codebase's other MT5-read-
+    # failure conventions (e.g. AutoTradingWatchdog's own "unknown, skip").
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(mt5, "terminal_info", lambda: None)
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_DONE, order=1, price=2400.1, volume=0.1),
+    )
+
+    adapter = _adapter()
+    result = adapter.place_order(_request())
+
+    assert result.success is True
+
+
+def test_autotrading_disabled_alert_fires_once_then_dedupes_across_calls(monkeypatch):
+    # notify() has no built-in rate-limiting (see its module docstring) --
+    # a position could be re-evaluated by Watchman every ~5s while
+    # AutoTrading stays off, so the alert must fire once per disabled
+    # streak, not once per blocked send.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.1,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+        ) if kwargs.get("ticket") == 8 else (),
+    )
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(mt5, "terminal_info", lambda: _FakeTerminalInfo(trade_allowed=False))
+
+    def boom(request):
+        pytest.fail("order_send must not be called while AutoTrading is disabled")
+
+    monkeypatch.setattr(mt5, "order_send", boom)
+
+    notify_calls = []
+    monkeypatch.setattr(demo_adapter_module, "notify", lambda text: notify_calls.append(text))
+
+    adapter = _adapter()
+    first = adapter.close_position(8)
+    second = adapter.close_position(8)
+
+    assert first.success is False
+    assert second.success is False
+    assert len(notify_calls) == 1
+
+
+def test_autotrading_disabled_alert_refires_after_re_enabling_then_disabling_again(monkeypatch):
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.1,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+        ) if kwargs.get("ticket") == 8 else (),
+    )
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+
+    trade_allowed_sequence = [False, True, False]
+    call_index = {"i": 0}
+
+    def fake_terminal_info():
+        value = trade_allowed_sequence[call_index["i"]]
+        call_index["i"] += 1
+        return _FakeTerminalInfo(trade_allowed=value)
+
+    monkeypatch.setattr(mt5, "terminal_info", fake_terminal_info)
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: _FakeSendResult(retcode=mt5.TRADE_RETCODE_DONE, order=8, price=2399.9, volume=0.1),
+    )
+
+    notify_calls = []
+    monkeypatch.setattr(demo_adapter_module, "notify", lambda text: notify_calls.append(text))
+
+    adapter = _adapter()
+    first = adapter.close_position(8)   # trade_allowed=False -- blocked, alerts
+    second = adapter.close_position(8)  # trade_allowed=True -- proceeds, resets the flag
+    third = adapter.close_position(8)   # trade_allowed=False again -- alerts again
+
+    assert first.success is False
+    assert second.success is True
+    assert third.success is False
+    assert len(notify_calls) == 2
+
+
+def test_close_position_stops_retrying_once_position_confirmed_gone_before_resend(monkeypatch, caplog):
+    # Fix B (2026-07-25, real incident regression): close_position() now
+    # opts into ambiguous-outcome retries (is_idempotent=True) -- safe only
+    # because _send_with_retry checks positions_get(ticket=...) before every
+    # RESEND and stops the instant the position is confirmed gone, instead
+    # of blindly resending into further ambiguous retcodes (the 2026-07-22
+    # incident's 10012 TIMEOUT -> 10039 CLOSE_ORDER_EXIST -> 10036
+    # POSITION_CLOSED cascade). order_send() must be called exactly ONCE --
+    # the gate check ahead of attempt 2 already sees the position gone.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    positions_get_calls = []
+
+    def fake_positions_get(**kwargs):
+        positions_get_calls.append(kwargs)
+        if len(positions_get_calls) == 1:
+            return (
+                _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.2,
+                               type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+            )
+        return ()  # confirmed gone from the very next query onward
+
+    monkeypatch.setattr(mt5, "positions_get", fake_positions_get)
+    send_calls = []
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: send_calls.append(request) or _FakeSendResult(
+            retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout",
+        ),
+    )
+    deals = (
+        _FakeDeal(entry=mt5.DEAL_ENTRY_OUT, reason=mt5.DEAL_REASON_EXPERT, profit=43.13,
+                  price=2401.0, time=1_700_003_600, volume=0.2, magic=234_000),
+    )
+    monkeypatch.setattr(mt5, "history_deals_get", lambda **kwargs: deals)
+
+    adapter = _adapter(max_retries=2)
+    with caplog.at_level(logging.INFO):
+        result = adapter.close_position(8)
+
+    assert len(send_calls) == 1
+    assert result.success is True
+    assert result.filled_price == pytest.approx(2401.0)
+    assert any("stopping here rather than resending" in r.message for r in caplog.records)
+
+
+def test_close_position_now_retries_ambiguous_timeout_multiple_times_when_still_open(monkeypatch):
+    # Fix B (2026-07-25): the flip side of the test above -- when the gate
+    # confirms the position is STILL open, close_position() now genuinely
+    # retries an ambiguous TIMEOUT (previously it never retried at all on an
+    # ambiguous outcome, since it stayed non-idempotent).
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    monkeypatch.setattr(
+        mt5, "positions_get",
+        lambda **kwargs: (
+            _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.2,
+                           type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+        ) if kwargs.get("ticket") == 8 else (),
+    )
+    send_calls = []
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: send_calls.append(request) or _FakeSendResult(
+            retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout",
+        ),
+    )
+
+    adapter = _adapter(max_retries=2)
+    result = adapter.close_position(8)
+
+    assert len(send_calls) == 3  # 1 initial + 2 retries -- genuinely retried now
+    assert result.success is False
+
+
+def test_close_position_retry_gate_query_failure_does_not_block_resend(monkeypatch):
+    # If the gate's OWN positions_get(ticket=...) check fails (can't tell
+    # either way), it must be treated the same as "still open" -- proceed
+    # with the retry as before, never guessing "gone" from missing info.
+    _patch_mt5_boilerplate(monkeypatch)
+    monkeypatch.setattr(mt5, "symbol_info_tick", lambda name: _FakeTick(bid=2399.9, ask=2400.1))
+    positions_get_calls = []
+
+    def fake_positions_get(**kwargs):
+        positions_get_calls.append(kwargs)
+        if len(positions_get_calls) == 1:
+            return (
+                _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.2,
+                               type_=mt5.POSITION_TYPE_BUY, ticket=8, tp=2410.0),
+            )
+        return None  # every gate check after the first fails to query
+
+    monkeypatch.setattr(mt5, "positions_get", fake_positions_get)
+    send_calls = []
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: send_calls.append(request) or _FakeSendResult(
+            retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout",
+        ),
+    )
+
+    adapter = _adapter(max_retries=2)
+    result = adapter.close_position(8)
+
+    assert len(send_calls) == 3  # retried despite the gate's own query failing every time
+    assert result.success is False
+
+
+def test_modify_stop_loss_stops_retrying_once_position_confirmed_gone_before_resend(monkeypatch, caplog):
+    _patch_mt5_boilerplate(monkeypatch)
+    positions_get_calls = []
+
+    def fake_positions_get(**kwargs):
+        positions_get_calls.append(kwargs)
+        if len(positions_get_calls) == 1:
+            return (
+                _FakePosition(symbol="XAUUSD", sl=2395.0, price_current=2400.0, volume=0.1,
+                               type_=mt5.POSITION_TYPE_BUY, ticket=5, tp=2410.0),
+            )
+        return ()
+
+    monkeypatch.setattr(mt5, "positions_get", fake_positions_get)
+    send_calls = []
+    monkeypatch.setattr(
+        mt5, "order_send",
+        lambda request: send_calls.append(request) or _FakeSendResult(
+            retcode=mt5.TRADE_RETCODE_TIMEOUT, comment="timeout",
+        ),
+    )
+
+    adapter = _adapter(max_retries=2)
+    with caplog.at_level(logging.INFO):
+        result = adapter.modify_stop_loss(5, 2397.0)
+
+    assert len(send_calls) == 1
+    assert result.success is False
+    assert any("stopping here rather than resending" in r.message for r in caplog.records)
 
 
 # --- place_order: ambiguous-outcome ground-truth resolution (harder than   --

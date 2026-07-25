@@ -142,7 +142,8 @@ class AnomalyEventRecord(Base):
     timestamp: Mapped[datetime]
     event_type: Mapped[str] = mapped_column(index=True)
     """One of: reconnect / order_reject / circuit_breaker_trigger /
-    execution_failed / abnormal_slippage / other."""
+    execution_failed / abnormal_slippage / autotrading_disabled /
+    autotrading_enabled / orphan_position_found / other."""
     details: Mapped[str]
 
 

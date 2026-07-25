@@ -75,6 +75,15 @@ class BrokerPosition:
     current_sl: float
     current_price: float
     volume: float
+    magic: int = 0
+    """The broker's own `magic` order-tag for this position -- defaults to
+    `0` so every pre-existing `BrokerPosition(...)` construction (tests,
+    any other caller) keeps working unmodified, same convention as
+    `OrderResult`'s Phase 7b additions. `watchman/loop.py`'s orphan-position
+    reconciliation (a broker position open with no `PositionMetadata` at
+    all) uses this to tell "almost certainly opened by THIS system"
+    (matches `ThrottledDemoAdapter`'s own magic) apart from a genuine
+    manual/other-script trade, which must never be silently seeded/managed."""
 
 
 @dataclass(frozen=True)

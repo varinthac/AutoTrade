@@ -99,14 +99,23 @@ def build_envelope(
     min-lot risk-cap fallback was disabled) -- see `risk/sizing.py`'s
     `compute_lot_size` docstring. `swap_modeled` mirrors the same honesty
     flags for overnight swap/rollover (true iff `cost_model.swap_model` is
-    set; see `backtest/cost_model.py`'s `SwapModelConfig`). NOTE: whether a
-    promotion-relevant run MUST have `swap_modeled` true (i.e. folding swap
-    into `cost_model_complete` / the promotion gate) is deliberately left as a
-    gate-policy decision for a human -- EXP-018 added the capability and the
-    flag but does NOT change the gate. `cost_model_complete` therefore still
-    checks only slippage, unchanged.
+    set; see `backtest/cost_model.py`'s `SwapModelConfig`).
+
+    **2026-07-25: `swap_modeled` now folds into `cost_model_complete`.**
+    EXP-018 (2026-07-24) added the swap-modeling capability but deliberately
+    left the gate-policy question open -- whether a promotion-relevant run
+    MUST have swap modeled -- for a human to decide, given two independent
+    projects (this one's own Train+Val re-run, and a cross-project
+    2009-2019 replication) both measured swap as a material, non-trivial
+    cost (~21% of expectancy on this project's own data). The user decided:
+    yes, require it. A run without `--swap-long-per-lot`/
+    `--swap-short-per-lot` now reports `cost_model_complete: False` (same
+    honest-incompleteness signal `promotion.py`'s gate already fails on for
+    an incomplete slippage model), rather than only tracking swap
+    separately in `swap_modeled` while `cost_model_complete` stayed silent
+    about it.
     """
-    cost_model_complete = cost_model.slippage_points is None
+    cost_model_complete = cost_model.slippage_points is None and cost_model.swap_model is not None
     return {
         "symbol": symbol,
         "bar_range": {"start": str(df["time"].iloc[0]), "end": str(df["time"].iloc[-1])},

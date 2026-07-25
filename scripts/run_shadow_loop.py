@@ -39,7 +39,7 @@ from autotrade.council.mql5_calendar_provider import MQL5CalendarProvider, resol
 from autotrade.council.news_calendar import NewsCalendarProvider, StubNewsCalendarProvider
 from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.execution.adapter import BrokerAdapter
-from autotrade.execution.demo_adapter import ThrottledDemoAdapter
+from autotrade.execution.demo_adapter import DEFAULT_MAGIC, ThrottledDemoAdapter
 from autotrade.execution.noop_adapter import NoOpBrokerAdapter
 from autotrade.feed.poller import TIMEFRAME_MAP
 from autotrade.notify.telegram import notify
@@ -406,6 +406,10 @@ def main() -> int:
                 adapter=adapter, watchman_config=watchman_config, news_provider=news_provider,
                 news_protection_config=news_protection_cfg, connectivity_watchdog=connectivity_watchdog,
                 circuit_breaker=circuit_breaker,
+                # DEFAULT_MAGIC -- build_adapter() never overrides ThrottledDemoAdapter's own
+                # `magic` (order_cfg has no such key), so this always matches; see
+                # WatchmanLoop.__init__'s own_magic docstring for why this must stay in sync.
+                own_magic=DEFAULT_MAGIC,
                 symbol_map=symbol_map, state_path=DEFAULT_POSITION_METADATA_PATH,
                 journal_db_path=journal_db_path,
             )

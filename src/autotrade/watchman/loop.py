@@ -105,6 +105,7 @@ from autotrade.watchman.position_metadata import (
     PositionMetadata,
     get_all_tracked_tickets,
     get_position_metadata,
+    record_position_opened,
     remove_position_metadata,
     update_news_protected_until,
 )
@@ -178,6 +179,7 @@ class WatchmanLoop:
         news_protection_config: NewsProtectionConfig,
         connectivity_watchdog: ConnectivityWatchdog,
         circuit_breaker: CircuitBreaker,
+        own_magic: int,
         resolve_symbol_spec: Callable[[str], SymbolSpec] | None = None,
         symbol_map: dict[str, str] | None = None,
         state_path: Path | None = None,
@@ -189,6 +191,16 @@ class WatchmanLoop:
         self._news_protection_config = news_protection_config
         self._connectivity_watchdog = connectivity_watchdog
         self._circuit_breaker = circuit_breaker
+        # Fix C (2026-07-25), orphan-position reconciliation: the ONLY way
+        # to tell "almost certainly opened by THIS system" (BrokerPosition's
+        # own `magic`, sourced from the broker) apart from a genuine manual/
+        # other-script trade -- must match whatever `magic` the live adapter
+        # (`execution.demo_adapter.ThrottledDemoAdapter`) actually tags its
+        # own orders with (`execution.demo_adapter.DEFAULT_MAGIC` unless
+        # overridden). No default here deliberately -- a silent mismatch
+        # would make _reconcile_orphan_positions() either never fire or
+        # (worse) start seeding metadata for genuinely manual trades.
+        self._own_magic = own_magic
         self._resolve_symbol_spec = resolve_symbol_spec or (
             lambda symbol: get_symbol_spec(symbol, symbol_map)
         )
@@ -225,6 +237,7 @@ class WatchmanLoop:
                 )
 
         self._reconcile_closed_positions(open_positions, now)
+        self._reconcile_orphan_positions(open_positions, now)
 
     def _reconcile_closed_positions(self, open_positions: list[BrokerPosition], now: datetime) -> None:
         """Catches positions that closed WITHOUT this system ever calling
@@ -284,6 +297,102 @@ class WatchmanLoop:
             "Watchman reconciliation: ticket=%s symbol=%s closed via %s (broker-side/external, "
             "not initiated by this system) -- trade journal record written, metadata removed.",
             ticket, metadata.symbol, info.exit_reason,
+        )
+
+    def _reconcile_orphan_positions(self, open_positions: list[BrokerPosition], now: datetime) -> None:
+        """Fix C (2026-07-25): the MIRROR gap `_reconcile_closed_positions`
+        above does not cover -- a broker position that IS currently open,
+        carries THIS adapter's own `magic` number (so it was almost
+        certainly opened by this system, not a genuine manual/other-script
+        trade), but has NO `PositionMetadata` at all (e.g. a crash between a
+        successful `place_order()` fill and the orchestrator's
+        `record_position_opened()` call right after it).
+
+        Without this, such a ticket is invisible to
+        `_reconcile_closed_positions`'s own tracked-tickets loop (it only
+        walks `get_all_tracked_tickets()`) -- so its EVENTUAL close (broker
+        SL/TP or otherwise) would never be observed by either of the two
+        documented reconciliation paths and would permanently vanish from
+        `trade_records`, not just be delayed like the already-handled
+        closed-with-metadata case above.
+
+        On discovery: `notify()`/`logger.critical`/an `orphan_position_found`
+        anomaly event fire immediately (a surprising, actionable event worth
+        a human's attention), and approximate `PositionMetadata` is seeded
+        from the position's CURRENT price/SL (the TRUE entry price/time is
+        unknown and unrecoverable) -- this both lets Watchman start managing
+        it going forward and, critically, makes it visible to
+        `_reconcile_closed_positions` from the NEXT cycle onward, so its
+        real eventual close DOES get a genuine `trade_records` row written
+        via the normal reconciliation path, rather than fabricating one here
+        for a position that has not actually closed yet (which would also
+        collide with `TradeRecord.broker_ticket`'s `UNIQUE` constraint and
+        silently swallow the real close record later).
+
+        A position whose `magic` does NOT match `self._own_magic` (this
+        includes the `magic=0` default `BrokerPosition` carries when the
+        adapter doesn't populate it) is deliberately left alone -- could be
+        a genuine manual trade a human placed directly in the terminal, and
+        silently starting to MANAGE (let alone eventually auto-close) a
+        human's own trade would be a much worse outcome than an occasional
+        missed alert."""
+        try:
+            tracked_tickets = set(get_all_tracked_tickets(self._state_path))
+        except CorruptPositionMetadataError:
+            # Already logged loudly by _reconcile_closed_positions above this
+            # same cycle (same underlying store) -- avoid a second, redundant
+            # CRITICAL log for the identical root cause.
+            return
+
+        for position in open_positions:
+            if position.ticket in tracked_tickets:
+                continue
+            if position.magic != self._own_magic:
+                logger.debug(
+                    "Watchman orphan-scan: ticket=%s symbol=%s has no PositionMetadata and its "
+                    "magic=%s does not match this system's own magic=%s -- likely a manual/"
+                    "other-script trade, left unmanaged/unseeded.",
+                    position.ticket, position.symbol, position.magic, self._own_magic,
+                )
+                continue
+            try:
+                self._reconcile_one_orphan_position(position, now)
+            except Exception:
+                logger.exception(
+                    "Watchman orphan-scan: unhandled exception seeding metadata for orphan "
+                    "ticket=%s symbol=%s -- skipping this ticket this cycle, other reconciliation "
+                    "continues. Existing broker-side stop-loss still protects it regardless.",
+                    position.ticket, position.symbol,
+                )
+
+    def _reconcile_one_orphan_position(self, position: BrokerPosition, now: datetime) -> None:
+        message = (
+            f"[AutoTrade] \U0001F6A8 Found an open position with NO recorded entry-time metadata: "
+            f"ticket={position.ticket} {position.symbol} {position.direction} volume={position.volume} "
+            f"current_sl={position.current_sl} current_price={position.current_price} -- its magic "
+            f"number matches this system's own, so it was almost certainly opened by this system "
+            f"(a crash between the fill and recording its Watchman metadata is the most likely "
+            f"cause), but its TRUE entry price/time is unknown. Seeding approximate metadata now "
+            f"(current price/SL as a stand-in) so Watchman can manage it going forward and its "
+            f"eventual close is captured in the trade journal -- please verify manually."
+        )
+        logger.critical(message)
+        notify(message)
+        journal.record_anomaly_event(
+            timestamp=now, event_type="orphan_position_found",
+            details=(
+                f"ticket={position.ticket} {position.symbol} {position.direction} "
+                f"volume={position.volume} found open with no PositionMetadata -- seeded "
+                f"approximate entry-time metadata from current price/SL so its eventual close is "
+                f"still captured."
+            ),
+            db_path=self._journal_db_path,
+        )
+        record_position_opened(
+            ticket=position.ticket, symbol=position.symbol, direction=position.direction,
+            entry_price=position.current_price,
+            initial_stop_distance=abs(position.current_price - position.current_sl),
+            entry_swing_index=0, opened_at=now, state_path=self._state_path,
         )
 
     def _write_trade_record(

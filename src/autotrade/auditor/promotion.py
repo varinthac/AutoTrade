@@ -131,8 +131,10 @@ def evaluate_backtest_to_paper_gate(
             name="cost_model_complete", passed=False, actual=False, threshold="True",
             note=(
                 "Backtest without a complete cost model (real commission + minimum-1-spread "
-                "slippage) does not count toward any promotion decision (Appendix A §5.2) -- "
-                "every other criterion is skipped."
+                "slippage + overnight swap/rollover, since 2026-07-25) does not count toward any "
+                "promotion decision (Appendix A §5.2) -- every other criterion is skipped. Re-run "
+                "scripts/run_backtest.py with --swap-long-per-lot/--swap-short-per-lot if this run "
+                "omitted them."
             ),
         ))
     if not report_envelope.risk_voice_modeled:

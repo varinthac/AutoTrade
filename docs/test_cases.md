@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1321 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1339 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1321 (including all parametrized variants)
+- **Total Test Count**: 1339 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -41,9 +41,9 @@ This document provides a comprehensive list of all 1321 test cases in the AutoTr
 | | test_positions.py | 6 |
 | | test_webapp_auth.py | 20 |
 | **Dashboard Subtotal** | | **76** |
-| Execution | test_demo_adapter.py | 82 |
+| Execution | test_demo_adapter.py | 92 |
 | | test_noop_adapter.py | 8 |
-| **Execution Subtotal** | | **90** |
+| **Execution Subtotal** | | **100** |
 | Features | test_indicators.py | 10 |
 | | test_levels.py | 13 |
 | | test_swing.py | 15 |
@@ -71,11 +71,11 @@ This document provides a comprehensive list of all 1321 test cases in the AutoTr
 | | test_connectivity_watchdog.py | 14 |
 | | test_evaluate.py | 7 |
 | | test_exit_conditions.py | 19 |
-| | test_loop.py | 33 |
+| | test_loop.py | 40 |
 | | test_news_protection.py | 10 |
 | | test_position_metadata.py | 11 |
 | | test_stop_logic.py | 38 |
-| **Watchman Subtotal** | | **142** |
+| **Watchman Subtotal** | | **149** |
 | Scripts & CLI | test_autotrade_control.py | 20 |
 | | test_clock.py | 1 |
 | | test_config.py | 29 |
@@ -89,7 +89,7 @@ This document provides a comprehensive list of all 1321 test cases in the AutoTr
 | | test_pid_file.py | 19 |
 | | test_poller.py | 10 |
 | | test_run_auditor.py | 42 |
-| | test_run_backtest.py | 24 |
+| | test_run_backtest.py | 25 |
 | | test_run_dashboard.py | 4 |
 | | test_run_health_check.py | 3 |
 | | test_run_scheduled_daily_report.py | 3 |
@@ -100,7 +100,7 @@ This document provides a comprehensive list of all 1321 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **316** |
 | | | |
-| **GRAND TOTAL** | | **1321** |
+| **GRAND TOTAL** | | **1339** |
 
 ---
 
@@ -636,6 +636,16 @@ This document provides a comprehensive list of all 1321 test cases in the AutoTr
 - test_close_position_ambiguous_timeout_partial_close_but_position_fully_gone_reports_failure
 - test_close_position_ambiguous_timeout_full_close_partially_filled_reports_failure_not_original_volume
 - test_close_position_ambiguous_ground_truth_requery_itself_fails_reports_failure
+- test_place_order_blocked_when_autotrading_disabled_never_calls_order_send
+- test_close_position_blocked_when_autotrading_disabled_never_calls_order_send
+- test_modify_stop_loss_blocked_when_autotrading_disabled_never_calls_order_send
+- test_terminal_info_none_does_not_block_send
+- test_autotrading_disabled_alert_fires_once_then_dedupes_across_calls
+- test_autotrading_disabled_alert_refires_after_re_enabling_then_disabling_again
+- test_close_position_stops_retrying_once_position_confirmed_gone_before_resend
+- test_close_position_now_retries_ambiguous_timeout_multiple_times_when_still_open
+- test_close_position_retry_gate_query_failure_does_not_block_resend
+- test_modify_stop_loss_stops_retrying_once_position_confirmed_gone_before_resend
 - test_place_order_ambiguous_timeout_confirmed_position_found_reports_success
 - test_place_order_ambiguous_timeout_tz_aware_clock_matches_without_crashing
 - test_place_order_ambiguous_timeout_no_matching_position_reports_failure
@@ -1207,6 +1217,13 @@ This document provides a comprehensive list of all 1321 test cases in the AutoTr
 - test_reconciliation_close_feeds_circuit_breaker
 - test_three_consecutive_losses_across_cycles_trips_the_halt
 - test_duplicate_close_write_does_not_double_count_circuit_breaker
+- test_orphan_position_with_matching_magic_seeds_metadata_and_alerts
+- test_orphan_position_with_non_matching_magic_is_left_alone
+- test_orphan_position_default_magic_zero_is_left_alone
+- test_orphan_reconciliation_skips_already_tracked_tickets
+- test_orphan_reconciliation_corrupt_metadata_store_skips_without_crashing
+- test_orphan_reconciliation_one_ticket_raising_does_not_stop_others
+- test_orphan_position_seeded_metadata_lets_reconciliation_capture_its_eventual_close_next_cycle
 
 ### tests/unit/watchman/test_news_protection.py
 
@@ -1520,9 +1537,10 @@ This document provides a comprehensive list of all 1321 test cases in the AutoTr
 - test_filter_by_date_range_no_bounds_returns_everything
 - test_filter_by_date_range_out_of_range_returns_empty_not_an_error
 - test_filter_by_date_range_returns_reindexed_copy_does_not_mutate_input
-- test_build_envelope_cost_model_complete_true_when_commission_set_and_min_spread_convention
-- test_build_envelope_cost_model_complete_true_when_commission_zero_and_min_spread_convention
+- test_build_envelope_cost_model_complete_true_when_commission_set_min_spread_and_swap_modeled
+- test_build_envelope_cost_model_complete_true_when_commission_zero_min_spread_and_swap_modeled
 - test_build_envelope_cost_model_complete_false_when_slippage_explicitly_overridden
+- test_build_envelope_cost_model_complete_false_when_swap_not_modeled
 - test_run_and_persist_writes_a_loadable_envelope
 - test_run_and_persist_risk_voice_cfg_marks_envelope_as_modeled
 - test_run_and_persist_watchman_cfg_marks_envelope_as_modeled

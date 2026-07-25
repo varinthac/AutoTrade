@@ -28,14 +28,17 @@ A structurally-terminal retcode (`NO_MONEY`/`MARKET_CLOSED`/`TRADE_DISABLED`/
 cannot possibly fix it, so retrying would only burn the full retry-delay
 window for nothing. An AMBIGUOUS outcome (`order_send()` returning `None`, or
 `TRADE_RETCODE_TIMEOUT`/`TRADE_RETCODE_CONNECTION`) means we genuinely don't
-know whether the broker executed the order -- for a non-idempotent
-`TRADE_ACTION_DEAL` (`place_order`'s new-position open, `close_position`'s
-close), blindly resending risks a DOUBLE FILL/double-close, so these are
-treated as immediately terminal instead of retried. `modify_stop_loss`'s
-`TRADE_ACTION_SLTP` is idempotent (resending the same SL is harmless even if
-the first attempt secretly succeeded), so it's the one call site that opts
-into retrying ambiguous outcomes too, via `_send_with_retry`'s
-`is_idempotent` parameter.
+know whether the broker executed the order -- for `place_order`'s
+non-idempotent, no-existing-ticket `TRADE_ACTION_DEAL`, blindly resending
+risks a DOUBLE FILL, so this stays immediately terminal instead of retried.
+`modify_stop_loss`'s `TRADE_ACTION_SLTP` and `close_position`'s
+`TRADE_ACTION_DEAL` both target a KNOWN existing ticket, so both opt into
+retrying ambiguous outcomes too via `_send_with_retry`'s `is_idempotent`
+parameter -- `close_position` doing so is only safe because of the
+2026-07-25 fix below: every RETRY (not the first attempt) is gated behind a
+fresh `mt5.positions_get(ticket=...)` check that stops retrying the instant
+the position is confirmed already gone, which is exactly what rules out a
+double-close.
 
 **`close_position`'s ambiguity is resolved by checking ground truth, not by
 blindly retrying.** Not retrying an ambiguous outcome avoids a double-close,
@@ -92,6 +95,49 @@ instead of the normal explicit-close path), classified as
 `"reconciled_system_close"`; a mismatch means some OTHER script/EA touched
 the account, classified as `"unknown"` with a loud warning. Genuine
 `DEAL_REASON_CLIENT`/`MOBILE`/`WEB` deals stay `"manual"`.
+
+**2026-07-25: two execution-reliability fixes from a real incident** (live
+paper-trading journal, 2026-07-22 07:00/08:00 UTC AutoTrading-off rejects,
+and a 14:03-14:05 UTC close-retry cascade on ticket 1819229190):
+
+  1. **Pre-flight AutoTrading check (`_send_with_retry`).** Before this,
+     retcode `10027` (`TRADE_RETCODE_CLIENT_DISABLES_AT`, "AutoTrading
+     disabled by client" -- the MT5 terminal's own toggle switched off) fell
+     through as an ordinary rejection: logged/retried and moved on, with no
+     loud alert. `_send_with_retry` now checks
+     `mt5.terminal_info().trade_allowed` BEFORE every attempt loop (place/
+     modify/close all funnel through here) -- if it reads `False`, the send
+     is skipped entirely (no retries burned against a toggle that's off),
+     `notify()`/`logger.critical`/an `autotrading_disabled` anomaly event
+     fire immediately (deduped to once per disabled streak via
+     `self._autotrading_alert_active`, reset the next time a check reads a
+     non-`False` state), and a synthesized `_AutoTradingDisabledResult`
+     (real retcode 10027) is returned so every caller's existing non-DONE
+     failure formatting applies unmodified. This is a synchronous gate
+     right at send-time, distinct from and complementary to
+     `watchman/autotrading_watchdog.py`'s periodic monitor (which catches
+     the toggle changing state even with no order attempted in between) --
+     both run.
+  2. **Idempotent, ground-truth-gated close retries (`_send_with_retry`,
+     `close_position`).** The incident's close attempt failed 3 times in a
+     row with three DIFFERENT retcodes (10012 TIMEOUT -> 10039
+     `CLOSE_ORDER_EXIST` -> 10036 `POSITION_CLOSED`) across separate
+     `close_position()` calls (each re-triggered by Watchman re-deciding
+     `CLOSE` on a still-apparently-open position) -- a blind resend race,
+     not idempotent, that only got sorted out ~3 hours later by periodic
+     reconciliation. `close_position` now opts into `is_idempotent=True`
+     (previously only `modify_stop_loss`'s `TRADE_ACTION_SLTP` did, to avoid
+     a double-close on a resent `TRADE_ACTION_DEAL`) -- safe now because
+     `_send_with_retry` gates every RETRY attempt (not the first) behind a
+     fresh `mt5.positions_get(ticket=...)` check when `is_idempotent` and
+     the request targets a known `"position"` (both close and modify): a
+     definite "already gone" answer stops retrying immediately (returns the
+     last result, letting the existing `_resolve_ambiguous_close`
+     ground-truth check and, failing that, Watchman's own periodic
+     reconciliation pick up the real close) instead of resending into
+     further ambiguous retcodes. A query failure (can't tell either way) is
+     treated the same as "still open" -- proceed with the retry as before,
+     never guessing "gone" from missing information.
 """
 from __future__ import annotations
 
@@ -133,7 +179,15 @@ _KNOWN_REJECT_REASONS: dict[int, str] = {
     mt5.TRADE_RETCODE_TRADE_DISABLED: "trading disabled for this symbol/account",
     mt5.TRADE_RETCODE_TIMEOUT: "request timed out",
     mt5.TRADE_RETCODE_CONNECTION: "no connection to trade server",
+    mt5.TRADE_RETCODE_CLIENT_DISABLES_AT: "AutoTrading disabled by client (MT5 terminal toggle is off)",
 }
+
+DEFAULT_MAGIC = 234_000
+"""`ThrottledDemoAdapter`'s own default `magic` order-tag -- extracted to a
+named constant (2026-07-25) so `scripts/run_shadow_loop.py` can wire the
+SAME value into `watchman.loop.WatchmanLoop`'s `own_magic` (Fix C's
+orphan-position reconciliation) without the two ever silently drifting out
+of sync."""
 
 _DONE_RETCODES = (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_DONE_PARTIAL)
 
@@ -215,10 +269,13 @@ def _is_retryable_outcome(send_result, is_idempotent: bool) -> bool:
     """Whether `_send_with_retry` should attempt another `order_send()` for
     this outcome -- `send_result` is `None` (order_send() itself returned
     `None`, the most ambiguous possible outcome) or a raw MT5 result with a
-    non-DONE retcode. `is_idempotent` distinguishes a `TRADE_ACTION_SLTP`
-    modify (safe to retry even on an ambiguous outcome) from a
-    `TRADE_ACTION_DEAL` place/close (NOT safe -- double-fill/double-close
-    risk, see module docstring)."""
+    non-DONE retcode. `is_idempotent` distinguishes `modify_stop_loss`'s
+    `TRADE_ACTION_SLTP` and `close_position`'s `TRADE_ACTION_DEAL` (both
+    target a KNOWN existing ticket -- safe to retry even on an ambiguous
+    outcome, `close_position` only because of the 2026-07-25 position-still-
+    open gate `_send_with_retry` applies before every actual resend) from
+    `place_order`'s no-existing-ticket `TRADE_ACTION_DEAL` (NOT safe --
+    double-fill risk, see module docstring)."""
     if send_result is None:
         return is_idempotent
     if send_result.retcode in _ALWAYS_RETRYABLE_RETCODES:
@@ -283,6 +340,35 @@ class _ConfirmedFillResult:
         self.comment = ""
 
 
+_AUTOTRADING_BLOCKED_MESSAGE = (
+    "[AutoTrade] \U0001F6A8 Order blocked before it was even sent -- AutoTrading is OFF in the "
+    "MT5 terminal (Tools > Options > Expert Advisors, or the toolbar button). Not retrying "
+    "against a toggle that's off -- turn it back on to resume. Existing open positions are "
+    "unaffected and remain protected by their own broker-side stop-loss."
+)
+
+
+class _AutoTradingDisabledResult:
+    """Synthesized in place of a real `mt5.order_send()` return value when
+    `_send_with_retry`'s pre-flight `mt5.terminal_info().trade_allowed`
+    check finds AutoTrading off (2026-07-25 fix -- real incident: retcode
+    10027 fell through as an ordinary rejection with no loud alert). Carries
+    just enough shape (`retcode`/`comment`) for every caller's existing
+    non-DONE-retcode failure formatting (`_KNOWN_REJECT_REASONS.get(
+    send_result.retcode, ...)`) to work completely unmodified, without
+    `order_send()` ever actually being called. Uses the real MT5 retcode
+    (`TRADE_RETCODE_CLIENT_DISABLES_AT`, 10027) this condition would have
+    produced anyway, so it is reported/logged exactly like a genuine broker
+    rejection would be."""
+
+    def __init__(self) -> None:
+        self.retcode = mt5.TRADE_RETCODE_CLIENT_DISABLES_AT
+        self.order = None
+        self.price = None
+        self.volume = None
+        self.comment = "AutoTrading disabled by client -- checked before order_send(), never sent"
+
+
 def _clamp_to_stops_level(
     direction: Literal["BUY", "SELL"], current_price: float, requested_sl: float,
     stops_level: int, point: float,
@@ -311,7 +397,7 @@ class ThrottledDemoAdapter(BrokerAdapter):
         clock: Clock,
         min_seconds_between_trades: float = 300.0,
         deviation_points: int = 20,
-        magic: int = 234_000,
+        magic: int = DEFAULT_MAGIC,
         fill_price_tolerance_points: float = 5.0,
         symbol_map: dict[str, str] | None = None,
         max_retries: int = 2,
@@ -353,6 +439,16 @@ class ThrottledDemoAdapter(BrokerAdapter):
         # one real fill as two). Self-contained to this adapter instance --
         # deliberately not shared with watchman/position_metadata.py.
         self._confirmed_place_tickets: set[int] = set()
+        # 2026-07-25 fix: whether an AutoTrading-disabled alert has already
+        # fired for the CURRENT disabled streak -- `_send_with_retry`'s
+        # pre-flight check sets this True the first time it blocks a send,
+        # so a position being managed every ~5s Watchman cycle while
+        # AutoTrading stays off doesn't spam notify() every single cycle
+        # (see `notify()`'s own module docstring: no built-in rate-limiting/
+        # dedupe, so callers must not invoke it in a tight loop). Reset to
+        # False the moment a pre-flight check reads a non-`False` state
+        # again, so a LATER disable is freshly alerted.
+        self._autotrading_alert_active: bool = False
 
     def _record_anomaly(self, event_type: str, details: str) -> None:
         journal.record_anomaly_event(
@@ -610,14 +706,57 @@ class ThrottledDemoAdapter(BrokerAdapter):
         the LAST attempt's raw result (a rejected/ambiguous result, `None`,
         or a genuine success) -- the caller applies its usual success/
         failure interpretation to whatever comes back, same as an
-        un-retried call. `is_idempotent=True` (only `modify_stop_loss`'s
-        `TRADE_ACTION_SLTP`) additionally allows retrying an ambiguous
-        outcome (`None`/`TIMEOUT`/`CONNECTION`) -- unsafe for `place_order`/
-        `close_position`'s non-idempotent `TRADE_ACTION_DEAL`, so those stay
-        at the default `is_idempotent=False`."""
+        un-retried call. `is_idempotent=True` (`modify_stop_loss`'s
+        `TRADE_ACTION_SLTP`, and `close_position`'s `TRADE_ACTION_DEAL`)
+        additionally allows retrying an ambiguous outcome (`None`/`TIMEOUT`/
+        `CONNECTION`) -- unsafe for `place_order`'s non-idempotent, no-
+        existing-ticket `TRADE_ACTION_DEAL`, so that one stays at the
+        default `is_idempotent=False`.
+
+        **Pre-flight AutoTrading check (2026-07-25 fix).** Before even the
+        first attempt, checks `mt5.terminal_info().trade_allowed` -- if it
+        reads `False`, no `order_send()` is attempted at all (see
+        `_blocked_by_autotrading_disabled`'s docstring for the full
+        incident/rationale). A `None` `terminal_info()` (can't tell) is
+        treated as "proceed as normal", same as this codebase's other
+        MT5-read-failure fail-soft conventions.
+
+        **Ground-truth-gated idempotent retries (2026-07-25 fix, Fix B).**
+        Before every RETRY attempt (not the first) when `is_idempotent` and
+        `mt5_request` targets a known `"position"` (both `close_position`
+        and `modify_stop_loss`'s requests do), `mt5.positions_get(ticket=...)`
+        is checked first -- a definite "already gone" answer stops retrying
+        immediately and returns the last result, rather than blindly
+        resending into further ambiguous retcodes (the real incident this
+        exists to fix: 10012 TIMEOUT -> 10039 `CLOSE_ORDER_EXIST` -> 10036
+        `POSITION_CLOSED`, three DIFFERENT retcodes across a blind resend
+        race). The caller's own ground-truth resolution
+        (`_resolve_ambiguous_close`) or, failing that, Watchman's periodic
+        reconciliation then picks up the real close. A query failure (can't
+        tell either way) is treated the same as "still open" -- proceeds
+        with the retry as before, never guessing "gone" from missing
+        information."""
+        terminal_info = mt5.terminal_info()
+        if terminal_info is not None:
+            if terminal_info.trade_allowed is False:
+                return self._blocked_by_autotrading_disabled(context)
+            self._autotrading_alert_active = False
+
         attempts = self._max_retries + 1
         send_result = None
         for attempt in range(1, attempts + 1):
+            if attempt > 1 and is_idempotent:
+                ticket = mt5_request.get("position")
+                if ticket is not None and self._position_still_open(ticket) is False:
+                    logger.info(
+                        "%s: position ticket=%s is confirmed no longer open ahead of retry "
+                        "attempt %d/%d -- stopping here rather than resending against a position "
+                        "that's already gone (avoids racing further ambiguous retcodes); the next "
+                        "ground-truth check/Watchman reconciliation cycle will pick up its real "
+                        "close.", context, ticket, attempt, attempts,
+                    )
+                    return send_result
+
             send_result = mt5.order_send(mt5_request)
             if send_result is not None and send_result.retcode in _DONE_RETCODES:
                 return send_result
@@ -648,6 +787,54 @@ class ThrottledDemoAdapter(BrokerAdapter):
                 self._sleep_fn(self._retry_delay_sec)
 
         return send_result
+
+    def _blocked_by_autotrading_disabled(self, context: str) -> _AutoTradingDisabledResult:
+        """`_send_with_retry`'s pre-flight gate found `mt5.terminal_info()
+        .trade_allowed is False` -- real incident (2026-07-22 07:00/08:00
+        UTC): every order attempt failed with retcode 10027 ("AutoTrading
+        disabled by client") and was just logged/retried and moved on, with
+        no loud alert to the operator. `notify()`/`logger.critical`/an
+        `autotrading_disabled` anomaly event fire the FIRST time this fires
+        for a given disabled streak (`self._autotrading_alert_active`,
+        reset by `_send_with_retry` the next time a check reads a
+        non-`False` state) -- this method may otherwise be called once per
+        Watchman cycle (~5s) for as long as the toggle stays off, and
+        `notify()` has no built-in rate-limiting of its own (see its module
+        docstring), so a bare per-call notify() here would spam. This is a
+        synchronous, send-time gate -- distinct from and complementary to
+        `watchman/autotrading_watchdog.py`'s periodic monitor (which alerts
+        on the toggle changing state even with no order attempted in
+        between); both run."""
+        if not self._autotrading_alert_active:
+            self._autotrading_alert_active = True
+            logger.critical(
+                "%s: AutoTrading is OFF in the MT5 terminal (mt5.terminal_info().trade_allowed "
+                "is False) -- skipping order_send() entirely instead of retrying against a "
+                "toggle that's off.", context,
+            )
+            notify(_AUTOTRADING_BLOCKED_MESSAGE)
+            self._record_anomaly(
+                "autotrading_disabled",
+                f"{context}: order blocked before send -- AutoTrading toggle is OFF in the MT5 terminal.",
+            )
+        else:
+            logger.warning(
+                "%s: AutoTrading still OFF in the MT5 terminal -- skipping order_send() (already "
+                "alerted for this disabled streak).", context,
+            )
+        return _AutoTradingDisabledResult()
+
+    def _position_still_open(self, ticket: int) -> bool | None:
+        """`True`/`False` when `mt5.positions_get(ticket=ticket)` gives a
+        clear answer, `None` if the query itself fails (cannot tell either
+        way) -- `_send_with_retry`'s idempotent-retry gate (2026-07-25 fix,
+        Fix B) only stops retrying on a definite `False`; a query failure is
+        treated the same as "still open" (proceed with the retry as before)
+        rather than guessing the position is gone from missing information."""
+        positions = mt5.positions_get(ticket=ticket)
+        if positions is None:
+            return None
+        return len(positions) > 0
 
     def _resolve_ambiguous_place(
         self, request: TradeRequest, spec: SymbolSpec, order_type: int, request_sent_at: datetime,
@@ -931,7 +1118,9 @@ class ThrottledDemoAdapter(BrokerAdapter):
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
 
-            send_result = self._send_with_retry(mt5_request, f"close_position(ticket={ticket})")
+            send_result = self._send_with_retry(
+                mt5_request, f"close_position(ticket={ticket})", is_idempotent=True,
+            )
             if send_result is None or send_result.retcode not in _DONE_RETCODES:
                 confirmed = self._resolve_ambiguous_close(ticket, close_volume, position.volume)
                 if confirmed is not None:
@@ -1166,6 +1355,7 @@ class ThrottledDemoAdapter(BrokerAdapter):
                 result.append(BrokerPosition(
                     ticket=pos.ticket, symbol=canonical, direction=direction, risk_pct=risk_pct,
                     current_sl=pos.sl, current_price=pos.price_current, volume=pos.volume,
+                    magic=pos.magic,
                 ))
 
             return result

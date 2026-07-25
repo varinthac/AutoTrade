@@ -69,7 +69,8 @@ BlockSource = Literal[
 ]
 AnomalyEventType = Literal[
     "reconnect", "order_reject", "circuit_breaker_trigger", "execution_failed",
-    "abnormal_slippage", "autotrading_disabled", "autotrading_enabled", "other",
+    "abnormal_slippage", "autotrading_disabled", "autotrading_enabled",
+    "orphan_position_found", "other",
 ]
 
 
