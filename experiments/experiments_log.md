@@ -4144,3 +4144,116 @@ registered experiment on the cross-project pre-2021 (2009-2019) different-regime
 — exactly EXP-018's next-step (ii); only if it beats baseline THERE should a Test-year confirmation be spent.
 Test set (2025-07-21→2026-07-21) left UNTOUCHED — this new family's one-touch budget is UNSPENT (nothing cleared
 Val, so nothing earned a Test confirmation). Auditor gate thresholds NOT touched (rule 8).
+
+## EXP-021 2026-07-25 — Force-close before weekend vs hold-over-weekend (SL-only) (NEW family "weekend-gap exit")
+Status: PRE-REGISTERED (before results) — Train (y1/y2/y3) + Val ONLY; Test (2025-07-21→2026-07-21) NOT touched regardless of result.
+Trigger: user question — is it better to (A, CURRENT) hold open positions across the Sat/Sun market closure relying only
+on the broker-side SL, or (B) force-close every open position before Friday's weekly close to avoid weekend gap risk?
+Real motivating risk (not hypothetical): a broker SL is a LIMIT on the intended stop PRICE; across a weekend gap the
+Monday-reopen can jump past the SL and the stop fills at the next available price, so realized loss can exceed intended
+risk. Live context (NOT weighted): one XAUUSD SELL 0.01 lot is currently held into this weekend under Option A.
+
+MECHANISM I AM COMPARING AGAINST (read council/risk_voice.py + backtest/engine.py first, confirmed):
+- `friday_close_hour` (=20, server time) in risk_voice.py TODAY only vetoes NEW entries on Friday hour>=20 (condition 5).
+  It does NOT close any already-open position. There is NO force-close-before-weekend mechanism anywhere in the codebase.
+- backtest/engine.py ALREADY models the weekend gap faithfully IF the data has gap bars: SL fills at its nominal price
+  UNLESS the bar's OPEN has gapped past it, in which case it fills at that bar's actual (worse) OPEN — engine.py module
+  docstring "including weekend gap bars". So Option A's gap tail is MEASURABLE in-sample.
+- DATA CHECK (instrument context, not a strategy outcome): XAUUSD_H1.csv has NO Sat/Sun bars; Friday runs to hour 23,
+  Monday resumes ~hour 0-1 => a genuine weekend gap. 261 weekend boundaries; abs Monday open-gap: median $1.56, p90
+  $13.35, p99 $52.44, max $75.46 — vs intraweek hourly abs open-move median $0.01 / p99 $0.40. Weekend gaps are ~1-2
+  orders of magnitude larger than intraweek bar-to-bar moves: the tail mechanism is real and present in this data.
+
+Option A (baseline) = current live adopted config, engine-exact, no forced weekend close (be/trail OFF per EXP-008,
+structure+time ON, tp 2.0, pivot 3, all-24h Risk Voice, Shield cooldown, min-lot cap 1.5, risk 1.0%, commission $0
+IC Markets Standard, $10k equity — same baseline as EXP-017/019 for direct per-year comparability).
+Option B (hypothesis) = identical, PLUS: while a position is open, at the first bar that is Friday AND server hour >=
+`friday_close_hour`, close it at that bar's CLOSE (same "close at bar close" convention Watchman CLOSE uses), reason
+"weekend_close". Precedence: the existing SL/TP `check_exit` is still checked FIRST (an intra-week SL/TP that legitimately
+fires that same bar still wins); the weekend-close is checked next, PRE-EMPTING the Watchman for that bar (irrelevant —
+closing anyway). Re-entry: risk_voice condition 5 ALREADY vetoes new Friday hour>=20 entries, so no same-Friday re-entry;
+Monday signals proceed normally (fresh entry, re-paying entry cost) — this is the symmetric reuse of friday_close_hour the
+user asked for. Primary cutoff = 20 (the existing config value); NO config/base.yaml change either way.
+
+This is a RISK-REDUCTION hypothesis, NOT an expectancy-improvement one: Option B spends expectancy (closes some winners
+early on Friday + re-pays entry cost Monday) to BUY weekend-gap tail insurance. The bar is therefore asymmetric.
+
+Pre-registered metric & pass/fail bar (set BEFORE seeing results; ALL required to RECOMMEND Option B):
+ (a) TAIL REDUCTION IS REAL & MATERIAL (the whole point): on Train AND Val, Option B measurably reduces the worst single-
+     trade net loss and the worst-10% tail-mean vs Option A. If it does not reduce the tail, REJECT outright.
+ (b) THE TAIL BEING CUT IS ACTUALLY A WEEKEND-GAP TAIL: Option A's worst losses must demonstrably ALIGN with weekend-gap
+     fills (exit bar follows a >30h data gap AND the SL filled at a gapped open, worse than nominal). If Option A's worst
+     losses are NOT weekend gaps, the mechanism is absent in-sample => "no measurable benefit", REJECT.
+ (c) EXPECTANCY COST IS ACCEPTABLE: Option B must not gut the edge to buy the insurance — per-year PF stays within ~15%
+     of Option A and remains directionally intact; Val net stays positive if Option A's is.
+ (d) SAMPLE DISCIPLINE (rule 6): trade count stays >=100/window; if forcing weekend closes materially cuts the sample,
+     report it and do NOT extrapolate.
+ (e) PLATEAU / NOT-A-KNIFE-EDGE (rule 5): cutoff-hour sensitivity friday_close_hour ∈ {18, 20, 22} must behave
+     consistently (the tail-reduction/expectancy-cost trade-off must not flip sign on a 2-hour change). Primary = 20.
+Configs evaluated (this exp / cumulative for this family): 4 (OptionA + OptionB@{18,20,22}) / 4 (first-ever this family).
+Decision policy: this is an EXIT-RULE / strategy change — even if all (a)-(e) clear, do NOT auto-adopt into
+config/base.yaml, do NOT add code to src/, do NOT touch any promotion gate (rule 8). Escalate to the user with full
+evidence, same pattern as every gate-adjacent decision here. Test year stays pristine for a possible future user-
+authorised confirmation. Harness: experiments/exp021_weekend_close_harness.py (VERBATIM run_backtest loop; weekend-close
+DISABLED => byte-identical to the engine, fidelity-checked on y1 before any candidate number is trusted).
+
+### EXP-021 RESULTS (run 2026-07-25) — VERDICT: REJECT Option B for adoption (Option A / hold-over-weekend STANDS)
+Raw output: experiments/exp021_out.txt. Harness: experiments/exp021_weekend_close_harness.py.
+FIDELITY: weekend-close DISABLED + swap OFF re-sim == real run_backtest on y1, 265 trades byte-for-byte (identical=true).
+Per-year swap-OFF Option-A numbers reproduce EXP-017/019 baseline EXACTLY (y1 1.033/+502, y2 0.975/−406, y3 1.224/+3321,
+val 1.078/+1158) — harness trusted. $10k equity, commission $0 IC Markets Standard, swap OFF (parity with recorded baseline).
+
+PF | net$ | worst-single | worst-10%-mean | #gapped-SL-fills(Option A only) | #weekend-closes(B):
+              Option A (hold)                      Option B @ cutoff 20 (primary)
+ y1   1.033 | +502  | −157.49 | −109.68           1.033 | +493  | −157.49 | −107.02   (A: 2 gapped-SL fills, net −221.64)
+ y2   0.975 | −406  | −129.10 | −121.86           0.981 | −293  | −125.88 | −120.28   (A: 0 gapped-SL fills)
+ y3   1.224 | +3321 | −142.70 | −135.73           1.229 | +3483 | −141.00 | −135.16   (A: 0 gapped-SL fills)
+ val  1.078 | +1158 | −132.06 | −118.25           1.087 | +1356 | −162.93 | −124.21   (A: 1 gapped-SL fill = the −132.06 worst)
+ cutoff plateau (Option B, net$): y1 [18→184, 20→493, 22→418]; y2 [−372,−293,−266]; y3 [+3251,+3483,+3343]; val [+1557,+1356,+1419]
+
+THE DECIDING FINDING — the motivating weekend-gap tail BARELY EXISTS in-sample:
+- Across all ~1,000 Train+Val trades, only 4 trades EVER had an SL that filled through a gapped weekend open (y1=2, y2=0,
+  y3=0, val=1). The engine DOES model this (SL fills at the worse gapped Monday open — fidelity-confirmed on real gap bars),
+  so the near-absence is a real property of the strategy on this data, not a modelling gap: XAUUSD H1 stop distances
+  (~0.8–2.5×ATR) usually exceed the typical weekend gap (median $1.56), the single-position engine is often flat over the
+  weekend anyway, and most Monday-gap-bar exits (n_gap_exit 11–16/yr) are favorable or don't breach the stop.
+- In 3 of the 4 windows (y1/y2/y3) the WORST single-trade loss is an ordinary intra-week 1R SL hit and is UNCHANGED by
+  Option B (−157.49, −129→−126, −142.7→−141). Only in val is the single worst loss a weekend gap (−132.06) — and there,
+  removing it made the tail WORSE, not better (see below). So the tail Option B is designed to cut is not, in fact, the tail.
+
+Robustness vs pre-registered bars (ALL required; the hypothesis fails the two that matter most):
+ (a) TAIL REDUCTION real & material — ✗ FAIL. On the DECIDING Validation window Option B makes the tail WORSE: worst single
+     loss −132.06 → −162.93, worst-10% mean −118.25 → −124.21 (consistent across cutoffs 18/20/22, all −162.93 worst). On
+     y1/y2/y3 the worst loss is essentially unchanged (±$3). Net across the board: no material tail reduction anywhere; a
+     tail INCREASE on Validation. Cause: force-closing Friday reshuffles which trades the single-position engine takes next
+     (fresh Monday re-entries), and that reshuffle introduced a −162.93 intra-week loser bigger than the gap it removed.
+ (b) TAIL being cut is a WEEKEND-GAP tail — ✗ FAIL. 4 gapped-SL fills in ~1,000 trades; the worst losses are intra-week SL
+     hits, not gaps, in 3 of 4 windows. The mechanism the user is worried about is real but almost never fires in this
+     strategy/data, so Option B removes almost no gap risk while restructuring the whole trade sequence.
+ (c) EXPECTANCY COST acceptable — ✓ at cutoff 20/22 (mixed: net roughly flat-to-slightly-BETTER in y2/y3/val, slightly
+     worse in y1), ✗ at cutoff 18 (y1 +502 → +184). NOTE: any net IMPROVEMENT here is NOT from the hypothesized gap-
+     insurance mechanism (4 trades) — it is downstream trade-reshuffling, the same non-causal single-position-engine
+     artifact EXP-017/EXP-020 flagged. It cannot justify the change, and its sign is not stable.
+ (d) SAMPLE discipline — ✓. All windows 240–288 trades (≥100). Counts RISE under B (extra Monday re-entries), not fall.
+ (e) PLATEAU / not-a-knife-edge — ✗ FAIL. cutoff 18 vs 20 vs 22 give materially different net$ and the best cutoff flips by
+     window (y1 favours 20, val favours 18, y3 favours 20) — the classic reshuffling-noise signature, no stable optimum.
+ top-5 / walk-forward: n.a. (rejected before any Test touch).
+
+Decision & rationale: REJECT Option B for adoption. Keep Option A (hold over weekend, broker-SL-only) as the CURRENT
+behavior — config/base.yaml UNCHANGED, no src/ code added, no promotion gate touched (rule 8), Test year (2025-07-21→
+2026-07-21) NOT touched (this family's one-touch budget UNSPENT — nothing cleared the pre-registered bar, so nothing earned
+a Test confirmation). The in-sample evidence does not support force-closing: the weekend-gap tail it targets is nearly
+absent (4/1000 trades), it delivers NO tail reduction (a tail INCREASE on Validation), and its only net-positive readings
+are non-causal reshuffling noise that fails the cutoff-hour plateau check.
+
+HONEST CAVEAT ESCALATED TO USER (this is a risk-appetite decision, not purely a backtest-expectancy one): the backtest can
+only price the weekend gaps that OCCURRED in 2021–2026 (empirical abs Monday open-gap: median $1.56, p99 $52.44, max
+$75.46). It CANNOT price a once-a-decade catastrophic weekend gap (geopolitical shock over a closed market), and the engine
+fills a gapped SL at the Monday-open — likely OPTIMISTIC vs a real thin-Sunday-reopen fill that could slip further. So
+force-closing before the weekend is a legitimate INSURANCE choice against an un-sampled fat tail — but it must be justified
+as insurance the user chooses to pay for (a small, real expectancy/robustness cost + trade churn), NOT as a backtest-
+supported improvement, because the backtest shows no measurable benefit and it is not free. Recommendation: do NOT adopt as
+an edge; if the user wants the hard weekend-gap cap for peace-of-mind/tail-insurance reasons, that is a defensible manual
+risk policy to enable deliberately (best implemented as a real Watchman/Risk-Voice exit, its own pre-registered change),
+with eyes open that it slightly dilutes expectancy and adds Friday-close/Monday-reopen churn for a risk that has fired ~4
+times in 1,000 trades on this data.
