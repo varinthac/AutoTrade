@@ -164,14 +164,42 @@ def record_anomaly_event(
 ) -> None:
     """Persist one anomaly event -- called alongside the existing log line
     at each anomaly's real detection point (connectivity watchdog alert,
-    circuit-breaker gate trip, execution failure/abnormal slippage)."""
-    engine = get_engine(db_path)
-    record = AnomalyEventRecord(timestamp=timestamp, event_type=event_type, details=details)
-    with Session(engine) as session:
-        session.add(record)
-        session.commit()
+    circuit-breaker gate trip, execution failure/abnormal slippage).
 
-    notify(f"[AutoTrade] Anomaly ({event_type}) at {timestamp.isoformat()}: {details}")
+    notify() runs BEFORE the DB write, deliberately -- every one of this
+    function's real callers (ConnectivityWatchdog, AutoTradingWatchdog,
+    CircuitBreaker's gate trips, orphan-position reconciliation) exists
+    specifically to alert a human about something going wrong, and a DB
+    write can itself fail (locked file -- plausible overlap with
+    ops/backup_db.py's nightly online backup, disk full, corruption) for
+    reasons unrelated to whether the alert should fire. With the old
+    write-then-notify order, a DB hiccup at exactly the moment something
+    else is already wrong would silently swallow the ONE alert meant to
+    surface it. The DB write is now best-effort after the alert already
+    went out -- logged on failure, never raised, matching notify()'s own
+    never-raise contract, so a persistence problem here can never look
+    like "nothing happened" to the human on the other end of Telegram."""
+    try:
+        notify(f"[AutoTrade] Anomaly ({event_type}) at {timestamp.isoformat()}: {details}")
+    except Exception:
+        # notify()'s own docstring guarantees it never raises -- this is
+        # pure defense-in-depth in case that contract is ever broken, so a
+        # notify-side regression can never also take the DB write down with
+        # it (matches tests/unit/store/test_journal.py's own
+        # "still persists when notify raises" expectation).
+        logger.exception("record_anomaly_event: notify() raised unexpectedly -- persisting the event anyway.")
+
+    try:
+        engine = get_engine(db_path)
+        record = AnomalyEventRecord(timestamp=timestamp, event_type=event_type, details=details)
+        with Session(engine) as session:
+            session.add(record)
+            session.commit()
+    except Exception:
+        logger.exception(
+            "record_anomaly_event: failed to persist anomaly event to the DB (alert above still attempted) -- "
+            "event_type=%s details=%s", event_type, details,
+        )
 
 
 def get_trades_in_range(

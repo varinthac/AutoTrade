@@ -313,10 +313,35 @@ class ShadowLoop:
             pass
 
     def _on_iteration_end(self) -> None:
-        if self._watchman_loop is not None:
-            self._run_watchman_cycle()
-        if self._autotrading_watchdog is not None:
-            self._autotrading_watchdog.check(self._read_autotrading_state())
+        # Broad except here, deliberately -- matches `_process()`'s own
+        # per-bar guard below (2026-07-28 audit finding: this was the one
+        # place that pattern wasn't applied). Without it, an unexpected
+        # exception from the Watchman cycle or the AutoTrading-toggle check
+        # -- e.g. a state-file error `_reconcile_closed_positions`/
+        # `_reconcile_orphan_positions`'s own inner guards don't happen to
+        # classify as `CorruptPositionMetadataError` -- would propagate all
+        # the way out of poll_new_bars() and kill the ENTIRE shadow loop
+        # process, not just skip one iteration: open-position management
+        # (SL trailing, news protection, reconciliation) then goes fully
+        # dark until the heartbeat notices and restarts it (up to ~10
+        # minutes), and if the cause is persistent, every restart
+        # immediately crash-loops again. `_check_stop_request()` is
+        # deliberately OUTSIDE this try block -- it must keep raising
+        # `_StopLoopRequested` to actually stop the loop; it already has its
+        # own internal exception handling (see its own docstring) and must
+        # never be swallowed by this one.
+        try:
+            if self._watchman_loop is not None:
+                self._run_watchman_cycle()
+            if self._autotrading_watchdog is not None:
+                self._autotrading_watchdog.check(self._read_autotrading_state())
+        except Exception:
+            logger.exception(
+                "Watchman cycle / AutoTrading-toggle check raised an unexpected exception -- logged and "
+                "skipped for this iteration rather than crashing the whole shadow loop. Position "
+                "management resumes next iteration; if this keeps recurring, investigate -- it will log "
+                "here every cycle rather than going silent."
+            )
         self._check_stop_request()
 
     def _run_watchman_cycle(self) -> None:

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from autotrade.common import kill_switch_flag, pid_file, stop_request_flag
+from autotrade.common import kill_switch_flag, manual_halt_flag, pid_file, stop_request_flag
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "autotrade_control.py"
 _spec = importlib.util.spec_from_file_location("autotrade_control_script", SCRIPT_PATH)
@@ -43,10 +43,17 @@ def pid_path(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture
+def halt_flag_path(tmp_path, monkeypatch):
+    path = tmp_path / "manual_halt.flag"
+    monkeypatch.setattr(manual_halt_flag, "DEFAULT_FLAG_PATH", path)
+    return path
+
+
 # --- do_start() --------------------------------------------------------
 
 
-def test_do_start_refuses_when_kill_switch_active(kill_flag_path, monkeypatch):
+def test_do_start_refuses_when_kill_switch_active(kill_flag_path, halt_flag_path, monkeypatch):
     kill_switch_flag.activate("daily loss limit breached")
     popen_calls = []
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: popen_calls.append((a, kw)))
@@ -57,7 +64,7 @@ def test_do_start_refuses_when_kill_switch_active(kill_flag_path, monkeypatch):
     assert popen_calls == []
 
 
-def test_do_start_launches_run_shadow_loop_in_new_console_when_not_halted(kill_flag_path, monkeypatch):
+def test_do_start_launches_run_shadow_loop_in_new_console_when_not_halted(kill_flag_path, halt_flag_path, monkeypatch):
     popen_calls = []
 
     class _FakeProcess:
@@ -80,7 +87,32 @@ def test_do_start_launches_run_shadow_loop_in_new_console_when_not_halted(kill_f
     assert kwargs["cwd"] == str(autotrade_control.REPO_ROOT)
 
 
-def test_do_start_falls_back_without_breakaway_flag_if_caller_job_disallows_it(kill_flag_path, monkeypatch):
+def test_do_start_clears_manual_halt_flag(kill_flag_path, halt_flag_path, monkeypatch):
+    # 2026-07-28 audit finding: `start` is the one explicit action that
+    # resumes the heartbeat's auto-restart eligibility -- see
+    # manual_halt_flag.py's own docstring.
+    manual_halt_flag.activate("manual stop button")
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: object())
+
+    exit_code = autotrade_control.do_start()
+
+    assert exit_code == 0
+    assert manual_halt_flag.is_active() is False
+
+
+def test_do_start_clears_manual_halt_flag_even_when_kill_switch_refuses(kill_flag_path, halt_flag_path):
+    # Clearing manual_halt_flag happens regardless of whether THIS
+    # particular start attempt goes on to actually launch anything.
+    manual_halt_flag.activate("manual stop button")
+    kill_switch_flag.activate("daily loss limit breached")
+
+    exit_code = autotrade_control.do_start()
+
+    assert exit_code == 1
+    assert manual_halt_flag.is_active() is False
+
+
+def test_do_start_falls_back_without_breakaway_flag_if_caller_job_disallows_it(kill_flag_path, halt_flag_path, monkeypatch):
     # 2026-07-24: CREATE_BREAKAWAY_FROM_JOB raises OSError outright if the
     # calling process's own job object doesn't permit breakaway -- must not
     # be a new way for `start` to fail entirely.
@@ -110,12 +142,24 @@ def test_do_start_falls_back_without_breakaway_flag_if_caller_job_disallows_it(k
 # --- do_stop() -----------------------------------------------------------
 
 
-def test_do_stop_requests_stop_flag_with_reason(stop_flag_path):
+def test_do_stop_requests_stop_flag_with_reason(stop_flag_path, halt_flag_path):
     exit_code = autotrade_control.do_stop()
 
     assert exit_code == 0
     assert stop_request_flag.is_requested() is True
     status = stop_request_flag.get_status()
+    assert status["reason"] == "manual stop button"
+
+
+def test_do_stop_also_sets_manual_halt_flag(stop_flag_path, halt_flag_path):
+    # 2026-07-28 audit finding: distinguishes "operator asked for this" from
+    # "it crashed" so the heartbeat's auto-restart doesn't resurrect a
+    # deliberate stop -- see manual_halt_flag.py's own docstring.
+    exit_code = autotrade_control.do_stop()
+
+    assert exit_code == 0
+    assert manual_halt_flag.is_active() is True
+    status = manual_halt_flag.get_status()
     assert status["reason"] == "manual stop button"
 
 
@@ -166,7 +210,7 @@ def test_do_emergency_stop_relays_nonzero_exit_code(monkeypatch):
 
 
 def test_do_status_reports_not_running_no_kill_switch_no_stop_flag(
-    kill_flag_path, stop_flag_path, pid_path, capsys,
+    kill_flag_path, stop_flag_path, pid_path, halt_flag_path, capsys,
 ):
     exit_code = autotrade_control.do_status()
 
@@ -177,7 +221,7 @@ def test_do_status_reports_not_running_no_kill_switch_no_stop_flag(
     assert "not pending" in out
 
 
-def test_do_status_reports_running_when_pid_alive(kill_flag_path, stop_flag_path, pid_path, monkeypatch, capsys):
+def test_do_status_reports_running_when_pid_alive(kill_flag_path, stop_flag_path, pid_path, halt_flag_path, monkeypatch, capsys):
     pid_file.write(1234)
     monkeypatch.setattr(pid_file, "is_pid_running", lambda pid: pid == 1234)
 
@@ -188,7 +232,7 @@ def test_do_status_reports_running_when_pid_alive(kill_flag_path, stop_flag_path
     assert "1234" in out
 
 
-def test_do_status_reports_not_running_when_pid_stale(kill_flag_path, stop_flag_path, pid_path, monkeypatch, capsys):
+def test_do_status_reports_not_running_when_pid_stale(kill_flag_path, stop_flag_path, pid_path, halt_flag_path, monkeypatch, capsys):
     pid_file.write(9999)
     monkeypatch.setattr(pid_file, "is_pid_running", lambda pid: False)
 
@@ -198,7 +242,7 @@ def test_do_status_reports_not_running_when_pid_stale(kill_flag_path, stop_flag_
     assert "NOT running" in out
 
 
-def test_do_status_reports_kill_switch_active(kill_flag_path, stop_flag_path, pid_path, capsys):
+def test_do_status_reports_kill_switch_active(kill_flag_path, stop_flag_path, pid_path, halt_flag_path, capsys):
     kill_switch_flag.activate("manual test halt")
 
     autotrade_control.do_status()
@@ -208,7 +252,7 @@ def test_do_status_reports_kill_switch_active(kill_flag_path, stop_flag_path, pi
     assert "manual test halt" in out
 
 
-def test_do_status_reports_pending_stop_flag(kill_flag_path, stop_flag_path, pid_path, capsys):
+def test_do_status_reports_pending_stop_flag(kill_flag_path, stop_flag_path, pid_path, halt_flag_path, capsys):
     stop_request_flag.request("manual stop button")
 
     autotrade_control.do_status()
@@ -218,8 +262,18 @@ def test_do_status_reports_pending_stop_flag(kill_flag_path, stop_flag_path, pid
     assert "manual stop button" in out
 
 
+def test_do_status_reports_manual_halt_active(kill_flag_path, stop_flag_path, pid_path, halt_flag_path, capsys):
+    manual_halt_flag.activate("manual stop button")
+
+    autotrade_control.do_status()
+
+    out = capsys.readouterr().out
+    assert "Manual halt: ACTIVE" in out
+    assert "manual stop button" in out
+
+
 def test_do_status_reports_running_and_kill_switch_active_simultaneously(
-    kill_flag_path, stop_flag_path, pid_path, monkeypatch, capsys,
+    kill_flag_path, stop_flag_path, pid_path, halt_flag_path, monkeypatch, capsys,
 ):
     # A running loop plus an active kill switch is a real, meaningful
     # combination (e.g. the kill switch just fired but the loop's own
@@ -239,7 +293,7 @@ def test_do_status_reports_running_and_kill_switch_active_simultaneously(
 
 
 def test_do_status_reports_lingering_stop_flag_while_loop_not_actually_running(
-    kill_flag_path, stop_flag_path, pid_path, capsys,
+    kill_flag_path, stop_flag_path, pid_path, halt_flag_path, capsys,
 ):
     # The "orphaned flag" case: a stop was requested but nothing is running
     # to consume/clear it (e.g. the loop crashed right after the flag was

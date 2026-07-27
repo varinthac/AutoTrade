@@ -118,19 +118,43 @@ def test_record_anomaly_event_notifies_once_with_event_details(db_path, monkeypa
 
 
 def test_record_anomaly_event_still_persists_when_notify_raises(db_path, monkeypatch):
+    """notify() itself is documented to never raise, but this guards the
+    hypothetical anyway (2026-07-28 audit finding): a notify-side regression
+    must never also take the DB write down with it, and must never propagate
+    out of record_anomaly_event and crash whatever real watchdog called it."""
     def _boom(text):
         raise RuntimeError("simulated notify failure")
 
     monkeypatch.setattr(journal, "notify", _boom)
 
-    with pytest.raises(RuntimeError):
-        journal.record_anomaly_event(
-            timestamp=datetime(2026, 7, 19, 9, 30), event_type="reconnect",
-            details="still recorded before notify runs", db_path=db_path,
-        )
+    journal.record_anomaly_event(
+        timestamp=datetime(2026, 7, 19, 9, 30), event_type="reconnect",
+        details="still recorded even though notify raised", db_path=db_path,
+    )
 
     events = journal.get_anomaly_events_for_day(date(2026, 7, 19), db_path=db_path)
-    assert len(events) == 1  # the DB write already committed before notify() ran
+    assert len(events) == 1
+
+
+def test_record_anomaly_event_still_notifies_when_db_write_fails(db_path, monkeypatch):
+    """2026-07-28 audit finding: the alert must fire even if the DB write
+    fails (locked file, disk full, corruption) -- a DB hiccup must never
+    silently swallow the one alert meant to surface a real anomaly."""
+    calls = []
+    monkeypatch.setattr(journal, "notify", lambda text: calls.append(text) or True)
+
+    def _boom_engine(db_path=None):
+        raise RuntimeError("simulated DB failure")
+
+    monkeypatch.setattr(journal, "get_engine", _boom_engine)
+
+    journal.record_anomaly_event(
+        timestamp=datetime(2026, 7, 19, 9, 30), event_type="reconnect",
+        details="DB is down but the alert must still go out", db_path=db_path,
+    )
+
+    assert len(calls) == 1
+    assert "DB is down but the alert must still go out" in calls[0]
 
 
 def test_count_blocked_signals_groups_by_block_source(db_path):

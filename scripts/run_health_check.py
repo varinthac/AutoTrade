@@ -1,9 +1,32 @@
 #!/usr/bin/env python3
 """One-shot liveness check + auto-restart for every detached background
-service (shadow loop, dashboard, Telegram control listener), meant to be
-invoked on a short repeating interval by Task Scheduler ("AutoTrade
-Heartbeat", ops/heartbeat.ps1) rather than run as its own long-lived
-process.
+service (shadow loop, dashboard, Telegram control listener, the cloudflared
+tunnel) plus the calendar-export self-heal check, meant to be invoked on a
+short repeating interval by Task Scheduler ("AutoTrade Heartbeat",
+ops/heartbeat.ps1) rather than run as its own long-lived process.
+
+**2026-07-28: two silent-failure incidents in one day**, followed by a
+broader audit, prompted every addition below the original three checks.
+(1) `NewsCalendarExporter` (an MQL5 Service inside the MT5 terminal, not
+one of this script's own PID-tracked processes) died silently and stayed
+dead for days, fail-safe-vetoing every USD signal with nothing but an
+unwatched log line + one Telegram alert that never triggered any actual
+recovery -- see `common/calendar_export_watchdog.py`'s module docstring for
+the full incident and recovery design. (2) The cloudflared tunnel
+(Scheduled Task, "At log on" trigger only) died with nothing restarting it,
+surfacing to the user as Cloudflare error 1033 even though the dashboard
+behind it was fine the whole time -- see `common/cloudflared_watchdog.py`.
+(3) The follow-up audit found: a deliberate `stop` getting silently
+auto-resurrected by this very heartbeat within ~10 minutes (fixed at the
+source in `common/loop_watchdog.py` + `common/manual_halt_flag.py`, not
+here); the kill switch never reminding anyone it's still active
+(`common/kill_switch_reminder.py`); and the daily report / DB backup
+Scheduled Tasks having zero monitoring of their own
+(`common/scheduled_task_watchdog.py`). (4) Same-day code review of that
+audit's own fixes found `manual_halt_flag` had reintroduced the exact
+"forgotten halt, zero further signal" problem it was built to prevent
+(deliberately staying quiet forever, with no reminder counterpart the way
+the kill switch got one) -- `common/manual_halt_reminder.py`.
 
 2026-07-24 incident: the loop died silently and `scripts/run_loop_watchdog.py`
 -- the console-window process meant to alert on exactly that -- was ALSO
@@ -31,8 +54,13 @@ healthchecks.io ping) keeps working unchanged against this script instead.
 from __future__ import annotations
 
 from autotrade.common import pid_file
+from autotrade.common.calendar_export_watchdog import check_and_recover as check_calendar_export
+from autotrade.common.cloudflared_watchdog import check_and_restart as check_cloudflared
 from autotrade.common.config import REPO_ROOT
+from autotrade.common.kill_switch_reminder import check_and_remind as check_kill_switch_reminder
 from autotrade.common.loop_watchdog import check_loop_alive
+from autotrade.common.manual_halt_reminder import check_and_remind as check_manual_halt_reminder
+from autotrade.common.scheduled_task_watchdog import check_all as check_scheduled_tasks
 from autotrade.common.service_watchdog import check_and_restart
 
 _DASHBOARD_SCRIPT = REPO_ROOT / "scripts" / "run_dashboard.py"
@@ -45,6 +73,13 @@ _TELEGRAM_CONTROL_STATE_PATH = REPO_ROOT / "data" / "db" / "telegram_control_wat
 
 
 def main() -> int:
+    # Runs BEFORE check_loop_alive: if the calendar export is stale enough to
+    # force a stop this cycle, check_loop_alive's own auto_restart picks the
+    # now-down loop straight back up in the same cycle -- see
+    # calendar_export_watchdog's module docstring for why recovery is split
+    # this way instead of duplicating the relaunch logic here.
+    check_calendar_export()
+
     running = check_loop_alive(auto_restart=True)
     pid = pid_file.read() if running else None
 
@@ -55,6 +90,10 @@ def main() -> int:
         "Telegram control listener", _TELEGRAM_CONTROL_PID_PATH, _TELEGRAM_CONTROL_STATE_PATH,
         _TELEGRAM_CONTROL_SCRIPT, REPO_ROOT,
     )
+    check_cloudflared()
+    check_kill_switch_reminder()
+    check_manual_halt_reminder()
+    check_scheduled_tasks()
 
     if running and pid is not None:
         print(f"AutoTrade loop: RUNNING (PID {pid})")

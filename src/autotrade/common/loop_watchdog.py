@@ -70,7 +70,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from autotrade.common import pid_file
+from autotrade.common import manual_halt_flag, pid_file
 from autotrade.common.config import REPO_ROOT
 from autotrade.notify.telegram import notify
 
@@ -125,27 +125,53 @@ def check_loop_alive(
     not -- deliberately NOT gated on the same transition-only logic as the
     Telegram alerts above, so a restart that fails to actually bring MT5
     back up (e.g. broker/network hiccup) keeps getting retried on the next
-    cycle rather than being attempted once and given up on."""
-    state_path = state_path or DEFAULT_STATE_PATH
-    currently_running = pid_file.is_running(pid_path)
-    previous = _load_last_state(state_path)
+    cycle rather than being attempted once and given up on.
 
-    if previous is None:
-        if not currently_running:
-            _alert_down()
+    The whole body is wrapped in a broad `except Exception` (2026-07-28
+    audit finding) so an unexpected failure here (e.g. `tasklist` itself
+    misbehaving) can never abort every check that `run_health_check.py`
+    runs AFTER this one in the same cycle -- fails toward "not confirmed
+    running", same fail-safe-toward-assuming-trouble convention used
+    elsewhere in this codebase (e.g. kill_switch_flag.get_status).
+
+    **2026-07-28 audit finding: respects `manual_halt_flag`.** While it's
+    active (set by `scripts/autotrade_control.py stop`, cleared by `start`
+    -- see `manual_halt_flag.py`'s own docstring for the full incident),
+    neither the DOWN alert nor the auto-restart attempt fire for a
+    not-running loop -- an operator-requested stop already gets its own
+    unambiguous Telegram confirmation from inside the loop itself as it
+    exits, and this watchdog resurrecting it minutes later would silently
+    invert that operator's intent."""
+    try:
+        state_path = state_path or DEFAULT_STATE_PATH
+        currently_running = pid_file.is_running(pid_path)
+        previous = _load_last_state(state_path)
+
+        if not currently_running and manual_halt_flag.is_active():
+            logger.info(
+                "loop_watchdog: shadow loop is down, but manual_halt_flag is active (operator-requested "
+                "stop) -- not alerting or auto-restarting. Run 'autotrade_control.py start' to resume."
+            )
         else:
-            logger.info("loop_watchdog: shadow loop confirmed running at watchdog startup.")
-    elif currently_running != previous:
-        if currently_running:
-            _alert_up()
-        else:
-            _alert_down()
+            if previous is None:
+                if not currently_running:
+                    _alert_down()
+                else:
+                    logger.info("loop_watchdog: shadow loop confirmed running at watchdog startup.")
+            elif currently_running != previous:
+                if currently_running:
+                    _alert_up()
+                else:
+                    _alert_down()
 
-    if not currently_running and auto_restart:
-        _attempt_restart()
+            if not currently_running and auto_restart:
+                _attempt_restart()
 
-    _save_last_state(state_path, currently_running)
-    return currently_running
+        _save_last_state(state_path, currently_running)
+        return currently_running
+    except Exception:
+        logger.exception("loop_watchdog: check_loop_alive raised -- leaving other health checks unaffected.")
+        return False
 
 
 def _alert_down() -> None:

@@ -393,7 +393,7 @@ plain file copy; Python's stdlib sqlite3 module has this built in
        ```
 2. [ ] Schedule it nightly (Task Scheduler, e.g. 00:30, "whether user is
        logged on or not" is fine -- pure file I/O, no MT5/GUI dependency).
-3. [ ] Get copies off the VPS, not just into a local backups\ folder (a
+3. [x] Get copies off the VPS, not just into a local backups\ folder (a
        backup that lives on the same disk as the original doesn't protect
        you if the VPS itself is lost/corrupted): the simplest option for a
        solo user is a synced cloud folder (OneDrive/Google Drive desktop
@@ -402,6 +402,15 @@ plain file copy; Python's stdlib sqlite3 module has this built in
        transfer on its own. robocopy/rclone to remote storage is an
        equally valid alternative if you'd rather not run a sync client on
        the VPS.
+
+       **2026-07-28: done, following exactly this plan** -- this step had
+       actually been skipped since the original cutover (a 2026-07-28 audit
+       found nightly backups reporting success while providing zero real
+       off-box protection). Google Drive for Desktop installed on the VPS;
+       `ops/backup_db.py`'s `DEST_DIR` now points at
+       `C:\Users\Administrator\My Drive\AutoTrade_Backups`. The Google
+       account sign-in itself is an interactive, one-time step (OAuth
+       login, can't be scripted) -- done once over RDP.
 4. [ ] Prune old backups periodically (keep, say, the last 30 days) -- a
        one-line Get-ChildItem/Where-Object delete-if-older-than in the
        same or a small companion script; not critical for v1, just don't

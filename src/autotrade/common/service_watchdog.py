@@ -43,23 +43,32 @@ def check_and_restart(
     avoid spamming every cycle a genuine problem persists). Always attempts
     a restart while down, every cycle, regardless of transition -- safe to
     retry unconditionally because the launched script's own PID-file
-    double-launch guard makes a racing retry a harmless no-op."""
-    currently_running = pid_file.is_running(pid_path)
-    previous = _load_last_state(state_path)
+    double-launch guard makes a racing retry a harmless no-op.
 
-    if previous is None:
+    The whole body is wrapped in a broad `except Exception` (2026-07-28
+    audit finding) so a failure checking/restarting ONE service can never
+    abort whichever OTHER services `run_health_check.py` checks after it in
+    the same cycle -- fails toward "not confirmed running"."""
+    try:
+        currently_running = pid_file.is_running(pid_path)
+        previous = _load_last_state(state_path)
+
+        if previous is None:
+            if not currently_running:
+                _alert_down(name)
+            else:
+                logger.info("%s: confirmed running at watchdog startup.", name)
+        elif currently_running != previous:
+            _alert_up(name) if currently_running else _alert_down(name)
+
         if not currently_running:
-            _alert_down(name)
-        else:
-            logger.info("%s: confirmed running at watchdog startup.", name)
-    elif currently_running != previous:
-        _alert_up(name) if currently_running else _alert_down(name)
+            _attempt_restart(name, script_path, cwd, extra_args or [])
 
-    if not currently_running:
-        _attempt_restart(name, script_path, cwd, extra_args or [])
-
-    _save_last_state(state_path, currently_running)
-    return currently_running
+        _save_last_state(state_path, currently_running)
+        return currently_running
+    except Exception:
+        logger.exception("%s: check_and_restart raised -- leaving other health checks unaffected.", name)
+        return False
 
 
 def _load_last_state(state_path: Path) -> bool | None:

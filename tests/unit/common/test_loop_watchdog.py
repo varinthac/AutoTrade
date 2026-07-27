@@ -18,6 +18,10 @@ def _capture_notify(monkeypatch):
     return calls
 
 
+def _stub_manual_halt(monkeypatch, value: bool):
+    monkeypatch.setattr(loop_watchdog_module.manual_halt_flag, "is_active", lambda flag_path=None: value)
+
+
 def test_first_check_running_records_baseline_silently(monkeypatch, tmp_path):
     calls = _capture_notify(monkeypatch)
     _stub_running(monkeypatch, True)
@@ -217,5 +221,112 @@ def test_auto_restart_subprocess_exception_is_swallowed_not_raised(monkeypatch, 
     monkeypatch.setattr(loop_watchdog_module.subprocess, "run", _raise)
 
     result = check_loop_alive(state_path=state_path, auto_restart=True)
+
+    assert result is False
+
+
+# --- manual_halt_flag interaction (2026-07-28 audit finding) ---------------
+
+
+def test_manual_halt_active_suppresses_down_alert_on_first_check(monkeypatch, tmp_path):
+    calls = _capture_notify(monkeypatch)
+    _stub_running(monkeypatch, False)
+    _stub_manual_halt(monkeypatch, True)
+    state_path = tmp_path / "state.json"
+
+    result = check_loop_alive(state_path=state_path)
+
+    assert result is False
+    assert calls == []
+
+
+def test_manual_halt_active_suppresses_transition_alert(monkeypatch, tmp_path):
+    calls = _capture_notify(monkeypatch)
+    state_path = tmp_path / "state.json"
+
+    _stub_running(monkeypatch, True)
+    _stub_manual_halt(monkeypatch, False)
+    check_loop_alive(state_path=state_path)  # baseline running, halt not active yet
+
+    _stub_running(monkeypatch, False)
+    _stub_manual_halt(monkeypatch, True)  # do_stop() just ran
+    check_loop_alive(state_path=state_path)
+
+    assert calls == []
+
+
+def test_manual_halt_active_does_not_attempt_restart(monkeypatch, tmp_path):
+    _capture_notify(monkeypatch)
+    calls = _capture_subprocess_run(monkeypatch)
+    _stub_running(monkeypatch, False)
+    _stub_manual_halt(monkeypatch, True)
+    state_path = tmp_path / "state.json"
+
+    result = check_loop_alive(state_path=state_path, auto_restart=True)
+
+    assert result is False
+    assert calls == []  # the exact bug this fixes: no auto-restart of a deliberate stop
+
+
+def test_manual_halt_active_does_not_repeatedly_alert_across_cycles(monkeypatch, tmp_path):
+    calls = _capture_notify(monkeypatch)
+    _stub_running(monkeypatch, False)
+    _stub_manual_halt(monkeypatch, True)
+    state_path = tmp_path / "state.json"
+
+    check_loop_alive(state_path=state_path)
+    check_loop_alive(state_path=state_path)
+    check_loop_alive(state_path=state_path)
+
+    assert calls == []
+
+
+def test_manual_halt_inactive_restores_normal_down_alert_and_restart(monkeypatch, tmp_path):
+    # Regression guard: once `start` clears the flag, normal behavior (alert
+    # + auto-restart on a genuinely-down loop) must resume exactly as before.
+    calls = _capture_notify(monkeypatch)
+    restart_calls = _capture_subprocess_run(monkeypatch)
+    _stub_running(monkeypatch, False)
+    _stub_manual_halt(monkeypatch, False)
+    state_path = tmp_path / "state.json"
+
+    result = check_loop_alive(state_path=state_path, auto_restart=True)
+
+    assert result is False
+    assert len(calls) == 1
+    assert "DOWN" in calls[0]
+    assert len(restart_calls) == 1
+
+
+def test_manual_halt_active_but_loop_somehow_running_does_not_suppress_up_alert(monkeypatch, tmp_path):
+    # Edge case: manual_halt_flag active only ever gates the DOWN path (see
+    # its own docstring -- do_start() always clears it before launching, so
+    # this combination shouldn't arise in practice, but the gate itself is
+    # only conditioned on `not currently_running`, confirmed here).
+    calls = _capture_notify(monkeypatch)
+    state_path = tmp_path / "state.json"
+
+    _stub_running(monkeypatch, False)
+    _stub_manual_halt(monkeypatch, True)
+    check_loop_alive(state_path=state_path)  # baseline, down, halted -- silent
+    calls.clear()
+
+    _stub_running(monkeypatch, True)
+    check_loop_alive(state_path=state_path)  # somehow running again
+
+    assert len(calls) == 1
+    assert "back up" in calls[0] or "✅" in calls[0]
+
+
+def test_unexpected_exception_in_check_is_swallowed_not_raised(monkeypatch, tmp_path):
+    # 2026-07-28 audit finding: this check running BEFORE others in
+    # run_health_check.py's sequence must never abort the checks after it.
+    def _raise(pid_path=None):
+        raise RuntimeError("simulated tasklist failure")
+
+    monkeypatch.setattr(pid_file_module, "is_running", _raise)
+    state_path = tmp_path / "state.json"
+
+    result = check_loop_alive(state_path=state_path)
 
     assert result is False

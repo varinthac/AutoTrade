@@ -16,6 +16,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -157,8 +158,17 @@ def build_news_provider(clock: RealClock) -> NewsCalendarProvider:
       3. `StubNewsCalendarProvider` -- always returns `None`; see
          `council/news_calendar.py`'s module docstring for why the stub
          means every trade gets vetoed on the news condition.
+
+    `resolve_commondata_path()` is retried a few times (`_resolve_commondata_path_with_retry`)
+    before falling through to (2)/(3) -- called exactly once, at loop
+    startup, to pick the provider for the ENTIRE process lifetime, so a
+    transient `mt5.terminal_info()` hiccup at that one instant (the
+    terminal still finishing startup -- including right after
+    `common/calendar_export_watchdog.py`'s own kill-and-relaunch recovery)
+    used to permanently downgrade the whole run even though MT5 recovers
+    seconds later (2026-07-28 audit finding).
     """
-    commondata_path = resolve_commondata_path()
+    commondata_path = _resolve_commondata_path_with_retry()
     if commondata_path:
         logger.info(
             "Using MQL5CalendarProvider -- MT5 terminal_info() resolved commondata_path=%s "
@@ -179,6 +189,25 @@ def build_news_provider(clock: RealClock) -> NewsCalendarProvider:
         "is available (see council/news_calendar.py)."
     )
     return StubNewsCalendarProvider()
+
+
+def _resolve_commondata_path_with_retry(attempts: int = 3, delay_sec: float = 5.0) -> str | None:
+    """A few retries with a short delay, costing nothing at one-time loop
+    startup, so a transient `mt5.terminal_info()` failure doesn't lock the
+    whole run into a lesser news provider -- see `build_news_provider`'s
+    docstring for why this matters."""
+    for attempt in range(1, attempts + 1):
+        commondata_path = resolve_commondata_path()
+        if commondata_path:
+            return commondata_path
+        if attempt < attempts:
+            logger.warning(
+                "resolve_commondata_path() returned None on attempt %d/%d -- MT5 session may still be "
+                "starting up. Retrying in %.0fs before falling back to a lesser news provider.",
+                attempt, attempts, delay_sec,
+            )
+            time.sleep(delay_sec)
+    return None
 
 
 def _configure_logging(log_dir: Path) -> None:

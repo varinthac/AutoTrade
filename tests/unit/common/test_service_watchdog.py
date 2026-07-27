@@ -155,6 +155,22 @@ def test_restart_exception_is_logged_not_raised(monkeypatch, tmp_path):
     assert result is False
 
 
+def test_unexpected_exception_in_check_is_swallowed_not_raised(monkeypatch, tmp_path):
+    # 2026-07-28 audit finding: a failure checking/restarting ONE service
+    # must never abort whichever OTHER services run_health_check.py checks
+    # after it in the same cycle.
+    def _raise(pid_path=None):
+        raise RuntimeError("simulated tasklist failure")
+
+    monkeypatch.setattr(pid_file_module, "is_running", _raise)
+
+    result = check_and_restart(
+        "Dashboard", tmp_path / "d.pid", tmp_path / "state.json", tmp_path / "run_dashboard.py", tmp_path,
+    )
+
+    assert result is False
+
+
 def test_corrupt_state_file_is_treated_as_no_prior_state_not_a_crash(monkeypatch, tmp_path):
     notify_calls = _capture_notify(monkeypatch)
     _capture_popen(monkeypatch)

@@ -30,7 +30,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from autotrade.common import kill_switch_flag, pid_file, stop_request_flag
+from autotrade.common import kill_switch_flag, manual_halt_flag, pid_file, stop_request_flag
 from autotrade.common.config import REPO_ROOT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -66,7 +66,17 @@ def do_start() -> int:
     JOB_OBJECT_LIMIT_BREAKAWAY_OK to allow exactly this, but a caller could
     exist that disallows it, and CreateProcess raises immediately rather
     than falling back silently in that case -- caught and retried below
-    without the flag so this never becomes a NEW way to fail to start."""
+    without the flag so this never becomes a NEW way to fail to start.
+
+    2026-07-28 audit finding: clears `manual_halt_flag` unconditionally,
+    before even the kill-switch check -- this is the one explicit,
+    human-invoked action that means "resume normal auto-restart behavior",
+    regardless of whether THIS particular invocation goes on to succeed
+    (e.g. kill switch still active). See manual_halt_flag.py's own
+    docstring for the full incident this exists to fix (a deliberate
+    `stop` getting silently auto-resurrected by the heartbeat)."""
+    manual_halt_flag.deactivate()
+
     status = kill_switch_flag.get_status()
     if status is not None:
         logger.error(
@@ -108,7 +118,16 @@ def do_stop() -> int:
     actually exited). Warns (but still requests -- harmless either way,
     see stop_request_flag's own stale-flag-at-startup handling) if the PID
     file shows no loop is currently running, so a stray double-click doesn't
-    silently look like it did something."""
+    silently look like it did something.
+
+    2026-07-28 audit finding: also sets `manual_halt_flag`, alongside the
+    existing `stop_request_flag` -- unlike that flag (consumed and cleared
+    by the loop itself the moment it exits), this one stays set until an
+    explicit `start`, so `run_health_check.py`'s heartbeat-driven
+    auto-restart (`common/loop_watchdog.check_loop_alive`) can tell "the
+    operator asked for this" apart from "it crashed" and not silently
+    resurrect a deliberate stop within one heartbeat cycle. See
+    manual_halt_flag.py's own docstring for the full incident."""
     if not pid_file.is_running():
         logger.warning(
             "Stop requested, but no AutoTrade loop appears to be running right now -- requesting "
@@ -116,10 +135,12 @@ def do_stop() -> int:
         )
 
     stop_request_flag.request("manual stop button")
+    manual_halt_flag.activate("manual stop button")
     logger.info(
         "Graceful stop requested. The running shadow loop (if any) will exit within roughly one "
         "poll interval and send its own Telegram confirmation. Open positions, if any, are left "
-        "untouched -- use emergency-stop if you need them closed."
+        "untouched -- use emergency-stop if you need them closed. The heartbeat's auto-restart will "
+        "NOT bring it back up until you run 'start' again."
     )
     return 0
 
@@ -163,6 +184,15 @@ def do_status() -> int:
         )
     else:
         print("Stop request flag: not pending")
+
+    halt_status = manual_halt_flag.get_status()
+    if halt_status is not None:
+        print(
+            f"Manual halt: ACTIVE (reason={halt_status.get('reason')}, since={halt_status.get('activated_at')}) "
+            "-- the heartbeat's auto-restart will not bring the loop back up until 'start' is run."
+        )
+    else:
+        print("Manual halt: not active")
 
     return 0
 

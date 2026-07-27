@@ -38,6 +38,18 @@ mt5 = run_shadow_loop.mt5
 CREDS = MT5Credentials(login=1, password="pw", server="srv", terminal_path=None)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    """Every test in this module runs against a real (unmocked)
+    `MetaTrader5` module with no live terminal connection, so
+    `mt5.terminal_info()` returns None and `build_news_provider()`'s
+    `_resolve_commondata_path_with_retry()` (2026-07-28 audit finding #9)
+    would otherwise burn several real seconds of `time.sleep()` per test
+    across most of `test_main_*` here, not just the news-provider-specific
+    tests below -- autouse so no individual test has to remember this."""
+    monkeypatch.setattr(run_shadow_loop.time, "sleep", lambda seconds: None)
+
+
 # --- build_adapter() ------------------------------------------------------
 
 
@@ -444,6 +456,48 @@ def test_build_news_provider_falls_back_to_stub_when_neither_mql5_nor_finnhub_av
     provider = run_shadow_loop.build_news_provider(RealClock())
 
     assert isinstance(provider, run_shadow_loop.StubNewsCalendarProvider)
+
+
+# --- _resolve_commondata_path_with_retry() -----------------------------------
+
+
+def test_resolve_commondata_path_with_retry_returns_immediately_on_first_success(monkeypatch):
+    calls = []
+    monkeypatch.setattr(run_shadow_loop, "resolve_commondata_path", lambda: calls.append(1) or r"C:\fake")
+    sleep_calls = []
+    monkeypatch.setattr(run_shadow_loop.time, "sleep", lambda s: sleep_calls.append(s))
+
+    result = run_shadow_loop._resolve_commondata_path_with_retry()
+
+    assert result == r"C:\fake"
+    assert len(calls) == 1
+    assert sleep_calls == []
+
+
+def test_resolve_commondata_path_with_retry_retries_and_succeeds_on_a_later_attempt(monkeypatch):
+    # 2026-07-28 audit finding: a transient MT5 startup hiccup at the one
+    # instant build_news_provider() picks a provider must not permanently
+    # downgrade the whole run -- this is exactly that recovery.
+    results = iter([None, None, r"C:\fake"])
+    monkeypatch.setattr(run_shadow_loop, "resolve_commondata_path", lambda: next(results))
+    sleep_calls = []
+    monkeypatch.setattr(run_shadow_loop.time, "sleep", lambda s: sleep_calls.append(s))
+
+    result = run_shadow_loop._resolve_commondata_path_with_retry(attempts=3, delay_sec=5.0)
+
+    assert result == r"C:\fake"
+    assert sleep_calls == [5.0, 5.0]
+
+
+def test_resolve_commondata_path_with_retry_gives_up_after_all_attempts(monkeypatch):
+    calls = []
+    monkeypatch.setattr(run_shadow_loop, "resolve_commondata_path", lambda: calls.append(1) or None)
+    monkeypatch.setattr(run_shadow_loop.time, "sleep", lambda s: None)
+
+    result = run_shadow_loop._resolve_commondata_path_with_retry(attempts=3, delay_sec=5.0)
+
+    assert result is None
+    assert len(calls) == 3
 
 
 def test_main_unknown_adapter_choice_rejected_by_argparse(monkeypatch, capsys, tmp_path):

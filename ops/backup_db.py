@@ -20,7 +20,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 SRC = Path(r"C:\AutoTrade\data\db\trade_journal_paper.sqlite")
-DEST_DIR = Path(r"C:\AutoTrade\backups")
+
+# 2026-07-28 audit finding: this used to point at a folder on the SAME disk
+# as the original DB -- backups ran successfully every night (LastTaskResult
+# stayed 0) while providing zero actual protection against losing the VPS
+# itself. Now points inside the Google Drive for Desktop "My Drive" mirror
+# folder (docs/vps_deployment.md Section 8 step 3's own already-written
+# plan, just not previously executed) so the sync client carries every
+# backup off-box on its own, no extra script needed. The "AutoTrade_Backups"
+# subfolder must exist under the signed-in account's My Drive -- create it
+# once after Google Drive for Desktop is installed and signed in (an
+# interactive step -- see docs/vps_deployment.md Section 8).
+DEST_DIR = Path(r"C:\Users\Administrator\My Drive\AutoTrade_Backups")
 KEEP_DAYS = 30
 
 

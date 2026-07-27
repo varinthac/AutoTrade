@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1344 (including all parametrized variants)
+- **Total Test Count**: 1422 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -56,17 +56,17 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_telegram.py | 45 |
 | | test_telegram_control.py | 82 |
 | **Notify Subtotal** | | **153** |
-| Orchestrator | test_shadow_loop.py | 46 |
-| **Orchestrator Subtotal** | | **46** |
+| Orchestrator | test_shadow_loop.py | 47 |
+| **Orchestrator Subtotal** | | **47** |
 | Risk | test_circuit_breaker.py | 32 |
 | | test_sizing.py | 20 |
 | **Risk Subtotal** | | **52** |
 | Shield | test_checkpoint.py | 20 |
 | | test_correlation.py | 4 |
 | **Shield Subtotal** | | **24** |
-| Store | test_journal.py | 17 |
+| Store | test_journal.py | 18 |
 | | test_models.py | 3 |
-| **Store Subtotal** | | **20** |
+| **Store Subtotal** | | **21** |
 | Watchman | test_autotrading_watchdog.py | 10 |
 | | test_connectivity_watchdog.py | 15 |
 | | test_evaluate.py | 7 |
@@ -76,14 +76,19 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_position_metadata.py | 11 |
 | | test_stop_logic.py | 38 |
 | **Watchman Subtotal** | | **154** |
-| Scripts & CLI | test_autotrade_control.py | 20 |
+| Scripts & CLI | test_autotrade_control.py | 24 |
+| | test_calendar_export_watchdog.py | 12 |
 | | test_clock.py | 1 |
+| | test_cloudflared_watchdog.py | 9 |
 | | test_config.py | 29 |
 | | test_historical_download.py | 14 |
 | | test_historical_gaps.py | 4 |
 | | test_kill_switch_flag.py | 9 |
+| | test_kill_switch_reminder.py | 10 |
 | | test_kill_switch_script.py | 29 |
-| | test_loop_watchdog.py | 15 |
+| | test_loop_watchdog.py | 22 |
+| | test_manual_halt_flag.py | 9 |
+| | test_manual_halt_reminder.py | 10 |
 | | test_mt5_connection.py | 10 |
 | | test_mt5_time.py | 4 |
 | | test_pid_file.py | 19 |
@@ -91,16 +96,17 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_run_auditor.py | 42 |
 | | test_run_backtest.py | 25 |
 | | test_run_dashboard.py | 4 |
-| | test_run_health_check.py | 3 |
+| | test_run_health_check.py | 5 |
 | | test_run_scheduled_daily_report.py | 3 |
-| | test_run_shadow_loop.py | 33 |
+| | test_run_shadow_loop.py | 36 |
 | | test_run_telegram_control.py | 26 |
-| | test_service_watchdog.py | 8 |
+| | test_scheduled_task_watchdog.py | 9 |
+| | test_service_watchdog.py | 9 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **316** |
+| **Scripts & CLI Subtotal** | | **392** |
 | | | |
-| **GRAND TOTAL** | | **1344** |
+| **GRAND TOTAL** | | **1422** |
 
 ---
 
@@ -977,6 +983,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_place_order_receives_current_atr_kwarg
 - test_ticket_none_does_not_record_position_metadata
 - test_run_wires_watchman_cycle_as_on_iteration_end_hook_when_given
+- test_on_iteration_end_survives_watchman_cycle_raising_and_still_checks_stop_request
 - test_run_passes_non_none_on_iteration_end_even_without_watchman_loop
 - test_on_iteration_end_calls_injected_autotrading_watchdog_with_reader_result
 - test_on_iteration_end_does_not_raise_when_autotrading_watchdog_not_given
@@ -1100,6 +1107,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_record_and_query_anomaly_event_round_trips
 - test_record_anomaly_event_notifies_once_with_event_details
 - test_record_anomaly_event_still_persists_when_notify_raises
+- test_record_anomaly_event_still_notifies_when_db_write_fails
 - test_count_blocked_signals_groups_by_block_source
 - test_trade_at_exact_day_start_belongs_to_that_day
 - test_trade_one_microsecond_before_day_end_belongs_to_that_day_not_the_next
@@ -1295,8 +1303,11 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 - test_do_start_refuses_when_kill_switch_active
 - test_do_start_launches_run_shadow_loop_in_new_console_when_not_halted
+- test_do_start_clears_manual_halt_flag
+- test_do_start_clears_manual_halt_flag_even_when_kill_switch_refuses
 - test_do_start_falls_back_without_breakaway_flag_if_caller_job_disallows_it
 - test_do_stop_requests_stop_flag_with_reason
+- test_do_stop_also_sets_manual_halt_flag
 - test_do_emergency_stop_without_confirm_refuses_and_does_not_shell_out
 - test_do_emergency_stop_with_confirm_invokes_kill_switch_script
 - test_do_emergency_stop_relays_nonzero_exit_code
@@ -1305,6 +1316,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_do_status_reports_not_running_when_pid_stale
 - test_do_status_reports_kill_switch_active
 - test_do_status_reports_pending_stop_flag
+- test_do_status_reports_manual_halt_active
 - test_do_status_reports_running_and_kill_switch_active_simultaneously
 - test_do_status_reports_lingering_stop_flag_while_loop_not_actually_running
 - test_main_requires_a_subcommand
@@ -1314,9 +1326,36 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_main_dispatches_emergency_stop_with_confirm_flag
 - test_main_dispatches_emergency_stop_without_confirm_flag
 
+### tests/unit/common/test_calendar_export_watchdog.py
+
+- test_fresh_export_does_nothing
+- test_missing_export_triggers_recovery
+- test_stale_export_beyond_threshold_triggers_recovery
+- test_stale_within_cooldown_skips_second_recovery_attempt
+- test_stale_after_cooldown_elapsed_retries
+- test_wait_for_loop_stop_returns_as_soon_as_loop_confirms_stopped
+- test_wait_for_loop_stop_times_out_and_still_kills_terminal
+- test_check_and_recover_never_raises_on_internal_error
+- test_manual_halt_active_skips_recovery_even_when_export_stale
+- test_manual_halt_inactive_recovers_normally
+- test_default_export_path_uses_appdata
+- test_default_export_path_raises_without_appdata
+
 ### tests/unit/test_clock.py
 
 - test_real_clock_now_returns_tz_aware_utc_within_call_bounds
+
+### tests/unit/common/test_cloudflared_watchdog.py
+
+- test_first_check_running_records_baseline_silently_and_does_not_restart
+- test_first_check_down_notifies_and_attempts_restart
+- test_down_to_down_unchanged_does_not_re_notify_but_keeps_retrying_restart
+- test_down_to_running_transition_notifies_recovery_and_stops_restarting
+- test_corrupt_state_file_is_treated_as_no_prior_state_not_a_crash
+- test_restart_failure_is_logged_not_raised
+- test_unexpected_exception_in_check_is_swallowed_not_raised
+- test_is_running_matches_process_image_name
+- test_is_running_false_when_tasklist_empty
 
 ### tests/unit/test_config.py
 
@@ -1384,6 +1423,19 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_get_status_survives_corrupt_flag_file_as_active
 - test_default_flag_path_lives_under_data_db
 
+### tests/unit/common/test_kill_switch_reminder.py
+
+- test_not_active_does_nothing
+- test_freshly_activated_does_not_immediately_remind
+- test_reminds_once_interval_has_passed_since_activation
+- test_does_not_remind_again_within_interval_of_last_reminder
+- test_reminds_again_after_a_second_interval_elapses
+- test_deactivation_clears_state_so_a_future_reactivation_starts_fresh
+- test_missing_activated_at_still_reminds_with_unknown_duration
+- test_unparseable_activated_at_shows_unknown_duration_not_zero_hours
+- test_corrupt_state_file_is_treated_as_no_prior_reminder_not_a_crash
+- test_never_raises_on_internal_error
+
 ### tests/unit/test_kill_switch_script.py
 
 - test_close_all_open_positions_returns_empty_list_when_none_open
@@ -1433,6 +1485,38 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_auto_restart_retries_on_every_still_down_check_not_just_transition
 - test_auto_restart_nonzero_exit_is_logged_not_raised
 - test_auto_restart_subprocess_exception_is_swallowed_not_raised
+- test_manual_halt_active_suppresses_down_alert_on_first_check
+- test_manual_halt_active_suppresses_transition_alert
+- test_manual_halt_active_does_not_attempt_restart
+- test_manual_halt_active_does_not_repeatedly_alert_across_cycles
+- test_manual_halt_inactive_restores_normal_down_alert_and_restart
+- test_manual_halt_active_but_loop_somehow_running_does_not_suppress_up_alert
+- test_unexpected_exception_in_check_is_swallowed_not_raised
+
+### tests/unit/common/test_manual_halt_flag.py
+
+- test_is_active_false_when_no_flag_file
+- test_activate_writes_readable_flag_with_reason
+- test_activate_rejects_empty_reason
+- test_activate_creates_parent_directory
+- test_deactivate_clears_flag
+- test_deactivate_is_a_noop_when_not_active
+- test_get_status_returns_none_when_not_active
+- test_get_status_survives_corrupt_flag_file_as_active
+- test_default_flag_path_lives_under_data_db
+
+### tests/unit/common/test_manual_halt_reminder.py
+
+- test_not_active_does_nothing
+- test_freshly_activated_does_not_immediately_remind
+- test_reminds_once_interval_has_passed_since_activation
+- test_does_not_remind_again_within_interval_of_last_reminder
+- test_reminds_again_after_a_second_interval_elapses
+- test_start_clears_state_so_a_future_stop_starts_fresh
+- test_missing_activated_at_still_reminds_with_unknown_duration
+- test_unparseable_activated_at_shows_unknown_duration_not_zero_hours
+- test_corrupt_state_file_is_treated_as_no_prior_reminder_not_a_crash
+- test_never_raises_on_internal_error
 
 ### tests/unit/test_mt5_connection.py
 
@@ -1574,6 +1658,8 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_main_checks_shadow_loop_dashboard_and_telegram_control
 - test_main_prints_not_running_when_loop_is_down
 - test_main_passes_auto_restart_true_to_loop_check
+- test_main_checks_calendar_export_before_loop_alive_and_cloudflared
+- test_main_calls_kill_switch_reminder_and_scheduled_task_checks
 
 ### tests/unit/test_run_scheduled_daily_report.py
 
@@ -1603,6 +1689,9 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_build_news_provider_selects_mql5_even_when_export_file_not_yet_written
 - test_build_news_provider_selects_mql5_over_finnhub_even_without_finnhub_key
 - test_build_news_provider_falls_back_to_stub_when_neither_mql5_nor_finnhub_available
+- test_resolve_commondata_path_with_retry_returns_immediately_on_first_success
+- test_resolve_commondata_path_with_retry_retries_and_succeeds_on_a_later_attempt
+- test_resolve_commondata_path_with_retry_gives_up_after_all_attempts
 - test_main_unknown_adapter_choice_rejected_by_argparse
 - test_main_sends_startup_notify_after_mt5_connects
 - test_main_double_launch_guard_proceeds_when_no_pid_file
@@ -1646,6 +1735,18 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_exception_from_poll_fn_is_swallowed_and_loop_continues
 - test_exception_message_never_logged_with_bot_token
 
+### tests/unit/common/test_scheduled_task_watchdog.py
+
+- test_healthy_task_does_not_alert
+- test_nonzero_last_result_is_unhealthy_and_alerts
+- test_stale_last_run_time_is_unhealthy
+- test_schtasks_query_failure_is_unhealthy
+- test_unparseable_last_run_time_is_unhealthy_not_a_crash
+- test_transition_only_alert_does_not_repeat_while_still_unhealthy
+- test_recovery_transition_alerts_healthy_again
+- test_one_task_failing_does_not_prevent_checking_the_other
+- test_check_never_raises_on_internal_error
+
 ### tests/unit/common/test_service_watchdog.py
 
 - test_first_check_running_records_baseline_silently_and_does_not_restart
@@ -1655,6 +1756,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_restart_passes_extra_args_through
 - test_restart_falls_back_without_breakaway_flag_if_caller_job_disallows_it
 - test_restart_exception_is_logged_not_raised
+- test_unexpected_exception_in_check_is_swallowed_not_raised
 - test_corrupt_state_file_is_treated_as_no_prior_state_not_a_crash
 
 ### tests/unit/test_stop_request_flag.py

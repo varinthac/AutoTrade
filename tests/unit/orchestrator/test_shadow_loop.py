@@ -1091,6 +1091,43 @@ def test_run_wires_watchman_cycle_as_on_iteration_end_hook_when_given(monkeypatc
     assert now_arg == BASE_TIME
 
 
+def test_on_iteration_end_survives_watchman_cycle_raising_and_still_checks_stop_request(monkeypatch, tmp_path):
+    # 2026-07-28 audit finding: an unexpected exception from the Watchman
+    # cycle used to propagate out of _on_iteration_end() and crash the
+    # entire shadow loop process, not just skip one iteration -- matching
+    # the broad except Exception guard `_process()` already has for
+    # per-bar signal processing. Also confirms `_check_stop_request()`
+    # still runs afterward (not skipped just because the try block above it
+    # failed).
+    seed = _council_df().iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter()
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+
+    class ExplodingWatchmanLoop:
+        def run_cycle(self, history_by_symbol, now):
+            raise RuntimeError("simulated Watchman cycle failure")
+
+    cfg = ShadowLoopConfig(risk_per_trade_pct=1.0)
+    loop = ShadowLoop(
+        adapter=adapter, circuit_breaker=breaker, shield=_default_shield(), cfg=cfg,
+        initial_history={"XAUUSD": seed}, resolve_symbol_spec=_fake_symbol_spec,
+        clock=FixedClock(BASE_TIME), news_provider=AllClearNewsProvider(),
+        risk_voice_cfg=_permissive_risk_voice_cfg(), borderline_log_path=tmp_path / "borderline.jsonl",
+        position_metadata_path=tmp_path / "position_metadata.json", watchman_loop=ExplodingWatchmanLoop(),
+        journal_db_path=tmp_path / "trade_journal.sqlite",
+    )
+
+    stop_request_calls = []
+    monkeypatch.setattr(
+        shadow_loop_module, "stop_request_flag",
+        type("_Stub", (), {"is_requested": staticmethod(lambda: stop_request_calls.append(1) or False)})(),
+    )
+
+    loop._on_iteration_end()  # must not raise
+
+    assert stop_request_calls == [1]  # _check_stop_request() still ran despite the exception above
+
+
 def test_run_passes_non_none_on_iteration_end_even_without_watchman_loop(monkeypatch, tmp_path):
     # Unlike the pre-stop-flag-feature behavior, on_iteration_end is now
     # always given -- it must run the stop-request check every cycle
