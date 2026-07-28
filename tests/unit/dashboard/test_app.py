@@ -521,6 +521,16 @@ def test_to_trade_row_carries_cost_field_from_trade_record(db_path):
     assert row.cost == 4.5
 
 
+def test_to_trade_row_carries_broker_ticket(db_path):
+    # 2026-07-29 user request: ticket column on the dashboard.
+    _record_trade(db_path, broker_ticket=1826927585)
+    all_trades = journal.get_trades_in_range(views.EPOCH, views.FAR_FUTURE, db_path=db_path)
+
+    row = views.to_trade_row(all_trades[0])
+
+    assert row.ticket == 1826927585
+
+
 def test_trades_to_export_rows_empty_list():
     assert views.trades_to_export_rows([]) == []
 

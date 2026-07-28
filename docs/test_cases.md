@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1430 (including all parametrized variants)
+- **Total Test Count**: 1431 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -37,10 +37,10 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_scoring.py | 25 |
 | | test_trivial_signal.py | 6 |
 | **Council Subtotal** | | **160** |
-| Dashboard | test_app.py | 50 |
+| Dashboard | test_app.py | 51 |
 | | test_positions.py | 6 |
 | | test_webapp_auth.py | 20 |
-| **Dashboard Subtotal** | | **76** |
+| **Dashboard Subtotal** | | **77** |
 | Execution | test_demo_adapter.py | 92 |
 | | test_noop_adapter.py | 8 |
 | **Execution Subtotal** | | **100** |
@@ -106,7 +106,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **398** |
 | | | |
-| **GRAND TOTAL** | | **1422** |
+| **GRAND TOTAL** | | **1431** |
 
 ---
 
@@ -529,6 +529,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_default_daily_date_none_when_no_trades
 - test_trades_to_export_rows_matches_to_trade_row_field_values
 - test_to_trade_row_carries_cost_field_from_trade_record
+- test_to_trade_row_carries_broker_ticket
 - test_trades_to_export_rows_empty_list
 - test_trades_to_export_rows_escapes_formula_injection_prefixes
 - test_trades_to_export_rows_does_not_touch_safe_string_values

@@ -28,6 +28,7 @@ def format_server_time(value: datetime) -> str:
 
 @dataclass(frozen=True)
 class TradeRow:
+    ticket: int | None  # TradeRecord.broker_ticket is nullable (pre-Phase-7b rows)
     exit_time: str
     symbol: str
     direction: str
@@ -49,6 +50,7 @@ EXPORT_COLUMNS = [f.name for f in fields(TradeRow)]
 
 def to_trade_row(trade: TradeRecord) -> TradeRow:
     return TradeRow(
+        ticket=trade.broker_ticket,
         exit_time=format_server_time(trade.exit_time),
         symbol=trade.symbol,
         direction=trade.direction,

@@ -543,6 +543,7 @@ def test_positions_command_formats_seeded_position_field_values(monkeypatch):
 
     reply = handle_update(_update(12345, "/positions"), "12345", pending, FixedClock(NOW))
 
+    assert "#1" in reply.text  # broker ticket, 2026-07-29 user request
     assert "XAUUSD" in reply.text
     assert "SELL" in reply.text
     assert "0.01" in reply.text

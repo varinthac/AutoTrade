@@ -278,7 +278,7 @@ def _handle_trades() -> str:
 
 def _format_position_line(row: views.OpenPositionRow) -> str:
     return (
-        f"{row.symbol} {row.direction} {row.volume} @{row.price_open:.2f} "
+        f"#{row.ticket} {row.symbol} {row.direction} {row.volume} @{row.price_open:.2f} "
         f"(now {row.price_current:.2f}) P/L={row.profit:+.2f} SL={row.sl:.2f} TP={row.tp:.2f}"
     )
 
