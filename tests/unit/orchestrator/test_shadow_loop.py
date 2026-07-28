@@ -995,6 +995,65 @@ def test_successful_trade_records_position_metadata(monkeypatch, tmp_path):
     assert recorded.actual_slippage == pytest.approx(0.0)  # FakeAdapter fills exactly at request.entry
 
 
+def test_successful_position_metadata_write_logs_confirmation(monkeypatch, tmp_path, caplog):
+    # 2026-07-29 incident: ticket=1825965537's metadata write left no trace
+    # either way (no exception, no crash) -- there was previously no log
+    # line at all for the success path, making a repeat undiagnosable.
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(
+        adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl",
+        position_metadata_path=tmp_path / "position_metadata.json",
+    )
+
+    new_bar = _bar_from_row(df, AS_OF)
+    with caplog.at_level(logging.INFO):
+        loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    assert any(
+        "Watchman position metadata recorded" in record.message and "ticket=1" in record.message
+        for record in caplog.records
+    )
+
+
+def test_position_metadata_write_failure_is_logged_specifically_and_does_not_crash_the_bar(
+    monkeypatch, tmp_path, caplog,
+):
+    # The broker-side fill already succeeded (adapter.place_order_calls
+    # confirms it) -- a failure recording Watchman's OWN metadata about it
+    # must be caught, logged loudly and specifically (naming the ticket),
+    # and must NOT propagate/crash bar processing (watchman/loop.py's own
+    # orphan-position reconciliation, Fix C, is the safety net if this ever
+    # happens for real).
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(
+        adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl",
+        position_metadata_path=tmp_path / "position_metadata.json",
+    )
+
+    def _boom(**kwargs):
+        raise RuntimeError("simulated position_metadata write failure")
+
+    monkeypatch.setattr(shadow_loop_module.position_metadata, "record_position_opened", _boom)
+
+    new_bar = _bar_from_row(df, AS_OF)
+    with caplog.at_level(logging.ERROR):
+        loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))  # must not raise
+
+    assert len(adapter.place_order_calls) == 1  # the broker-side order still went through
+    assert any(
+        "FAILED to record Watchman position metadata" in record.message and "ticket=1" in record.message
+        for record in caplog.records
+    )
+
+
 def test_place_order_receives_current_atr_kwarg(monkeypatch, tmp_path):
     _patch_scores(monkeypatch, bull_total=75, bear_total=30)
     df = _council_df()

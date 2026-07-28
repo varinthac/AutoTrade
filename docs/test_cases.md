@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1422 (including all parametrized variants)
+- **Total Test Count**: 1424 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -56,8 +56,8 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_telegram.py | 45 |
 | | test_telegram_control.py | 82 |
 | **Notify Subtotal** | | **153** |
-| Orchestrator | test_shadow_loop.py | 47 |
-| **Orchestrator Subtotal** | | **47** |
+| Orchestrator | test_shadow_loop.py | 49 |
+| **Orchestrator Subtotal** | | **49** |
 | Risk | test_circuit_breaker.py | 32 |
 | | test_sizing.py | 20 |
 | **Risk Subtotal** | | **52** |
@@ -980,6 +980,8 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_default_news_provider_is_stub_and_vetoes_every_trade
 - test_stale_signal_recheck_vetoes_and_skips_placing_order
 - test_successful_trade_records_position_metadata
+- test_successful_position_metadata_write_logs_confirmation
+- test_position_metadata_write_failure_is_logged_specifically_and_does_not_crash_the_bar
 - test_place_order_receives_current_atr_kwarg
 - test_ticket_none_does_not_record_position_metadata
 - test_run_wires_watchman_cycle_as_on_iteration_end_hook_when_given

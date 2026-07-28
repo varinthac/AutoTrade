@@ -656,6 +656,25 @@ class ShadowLoop:
         # broker ticket (NoOpBrokerAdapter dry runs never open a position
         # with any broker) or when the position was actually closed (a
         # normal rejection, or a slippage-close that DID succeed).
+        #
+        # 2026-07-29 incident: ticket=1825965537 filled cleanly but turned up
+        # hours later with NO PositionMetadata at all (discovered only via
+        # watchman/loop.py's own orphan-position reconciliation, Fix C,
+        # 2026-07-25) -- investigation found no exception, no process
+        # restart, and no state_path mismatch (ShadowLoop/WatchmanLoop both
+        # use the same DEFAULT_POSITION_METADATA_PATH) anywhere in the logs
+        # for that window, so the true root cause of that one write never
+        # surfacing was never confirmed. This function previously had NO log
+        # line at all for the success path (silence was the only signal),
+        # making a repeat impossible to diagnose. The narrower try/except
+        # below exists so a future occurrence logs loudly and specifically
+        # right here -- naming this exact call and ticket -- instead of only
+        # `_process()`'s own generic outer "unhandled exception while
+        # processing this bar" catch; the broker-side position is genuinely
+        # open either way, so this is caught-and-logged rather than
+        # re-raised -- Fix C's orphan reconciliation is the safety net of
+        # last resort if this write's failure mode ever recurs and stays
+        # silent again.
         if result.broker_ticket is not None and (result.success or result.position_still_open):
             # entry_spread_points/actual_slippage (Appendix A §5.1's daily-
             # report fields) -- entry_spread_points reuses the same
@@ -667,14 +686,28 @@ class ShadowLoop:
             actual_slippage = (
                 abs(result.filled_price - plan.entry) if result.filled_price is not None else None
             )
-            position_metadata.record_position_opened(
-                ticket=result.broker_ticket, symbol=symbol, direction=plan.direction,
-                entry_price=result.filled_price, initial_stop_distance=plan.stop_distance,
-                entry_swing_index=swing_index, opened_at=opened_at,
-                state_path=self._position_metadata_path,
-                entry_spread_points=recheck_inputs["current_spread_points"],
-                actual_slippage=actual_slippage,
-            )
+            try:
+                position_metadata.record_position_opened(
+                    ticket=result.broker_ticket, symbol=symbol, direction=plan.direction,
+                    entry_price=result.filled_price, initial_stop_distance=plan.stop_distance,
+                    entry_swing_index=swing_index, opened_at=opened_at,
+                    state_path=self._position_metadata_path,
+                    entry_spread_points=recheck_inputs["current_spread_points"],
+                    actual_slippage=actual_slippage,
+                )
+                logger.info(
+                    "%s %s: Watchman position metadata recorded for ticket=%s (entry=%s at %s)",
+                    symbol, bar.time, result.broker_ticket, result.filled_price, opened_at,
+                )
+            except Exception:
+                logger.exception(
+                    "%s %s: FAILED to record Watchman position metadata for ticket=%s -- the "
+                    "broker-side position is open regardless, but Watchman will not manage/track it "
+                    "until its own orphan-position reconciliation catches it later (seeding "
+                    "approximate metadata from whatever price/SL are current AT THAT LATER TIME, "
+                    "not this bar's real entry price/time=%s/%s). Investigate promptly.",
+                    symbol, bar.time, result.broker_ticket, result.filled_price, opened_at,
+                )
 
         return history
 
