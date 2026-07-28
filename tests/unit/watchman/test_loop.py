@@ -1310,6 +1310,89 @@ def test_orphan_reconciliation_one_ticket_raising_does_not_stop_others(tmp_path,
     assert any("unhandled exception seeding metadata" in r.message for r in caplog.records)
 
 
+def test_position_explicitly_closed_this_cycle_is_not_mis_flagged_as_orphan(tmp_path, monkeypatch):
+    # 2026-07-29 audit finding (real occurrence: ticket=1825965537,
+    # 2026-07-28): a tracked position explicitly closed by Watchman DURING
+    # this cycle (metadata correctly removed on close) still appears in the
+    # START-of-cycle open_positions snapshot that _reconcile_orphan_positions
+    # iterates -- it used to be mis-flagged as an orphan 8ms after its own
+    # successful close: spurious CRITICAL alert + anomaly event, and
+    # approximate metadata re-seeded for an already-CLOSED position. The
+    # position must carry OWN_MAGIC for this to fire (magic=0 is skipped),
+    # which is exactly why the older orphan tests never caught it.
+    _record_metadata(tmp_path, ticket=77)
+    adapter = SpyAdapter([_position(ticket=77, magic=OWN_MAGIC)])
+    wl = _loop(adapter, tmp_path)
+    notify_calls = []
+    monkeypatch.setattr(loop_module, "notify", lambda text: notify_calls.append(text))
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(action="CLOSE", new_stop_loss=None, reason="structure invalidation"),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    assert adapter.close_calls == [(77, None)]  # the close itself happened
+    assert position_metadata.get_position_metadata(77, tmp_path / "position_metadata.json") is None  # NOT re-seeded
+    assert not any("NO recorded entry-time metadata" in text for text in notify_calls)
+    events = journal.get_anomaly_events_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert not any(e.event_type == "orphan_position_found" for e in events)
+
+
+def test_position_closed_by_news_protection_this_cycle_is_not_mis_flagged_as_orphan(tmp_path, monkeypatch):
+    # Same false-orphan scenario via the OTHER explicit-close path
+    # (news-protection CLOSE_ALL -- the exact path in the 2026-07-28 real
+    # occurrence).
+    _record_metadata(tmp_path, ticket=78)
+    adapter = SpyAdapter([_position(ticket=78, magic=OWN_MAGIC)])
+    wl = _loop(adapter, tmp_path)
+    notify_calls = []
+    monkeypatch.setattr(loop_module, "notify", lambda text: notify_calls.append(text))
+    monkeypatch.setattr(
+        loop_module, "check_news_protection",
+        lambda **kwargs: NewsProtectionDecision(action="CLOSE_ALL", reason="calendar unavailable fail-safe"),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    assert adapter.close_calls == [(78, None)]
+    assert position_metadata.get_position_metadata(78, tmp_path / "position_metadata.json") is None
+    assert not any("NO recorded entry-time metadata" in text for text in notify_calls)
+    events = journal.get_anomaly_events_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert not any(e.event_type == "orphan_position_found" for e in events)
+
+
+def test_closed_this_cycle_suppression_resets_between_cycles(tmp_path, monkeypatch):
+    # The suppression must describe only the CURRENT cycle's own closes: a
+    # ticket closed in cycle 1 whose id somehow reappears open with no
+    # metadata in a LATER cycle's fresh snapshot is a genuine orphan again
+    # and must still be flagged.
+    _record_metadata(tmp_path, ticket=79)
+    adapter = SpyAdapter([_position(ticket=79, magic=OWN_MAGIC)])
+    wl = _loop(adapter, tmp_path)
+    notify_calls = []
+    monkeypatch.setattr(loop_module, "notify", lambda text: notify_calls.append(text))
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(action="CLOSE", new_stop_loss=None, reason="structure invalidation"),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)  # cycle 1: explicit close, no orphan flag
+    assert not any("NO recorded entry-time metadata" in text for text in notify_calls)
+
+    # cycle 2: the same ticket shows up open again in a FRESH snapshot with
+    # no metadata (e.g. the close was reversed/reopened broker-side) -- a
+    # genuine orphan now.
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(action="NO_ACTION", new_stop_loss=None, reason="no action"),
+    )
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    assert any("NO recorded entry-time metadata" in text for text in notify_calls)
+    assert position_metadata.get_position_metadata(79, tmp_path / "position_metadata.json") is not None
+
+
 def test_orphan_position_seeded_metadata_lets_reconciliation_capture_its_eventual_close_next_cycle(
     tmp_path, monkeypatch,
 ):

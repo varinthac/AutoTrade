@@ -228,12 +228,28 @@ class WatchmanLoop:
         # means one immediate retry attempt post-restart, never a safety
         # issue since the position stays broker-SL-protected regardless.
         self._last_failed_close_attempt: dict[int, datetime] = {}
+        # 2026-07-29 audit finding (false-orphan bug, ticket=1825965537):
+        # tickets this system itself explicitly closed DURING the current
+        # cycle. `run_cycle` fetches `open_positions` ONCE at the top, then
+        # `_manage_one_position` may close one of them (Watchman CLOSE /
+        # news-protection CLOSE_ALL) and remove its metadata mid-cycle --
+        # after which `_reconcile_orphan_positions`, still iterating that
+        # start-of-cycle snapshot, saw the just-closed ticket as "open with
+        # no metadata" and mis-flagged it as an orphan: a spurious CRITICAL
+        # alert + `orphan_position_found` anomaly event, and (worse)
+        # approximate metadata seeded for an already-CLOSED position, whose
+        # only defense against overwriting the real trade record next cycle
+        # was `TradeRecord.broker_ticket`'s UNIQUE constraint winning a
+        # write-ordering race. In-memory and reset every cycle -- this only
+        # ever needs to describe the CURRENT cycle's own closes.
+        self._closed_this_cycle: set[int] = set()
 
     def run_cycle(self, history_by_symbol: dict[str, pd.DataFrame], now: datetime) -> None:
         """One Watchman pass over every currently open position, across
         every symbol -- not just the symbol whose bar just triggered this
         polling iteration (see module docstring's same-cadence
         simplification)."""
+        self._closed_this_cycle = set()
         try:
             open_positions = self._adapter.get_open_positions()
         except Exception:
@@ -368,6 +384,23 @@ class WatchmanLoop:
 
         for position in open_positions:
             if position.ticket in tracked_tickets:
+                continue
+            # 2026-07-29 audit finding: `open_positions` here is the
+            # START-of-cycle snapshot -- a position this very cycle just
+            # explicitly closed (Watchman CLOSE / news-protection CLOSE_ALL,
+            # which also removed its metadata) still appears in it, and
+            # previously got mis-flagged as an orphan 8ms after its own
+            # successful close (real occurrence: ticket=1825965537,
+            # 2026-07-28 -- spurious CRITICAL alert + anomaly event, and
+            # approximate metadata seeded for a CLOSED position, leaving the
+            # real trade record protected only by broker_ticket's UNIQUE
+            # constraint winning a write-ordering race).
+            if position.ticket in self._closed_this_cycle:
+                logger.debug(
+                    "Watchman orphan-scan: ticket=%s symbol=%s was explicitly closed earlier this "
+                    "same cycle -- not an orphan, skipping.",
+                    position.ticket, position.symbol,
+                )
                 continue
             if position.magic != self._own_magic:
                 logger.debug(
@@ -573,6 +606,7 @@ class WatchmanLoop:
                     metadata, result, _classify_watchman_close_reason(decision.reason), now,
                 )
                 remove_position_metadata(position.ticket, self._state_path)
+                self._closed_this_cycle.add(position.ticket)
                 self._last_failed_close_attempt.pop(position.ticket, None)
                 logger.info(
                     "Watchman CLOSE ticket=%s symbol=%s -- %s",
@@ -621,6 +655,7 @@ class WatchmanLoop:
             if result.success:
                 self._record_explicit_close(metadata, result, "news_protection", now)
                 remove_position_metadata(position.ticket, self._state_path)
+                self._closed_this_cycle.add(position.ticket)
                 logger.info(
                     "Watchman news protection CLOSE_ALL ticket=%s symbol=%s -- %s",
                     position.ticket, position.symbol, decision.reason,

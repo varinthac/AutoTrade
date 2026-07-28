@@ -657,24 +657,22 @@ class ShadowLoop:
         # with any broker) or when the position was actually closed (a
         # normal rejection, or a slippage-close that DID succeed).
         #
-        # 2026-07-29 incident: ticket=1825965537 filled cleanly but turned up
-        # hours later with NO PositionMetadata at all (discovered only via
-        # watchman/loop.py's own orphan-position reconciliation, Fix C,
-        # 2026-07-25) -- investigation found no exception, no process
-        # restart, and no state_path mismatch (ShadowLoop/WatchmanLoop both
-        # use the same DEFAULT_POSITION_METADATA_PATH) anywhere in the logs
-        # for that window, so the true root cause of that one write never
-        # surfacing was never confirmed. This function previously had NO log
-        # line at all for the success path (silence was the only signal),
-        # making a repeat impossible to diagnose. The narrower try/except
-        # below exists so a future occurrence logs loudly and specifically
-        # right here -- naming this exact call and ticket -- instead of only
-        # `_process()`'s own generic outer "unhandled exception while
-        # processing this bar" catch; the broker-side position is genuinely
-        # open either way, so this is caught-and-logged rather than
-        # re-raised -- Fix C's orphan reconciliation is the safety net of
-        # last resort if this write's failure mode ever recurs and stays
-        # silent again.
+        # 2026-07-29: ticket=1825965537 APPEARED to have had this write
+        # silently never happen (an "orphan position" alert fired for it) --
+        # a same-day trade-history audit then proved this write actually
+        # SUCCEEDED for that ticket, and the alert was a false positive from
+        # watchman/loop.py's `_reconcile_orphan_positions` re-using its
+        # start-of-cycle `open_positions` snapshot after an explicit close
+        # in the same cycle (fixed there via `_closed_this_cycle`). The
+        # explicit success/failure logging below predates that correction
+        # and stays: this function previously had NO log line at all for
+        # the success path (silence was the only signal), which is exactly
+        # why the false alarm was initially believed -- and a REAL failure
+        # of this write remains possible and would otherwise still be
+        # undiagnosable. Caught-and-logged rather than re-raised (the
+        # broker-side position is genuinely open either way); the orphan
+        # reconciliation is the safety net of last resort if a real write
+        # failure ever occurs.
         if result.broker_ticket is not None and (result.success or result.position_still_open):
             # entry_spread_points/actual_slippage (Appendix A §5.1's daily-
             # report fields) -- entry_spread_points reuses the same

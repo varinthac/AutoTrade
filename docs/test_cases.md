@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1431 (including all parametrized variants)
+- **Total Test Count**: 1434 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -71,11 +71,11 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_connectivity_watchdog.py | 15 |
 | | test_evaluate.py | 7 |
 | | test_exit_conditions.py | 19 |
-| | test_loop.py | 44 |
+| | test_loop.py | 47 |
 | | test_news_protection.py | 10 |
 | | test_position_metadata.py | 11 |
 | | test_stop_logic.py | 38 |
-| **Watchman Subtotal** | | **154** |
+| **Watchman Subtotal** | | **157** |
 | Scripts & CLI | test_autotrade_control.py | 24 |
 | | test_calendar_export_watchdog.py | 12 |
 | | test_clock.py | 1 |
@@ -106,7 +106,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **398** |
 | | | |
-| **GRAND TOTAL** | | **1431** |
+| **GRAND TOTAL** | | **1434** |
 
 ---
 
@@ -1239,6 +1239,9 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_orphan_reconciliation_skips_already_tracked_tickets
 - test_orphan_reconciliation_corrupt_metadata_store_skips_without_crashing
 - test_orphan_reconciliation_one_ticket_raising_does_not_stop_others
+- test_position_explicitly_closed_this_cycle_is_not_mis_flagged_as_orphan
+- test_position_closed_by_news_protection_this_cycle_is_not_mis_flagged_as_orphan
+- test_closed_this_cycle_suppression_resets_between_cycles
 - test_orphan_position_seeded_metadata_lets_reconciliation_capture_its_eventual_close_next_cycle
 
 ### tests/unit/watchman/test_news_protection.py
