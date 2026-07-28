@@ -692,6 +692,11 @@ class ShadowLoop:
                     state_path=self._position_metadata_path,
                     entry_spread_points=recheck_inputs["current_spread_points"],
                     actual_slippage=actual_slippage,
+                    # swing[1] is the swing bar's actual price level (low for
+                    # BUY, high for SELL) -- what structure invalidation
+                    # really needs, immune to restart/reseed frame shifts
+                    # (2026-07-29 bugfix; see PositionMetadata.entry_swing_level).
+                    entry_swing_level=swing[1],
                 )
                 logger.info(
                     "%s %s: Watchman position metadata recorded for ticket=%s (entry=%s at %s)",

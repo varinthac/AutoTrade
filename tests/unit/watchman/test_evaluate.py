@@ -62,6 +62,29 @@ def test_structure_invalidation_wins_over_a_simultaneous_sl_update_opportunity()
     assert decision.new_stop_loss is None
 
 
+def test_entry_swing_level_on_metadata_overrides_a_frame_shifted_index(tmp_path=None):
+    # 2026-07-29 frame-shift bugfix pass-through: with entry_swing_level set
+    # on the metadata, the (post-restart, wrong-bar) entry_swing_index must
+    # be ignored -- the df here says "invalidated" via the index path
+    # (close 90 < iloc[0].low 95), but the TRUE recorded swing level (85.0)
+    # says the structure is intact.
+    meta = _meta(entry_swing_level=85.0)
+    config = WatchmanConfig(breakeven_at_r=1.0, trail_start_r=1.5, trail_distance_atr=1.0)
+
+    decision = evaluate_watchman(
+        position_metadata=meta,
+        current_sl=90.0,
+        current_price=100.0,
+        current_atr=2.0,
+        df=_df_invalidated(),
+        as_of_index=1,
+        now=OPENED_AT + timedelta(hours=1),
+        config=config,
+    )
+
+    assert decision.action != "CLOSE" or "structure invalidation" not in decision.reason
+
+
 def test_time_stop_wins_over_a_simultaneous_sl_update_opportunity():
     meta = _meta(opened_at=OPENED_AT)
     # A contrived (but valid) config where the dead-trade R band is wide

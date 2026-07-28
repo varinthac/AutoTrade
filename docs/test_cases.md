@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1436 (including all parametrized variants)
+- **Total Test Count**: 1444 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -69,13 +69,13 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | **Store Subtotal** | | **21** |
 | Watchman | test_autotrading_watchdog.py | 10 |
 | | test_connectivity_watchdog.py | 15 |
-| | test_evaluate.py | 7 |
-| | test_exit_conditions.py | 19 |
+| | test_evaluate.py | 8 |
+| | test_exit_conditions.py | 25 |
 | | test_loop.py | 49 |
 | | test_news_protection.py | 10 |
-| | test_position_metadata.py | 11 |
+| | test_position_metadata.py | 12 |
 | | test_stop_logic.py | 38 |
-| **Watchman Subtotal** | | **159** |
+| **Watchman Subtotal** | | **167** |
 | Scripts & CLI | test_autotrade_control.py | 24 |
 | | test_calendar_export_watchdog.py | 12 |
 | | test_clock.py | 1 |
@@ -106,7 +106,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **398** |
 | | | |
-| **GRAND TOTAL** | | **1436** |
+| **GRAND TOTAL** | | **1444** |
 
 ---
 
@@ -1165,6 +1165,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 ### tests/unit/watchman/test_evaluate.py
 
 - test_structure_invalidation_wins_over_a_simultaneous_sl_update_opportunity
+- test_entry_swing_level_on_metadata_overrides_a_frame_shifted_index
 - test_time_stop_wins_over_a_simultaneous_sl_update_opportunity
 - test_time_stop_wins_over_a_simultaneous_full_trailing_update_not_just_breakeven
 - test_structure_invalidation_wins_over_a_simultaneous_time_stop
@@ -1180,6 +1181,12 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_sell_close_above_swing_high_invalidates
 - test_sell_close_exactly_at_swing_high_is_not_invalidated_boundary_is_strict
 - test_sell_close_below_swing_high_is_not_invalidated
+- test_buy_level_close_below_level_invalidates
+- test_buy_level_close_at_or_above_level_is_not_invalidated
+- test_sell_level_close_above_level_invalidates
+- test_sell_level_close_at_or_below_level_is_not_invalidated
+- test_level_takes_precedence_over_a_frame_shifted_index
+- test_level_path_ignores_the_index_bounds_guard
 - test_entry_swing_index_equal_to_as_of_index_is_allowed
 - test_entry_swing_index_after_as_of_index_raises
 - test_entry_swing_index_after_as_of_index_raises_valueerror_with_both_indices_in_message
@@ -1264,6 +1271,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_default_state_path_lives_under_data_db
 - test_get_position_metadata_missing_ticket_returns_none
 - test_record_and_get_round_trips_every_field
+- test_legacy_record_without_entry_swing_level_loads_as_none
 - test_state_survives_a_fresh_process_pointed_at_the_same_file
 - test_multiple_tickets_coexist_independently
 - test_record_position_opened_overwrites_existing_ticket

@@ -39,6 +39,7 @@ def test_record_and_get_round_trips_every_field(tmp_path):
         entry_swing_index=250,
         opened_at=opened_at,
         state_path=state_path,
+        entry_swing_level=2387.5,
     )
 
     meta = get_position_metadata(1001, state_path=state_path)
@@ -51,6 +52,29 @@ def test_record_and_get_round_trips_every_field(tmp_path):
     assert meta.initial_stop_distance == 12.5
     assert meta.entry_swing_index == 250
     assert meta.opened_at == opened_at
+    assert meta.entry_swing_level == 2387.5
+
+
+def test_legacy_record_without_entry_swing_level_loads_as_none(tmp_path):
+    # Records written before the 2026-07-29 frame-shift bugfix have no
+    # entry_swing_level key at all -- must load as None, not crash.
+    import json
+
+    state_path = tmp_path / "position_metadata.json"
+    state_path.write_text(json.dumps({
+        "1002": {
+            "symbol": "XAUUSD", "direction": "SELL", "entry_price": 4045.49,
+            "initial_stop_distance": 30.0, "entry_swing_index": 212,
+            "opened_at": "2026-07-28T05:00:04", "news_protected_until": None,
+            "entry_spread_points": 5.0, "actual_slippage": 0.3,
+        }
+    }), encoding="utf-8")
+
+    meta = get_position_metadata(1002, state_path=state_path)
+
+    assert meta is not None
+    assert meta.entry_swing_level is None
+    assert meta.entry_swing_index == 212
 
 
 def test_state_survives_a_fresh_process_pointed_at_the_same_file(tmp_path):

@@ -993,6 +993,11 @@ def test_successful_trade_records_position_metadata(monkeypatch, tmp_path):
     assert recorded.opened_at == BASE_TIME
     assert recorded.entry_spread_points is not None  # Appendix A §5.1 daily-report field
     assert recorded.actual_slippage == pytest.approx(0.0)  # FakeAdapter fills exactly at request.entry
+    # 2026-07-29 frame-shift bugfix: the entry swing's PRICE level must be
+    # recorded (swing-low bar's low for this BUY), so structure invalidation
+    # never needs the restart-fragile positional index again. The swing was
+    # confirmed strictly before the entry bar, so its bar lives in `seed`.
+    assert recorded.entry_swing_level == pytest.approx(seed["low"].iloc[SWING_LOW_INDEX])
 
 
 def test_successful_position_metadata_write_logs_confirmation(monkeypatch, tmp_path, caplog):

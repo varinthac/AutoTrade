@@ -108,6 +108,21 @@ class PositionMetadata:
     # dry runs, or no `current_atr` supplied to `place_order`).
     entry_spread_points: float | None = None
     actual_slippage: float | None = None
+    # 2026-07-29 frame-shift bugfix: the actual PRICE level of the entry
+    # swing (the swing-low bar's low for a BUY, the swing-high bar's high
+    # for a SELL) -- the ONLY thing structure invalidation genuinely needs.
+    # `entry_swing_index` above is a POSITIONAL index into whatever
+    # in-memory history frame the RECORDING process happened to hold; a
+    # restart reseeds that frame from scratch, silently re-pointing the
+    # same index at a DIFFERENT bar (observed live: trade #4 closed on a
+    # FALSE structure invalidation post-restart; ticket 1826927585's index
+    # resolved to high 4030.41 instead of the true swing high 4055.19).
+    # `exit_conditions.check_structure_invalidation` prefers this level
+    # whenever present; `entry_swing_index` remains only as a legacy
+    # fallback for records written before this field existed. `None` for
+    # such legacy records and for orphan-seeded metadata (true entry swing
+    # unknown).
+    entry_swing_level: float | None = None
 
 
 def _load_all(state_path: Path) -> dict:
@@ -150,6 +165,7 @@ def record_position_opened(
     state_path: Path | None = None,
     entry_spread_points: float | None = None,
     actual_slippage: float | None = None,
+    entry_swing_level: float | None = None,
 ) -> None:
     """Record entry-time context for a newly opened position, keyed by
     broker `ticket`. Overwrites any existing record for the same ticket."""
@@ -165,6 +181,7 @@ def record_position_opened(
         "news_protected_until": None,
         "entry_spread_points": entry_spread_points,
         "actual_slippage": actual_slippage,
+        "entry_swing_level": entry_swing_level,
     }
     _save_all(path, all_positions)
 
@@ -191,6 +208,7 @@ def get_position_metadata(ticket: int, state_path: Path | None = None) -> Positi
         ),
         entry_spread_points=record.get("entry_spread_points"),
         actual_slippage=record.get("actual_slippage"),
+        entry_swing_level=record.get("entry_swing_level"),
     )
 
 

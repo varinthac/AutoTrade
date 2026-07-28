@@ -68,6 +68,65 @@ def test_sell_close_below_swing_high_is_not_invalidated():
     assert check_structure_invalidation("SELL", entry_swing_index=0, df=df, as_of_index=1) is False
 
 
+# --- entry_swing_level (2026-07-29 frame-shift bugfix) ----------------------
+
+
+def test_buy_level_close_below_level_invalidates():
+    df = _df([{"close": 94.5, "low": 93.0, "high": 96.0}])
+    assert check_structure_invalidation(
+        "BUY", entry_swing_index=0, df=df, as_of_index=0, entry_swing_level=95.0,
+    ) is True
+
+
+def test_buy_level_close_at_or_above_level_is_not_invalidated():
+    df = _df([{"close": 95.0, "low": 93.0, "high": 96.0}])
+    assert check_structure_invalidation(
+        "BUY", entry_swing_index=0, df=df, as_of_index=0, entry_swing_level=95.0,
+    ) is False
+
+
+def test_sell_level_close_above_level_invalidates():
+    df = _df([{"close": 106.0, "low": 103.0, "high": 108.0}])
+    assert check_structure_invalidation(
+        "SELL", entry_swing_index=0, df=df, as_of_index=0, entry_swing_level=105.0,
+    ) is True
+
+
+def test_sell_level_close_at_or_below_level_is_not_invalidated():
+    df = _df([{"close": 105.0, "low": 103.0, "high": 106.0}])
+    assert check_structure_invalidation(
+        "SELL", entry_swing_index=0, df=df, as_of_index=0, entry_swing_level=105.0,
+    ) is False
+
+
+def test_level_takes_precedence_over_a_frame_shifted_index():
+    # The exact live failure mode (2026-07-29): after a restart/reseed the
+    # recorded index points at a DIFFERENT bar whose high (104.0 here) says
+    # "invalidated", while the TRUE entry swing level (108.0) says the
+    # structure is intact -- the level must win.
+    df = _df([
+        {"close": 100.0, "low": 95.0, "high": 104.0},   # frame-shifted index target: high=104
+        {"close": 106.0, "low": 103.0, "high": 107.0},  # close 106 > 104 but < 108
+    ])
+    assert check_structure_invalidation(
+        "SELL", entry_swing_index=0, df=df, as_of_index=1, entry_swing_level=108.0,
+    ) is False
+    # And without the level (legacy record), the shifted index wrongly fires:
+    assert check_structure_invalidation(
+        "SELL", entry_swing_index=0, df=df, as_of_index=1,
+    ) is True
+
+
+def test_level_path_ignores_the_index_bounds_guard():
+    # With a level present, entry_swing_index is ignored entirely -- even an
+    # out-of-bounds index (the exact symptom the 2026-07-28 restart produced)
+    # must not raise, because the level makes the positional lookup moot.
+    df = _df([{"close": 100.0, "low": 95.0, "high": 105.0}])
+    assert check_structure_invalidation(
+        "SELL", entry_swing_index=212, df=df, as_of_index=0, entry_swing_level=105.5,
+    ) is False
+
+
 def test_entry_swing_index_equal_to_as_of_index_is_allowed():
     df = _df([{"close": 94.0, "low": 95.0, "high": 105.0}])
     # as_of_index == entry_swing_index -- allowed boundary, same bar.

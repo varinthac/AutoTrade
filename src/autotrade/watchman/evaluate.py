@@ -68,14 +68,16 @@ def evaluate_watchman(
     be live tick values for the SL trail, which reacts tick-by-tick per
     Appendix A §4's "hard protection" wording.
 
-    `df` CONTRACT: passed straight through to `check_structure_invalidation`,
-    which uses `position_metadata.entry_swing_index` as a positional `.iloc`
-    lookup into it -- `df` MUST be the same fixed-origin, contiguous
-    `RangeIndex` frame (or one only grown by appending rows at the end, e.g.
-    `orchestrator/shadow_loop.py`'s `_append_bar` pattern) that was in use
-    when `entry_swing_index` was recorded. See
-    `exit_conditions.check_structure_invalidation`'s docstring for the full
-    contract and why violating it silently produces a wrong decision.
+    `df` CONTRACT: passed straight through to `check_structure_invalidation`.
+    When `position_metadata.entry_swing_level` is set (every position opened
+    since the 2026-07-29 frame-shift bugfix), only `df`'s latest close is
+    read -- no positional lookup, no frame-identity requirement. For LEGACY
+    metadata (level absent), `entry_swing_index` is used as a positional
+    `.iloc` lookup and `df` MUST be the same fixed-origin, contiguous
+    `RangeIndex` frame (or one only grown by appending rows at the end)
+    that was in use when the index was recorded -- see
+    `exit_conditions.check_structure_invalidation`'s docstring for why that
+    contract is unverifiable across a restart and was replaced.
 
     RAISES: this function (and the pure functions it calls --
     `check_structure_invalidation`, `check_time_stop`,
@@ -95,6 +97,7 @@ def evaluate_watchman(
         entry_swing_index=position_metadata.entry_swing_index,
         df=df,
         as_of_index=as_of_index,
+        entry_swing_level=position_metadata.entry_swing_level,
     ):
         return WatchmanDecision(
             action="CLOSE",

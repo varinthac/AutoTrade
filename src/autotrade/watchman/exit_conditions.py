@@ -17,12 +17,13 @@ def check_structure_invalidation(
     entry_swing_index: int,
     df: pd.DataFrame,
     as_of_index: int,
+    entry_swing_level: float | None = None,
 ) -> bool:
     """True if the market structure that justified this entry has broken,
     per Appendix A §4.4:
 
         BUY:  H1 close at `as_of_index` < the low of the swing-low bar
-              referenced at entry (`entry_swing_index`).
+              referenced at entry.
         SELL: H1 close at `as_of_index` > the high of the swing-high bar
               referenced at entry.
 
@@ -32,25 +33,35 @@ def check_structure_invalidation(
     for hard protection; structure-trail only on closed-bar confirmed
     swings").
 
-    The swing referenced at entry was, by construction, confirmed strictly
-    before the entry bar (see `features/swing.py`), so
-    `entry_swing_index <= as_of_index` should always hold for any bar at or
-    after entry -- enforced defensively here rather than assumed silently.
+    **`entry_swing_level` (2026-07-29 frame-shift bugfix) is the preferred
+    input**: the entry swing's actual price level (swing-low bar's low for
+    BUY, swing-high bar's high for SELL), captured at ENTRY time and carried
+    on `PositionMetadata` -- immune to any process restart, history reseed,
+    or rolling-window trim, because it is exactly the number this check
+    needs, with no positional lookup at all. When given, `entry_swing_index`
+    is ignored entirely.
 
-    CONTRACT ON `df` (read this before wiring in Phase 7b): `entry_swing_index`
-    and `as_of_index` are POSITIONAL (`.iloc`) indices, not labels. `df` at
-    evaluation time MUST be the exact same fixed-origin, contiguous
-    `RangeIndex` frame (per `features/swing.py`'s own hard requirement) --
-    or a frame that has only grown by appending new rows at the end (the
-    `_append_bar` pattern in `orchestrator/shadow_loop.py`) -- that was in
-    use when `entry_swing_index` was originally recorded
-    (`watchman/position_metadata.py`'s `PositionMetadata.entry_swing_index`).
-    Passing a re-sliced/rolling window here (front bars dropped, indices
-    renumbered) will silently make `iloc[entry_swing_index]` point at the
-    wrong bar -- a wrong structure-invalidation decision with real money at
-    stake, and NO error will be raised to catch it. Never trim rows from the
-    front of `df` between recording `entry_swing_index` and evaluating it.
+    `entry_swing_index` remains ONLY as the legacy fallback for metadata
+    recorded before `entry_swing_level` existed, with its original contract:
+    it is a POSITIONAL (`.iloc`) index, and `df` MUST be the exact same
+    fixed-origin, contiguous `RangeIndex` frame (or one only grown by
+    appending rows at the end) that was in use when the index was recorded.
+    That contract is UNVERIFIABLE across a process restart -- observed live
+    (2026-07-29 counterfactual audit): a reseeded frame silently re-pointed
+    a recorded index at a different bar, producing a FALSE structure
+    invalidation that closed trade #4 early -- which is precisely why the
+    level-based path above replaced it for all new positions.
     """
+    current_close = df["close"].iloc[as_of_index]
+
+    if direction not in ("BUY", "SELL"):
+        raise ValueError(f"direction must be 'BUY' or 'SELL', got {direction!r}")
+
+    if entry_swing_level is not None:
+        if direction == "BUY":
+            return bool(current_close < entry_swing_level)
+        return bool(current_close > entry_swing_level)
+
     if entry_swing_index > as_of_index:
         raise ValueError(
             f"entry_swing_index ({entry_swing_index}) must be <= as_of_index "
@@ -58,16 +69,11 @@ def check_structure_invalidation(
             "so it cannot be later than the bar being evaluated"
         )
 
-    current_close = df["close"].iloc[as_of_index]
-
     if direction == "BUY":
         swing_low = df["low"].iloc[entry_swing_index]
         return bool(current_close < swing_low)
-    elif direction == "SELL":
-        swing_high = df["high"].iloc[entry_swing_index]
-        return bool(current_close > swing_high)
-    else:
-        raise ValueError(f"direction must be 'BUY' or 'SELL', got {direction!r}")
+    swing_high = df["high"].iloc[entry_swing_index]
+    return bool(current_close > swing_high)
 
 
 def check_time_stop(
