@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1424 (including all parametrized variants)
+- **Total Test Count**: 1430 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -98,13 +98,13 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_run_dashboard.py | 4 |
 | | test_run_health_check.py | 5 |
 | | test_run_scheduled_daily_report.py | 3 |
-| | test_run_shadow_loop.py | 36 |
+| | test_run_shadow_loop.py | 42 |
 | | test_run_telegram_control.py | 26 |
 | | test_scheduled_task_watchdog.py | 9 |
 | | test_service_watchdog.py | 9 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **392** |
+| **Scripts & CLI Subtotal** | | **398** |
 | | | |
 | **GRAND TOTAL** | | **1422** |
 
@@ -1694,6 +1694,12 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_resolve_commondata_path_with_retry_returns_immediately_on_first_success
 - test_resolve_commondata_path_with_retry_retries_and_succeeds_on_a_later_attempt
 - test_resolve_commondata_path_with_retry_gives_up_after_all_attempts
+- test_no_tracked_positions_uses_default_seed_bars
+- test_open_position_with_low_swing_index_uses_default_seed_bars
+- test_open_position_with_high_swing_index_bumps_seed_bars
+- test_only_considers_the_requested_symbol
+- test_multiple_tracked_positions_uses_the_highest_swing_index
+- test_corrupt_position_metadata_falls_back_to_default_seed_bars
 - test_main_unknown_adapter_choice_rejected_by_argparse
 - test_main_sends_startup_notify_after_mt5_connects
 - test_main_double_launch_guard_proceeds_when_no_pid_file

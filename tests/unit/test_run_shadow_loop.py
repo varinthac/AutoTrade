@@ -27,6 +27,7 @@ from autotrade.common.mt5_time import ServerClock
 from autotrade.execution.demo_adapter import ThrottledDemoAdapter
 from autotrade.execution.noop_adapter import NoOpBrokerAdapter
 from autotrade.risk.circuit_breaker import CircuitBreaker
+from autotrade.watchman import position_metadata
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "run_shadow_loop.py"
 _spec = importlib.util.spec_from_file_location("run_shadow_loop_script", SCRIPT_PATH)
@@ -498,6 +499,91 @@ def test_resolve_commondata_path_with_retry_gives_up_after_all_attempts(monkeypa
 
     assert result is None
     assert len(calls) == 3
+
+
+# --- _min_seed_bars_for_open_positions() -------------------------------------
+
+
+def test_no_tracked_positions_uses_default_seed_bars(tmp_path):
+    state_path = tmp_path / "position_metadata.json"
+
+    result = run_shadow_loop._min_seed_bars_for_open_positions("XAUUSD", 200, state_path)
+
+    assert result == 200
+
+
+def test_open_position_with_low_swing_index_uses_default_seed_bars(tmp_path):
+    # 2026-07-29 incident regression guard: entry_swing_index (5) is well
+    # within the default 200 bars -- no bump needed.
+    state_path = tmp_path / "position_metadata.json"
+    position_metadata.record_position_opened(
+        ticket=1, symbol="XAUUSD", direction="SELL", entry_price=4045.49,
+        initial_stop_distance=30.0, entry_swing_index=5, opened_at=datetime(2026, 7, 28, tzinfo=timezone.utc),
+        state_path=state_path,
+    )
+
+    result = run_shadow_loop._min_seed_bars_for_open_positions("XAUUSD", 200, state_path)
+
+    assert result == 200
+
+
+def test_open_position_with_high_swing_index_bumps_seed_bars(tmp_path):
+    # 2026-07-29 incident: ticket=1825965537's entry_swing_index=212 exceeded
+    # the freshly-reseeded 200-bar default after a restart, tripping
+    # watchman/exit_conditions.py's entry_swing_index-must-be-<=-as_of_index
+    # guard for ~13 hours until enough new bars closed to catch back up.
+    state_path = tmp_path / "position_metadata.json"
+    position_metadata.record_position_opened(
+        ticket=1825965537, symbol="XAUUSD", direction="SELL", entry_price=4045.49,
+        initial_stop_distance=30.0, entry_swing_index=212,
+        opened_at=datetime(2026, 7, 28, tzinfo=timezone.utc), state_path=state_path,
+    )
+
+    result = run_shadow_loop._min_seed_bars_for_open_positions("XAUUSD", 200, state_path)
+
+    assert result == 213  # entry_swing_index + 1, so as_of_index (result - 1) covers it
+
+
+def test_only_considers_the_requested_symbol(tmp_path):
+    state_path = tmp_path / "position_metadata.json"
+    position_metadata.record_position_opened(
+        ticket=1, symbol="EURUSD", direction="SELL", entry_price=1.1,
+        initial_stop_distance=0.003, entry_swing_index=300,
+        opened_at=datetime(2026, 7, 28, tzinfo=timezone.utc), state_path=state_path,
+    )
+
+    result = run_shadow_loop._min_seed_bars_for_open_positions("XAUUSD", 200, state_path)
+
+    assert result == 200  # EURUSD's high swing_index must not affect XAUUSD's seed depth
+
+
+def test_multiple_tracked_positions_uses_the_highest_swing_index(tmp_path):
+    state_path = tmp_path / "position_metadata.json"
+    position_metadata.record_position_opened(
+        ticket=1, symbol="XAUUSD", direction="SELL", entry_price=4045.49,
+        initial_stop_distance=30.0, entry_swing_index=50,
+        opened_at=datetime(2026, 7, 28, tzinfo=timezone.utc), state_path=state_path,
+    )
+    position_metadata.record_position_opened(
+        ticket=2, symbol="XAUUSD", direction="BUY", entry_price=4030.0,
+        initial_stop_distance=20.0, entry_swing_index=220,
+        opened_at=datetime(2026, 7, 28, tzinfo=timezone.utc), state_path=state_path,
+    )
+
+    result = run_shadow_loop._min_seed_bars_for_open_positions("XAUUSD", 200, state_path)
+
+    assert result == 221
+
+
+def test_corrupt_position_metadata_falls_back_to_default_seed_bars(tmp_path, caplog):
+    state_path = tmp_path / "position_metadata.json"
+    state_path.write_text("{not valid json", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        result = run_shadow_loop._min_seed_bars_for_open_positions("XAUUSD", 200, state_path)
+
+    assert result == 200
+    assert any("corrupt" in record.message.lower() for record in caplog.records)
 
 
 def test_main_unknown_adapter_choice_rejected_by_argparse(monkeypatch, capsys, tmp_path):

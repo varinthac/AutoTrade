@@ -54,6 +54,11 @@ from autotrade.watchman.evaluate import WatchmanConfig
 from autotrade.watchman.loop import WatchmanLoop
 from autotrade.watchman.news_protection import NewsProtectionConfig
 from autotrade.watchman.position_metadata import DEFAULT_STATE_PATH as DEFAULT_POSITION_METADATA_PATH
+from autotrade.watchman.position_metadata import (
+    CorruptPositionMetadataError,
+    get_all_tracked_tickets,
+    get_position_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +104,58 @@ def seed_history(symbol: str, timeframe: str, bars: int, symbol_map: dict[str, s
     df = pd.DataFrame(rates)
     df["time"] = pd.to_datetime(df["time"], unit="s")
     return df
+
+
+def _min_seed_bars_for_open_positions(
+    symbol: str, default_seed_bars: int, position_metadata_path: Path,
+) -> int:
+    """2026-07-29 incident: `watchman/exit_conditions.py`'s own documented
+    contract requires `entry_swing_index <= as_of_index` -- `entry_swing_index`
+    is a positional index into the SPECIFIC in-memory history DataFrame that
+    was active when a position was opened. A restart reseeds history from
+    scratch at `default_seed_bars` (200) bars regardless of how long the
+    PREVIOUS process had been accumulating bars for (up to `max_history_bars`,
+    500) -- a position opened late in a long-running process's life can carry
+    an `entry_swing_index` well past the freshly-reseeded array's highest
+    valid index, so `check_structure_invalidation` correctly raises (its own
+    guard against silently reading the wrong bar) rather than mismanaging the
+    position -- but the practical effect is Watchman skips structure-
+    invalidation/time-stop management for that position until enough new bars
+    close to catch back up (its broker-side stop-loss still protects it
+    throughout).
+
+    This closes that gap at its source: read the currently-tracked
+    `PositionMetadata` for `symbol` and seed at least `entry_swing_index + 1`
+    bars whenever that's more than the default, so `as_of_index` covers it
+    from startup. Never returns LESS than `default_seed_bars`. Fails safe to
+    `default_seed_bars` on a corrupt metadata file -- same behavior as before
+    this existed, not a NEW way for startup to fail."""
+    try:
+        tickets = get_all_tracked_tickets(position_metadata_path)
+    except CorruptPositionMetadataError:
+        logger.warning(
+            "_min_seed_bars_for_open_positions: %s is corrupt/unreadable -- seeding %s with the "
+            "default %d bars only (any open position for it may hit the entry_swing_index guard "
+            "in watchman/exit_conditions.py until this resolves).",
+            position_metadata_path, symbol, default_seed_bars,
+        )
+        return default_seed_bars
+
+    max_entry_swing_index = -1
+    for ticket in tickets:
+        meta = get_position_metadata(ticket, position_metadata_path)
+        if meta is not None and meta.symbol == symbol:
+            max_entry_swing_index = max(max_entry_swing_index, meta.entry_swing_index)
+
+    required = max_entry_swing_index + 1
+    if required > default_seed_bars:
+        logger.info(
+            "%s: an open tracked position needs entry_swing_index=%d covered -- seeding %d bars "
+            "instead of the default %d so it's manageable from startup.",
+            symbol, max_entry_swing_index, required, default_seed_bars,
+        )
+        return required
+    return default_seed_bars
 
 
 def _read_autotrading_state() -> bool | None:
@@ -451,7 +508,12 @@ def main() -> int:
             autotrading_watchdog = AutoTradingWatchdog(journal_clock=loop_clock, journal_db_path=journal_db_path)
 
             initial_history = {
-                symbol: seed_history(symbol, timeframe, args.seed_bars, symbol_map) for symbol in symbols
+                symbol: seed_history(
+                    symbol, timeframe,
+                    _min_seed_bars_for_open_positions(symbol, args.seed_bars, DEFAULT_POSITION_METADATA_PATH),
+                    symbol_map,
+                )
+                for symbol in symbols
             }
             for symbol, df in initial_history.items():
                 logger.info(
