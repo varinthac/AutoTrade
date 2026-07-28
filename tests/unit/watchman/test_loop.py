@@ -782,7 +782,12 @@ def test_partial_close_does_not_trigger_reconciliation_or_remove_metadata(tmp_pa
     assert journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite") == []
 
 
-def test_explicit_close_writes_trade_record_immediately_without_history_query(tmp_path, monkeypatch):
+def test_explicit_close_writes_trade_record_immediately_with_real_cost_from_history(tmp_path, monkeypatch):
+    # 2026-07-29 audit fix: the explicit-close path now best-effort queries
+    # get_closed_trade_info for the REAL commission/swap (previously always
+    # cost=0.0, skewing net_pnl/r_multiple and the circuit breaker's
+    # realized-P&L accounting on every overnight hold). Only `cost` is
+    # taken from history -- exit_reason stays the Watchman decision's own.
     _record_metadata(
         tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0,
         entry_spread_points=8.0, actual_slippage=0.2,
@@ -791,6 +796,10 @@ def test_explicit_close_writes_trade_record_immediately_without_history_query(tm
     adapter.close_result = OrderResult(
         success=True, broker_ticket=1, filled_price=2410.0, filled_volume=0.1,
         retcode=None, message="closed",
+    )
+    adapter.closed_trade_info[1] = ClosedTradeInfo(
+        close_price=2410.0, close_time=NOW, closed_volume=0.1,
+        gross_pnl=150.0, cost=1.70, exit_reason="manual",  # history's own reason must NOT win
     )
     wl = _loop(adapter, tmp_path)
 
@@ -805,21 +814,73 @@ def test_explicit_close_writes_trade_record_immediately_without_history_query(tm
     wl.run_cycle({"XAUUSD": _history()}, NOW)
 
     assert adapter.close_calls == [(1, None)]
-    assert adapter.get_closed_trade_info_calls == []  # explicit-close path never queries MT5 history
+    assert adapter.get_closed_trade_info_calls == [1]  # exactly one history query, for cost
     assert position_metadata.get_position_metadata(1, tmp_path / "position_metadata.json") is None
 
     trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
     assert len(trades) == 1
     trade = trades[0]
-    assert trade.exit_reason == "structure_invalidation"
+    assert trade.exit_reason == "structure_invalidation"  # Watchman's classification, not history's "manual"
     assert trade.broker_ticket == 1
     assert trade.exit_price == 2410.0
     assert trade.lot_size == 0.1
-    assert trade.cost == 0.0  # no live commission data without a history query, see loop.py docstring
+    assert trade.cost == 1.70  # the REAL commission/swap from history
+    assert trade.net_pnl == pytest.approx(trade.gross_pnl - 1.70)
     # Appendix A §5.1 daily-report fields -- carried through from the
     # PositionMetadata recorded at entry, not left None (should-fix #5).
     assert trade.entry_spread_points == 8.0
     assert trade.actual_slippage == 0.2
+
+
+def test_explicit_close_falls_back_to_cost_zero_when_history_unavailable(tmp_path, monkeypatch):
+    # get_closed_trade_info returning None (deal not visible yet / query
+    # failed) must never block or delay recording the close -- fall back to
+    # the pre-2026-07-29 cost=0.0 behavior.
+    _record_metadata(tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0)
+    adapter = SpyAdapter([_position(ticket=1, symbol="XAUUSD", direction="BUY")])
+    adapter.close_result = OrderResult(
+        success=True, broker_ticket=1, filled_price=2410.0, filled_volume=0.1,
+        retcode=None, message="closed",
+    )
+    wl = _loop(adapter, tmp_path)  # SpyAdapter.closed_trade_info empty -> get returns None
+
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(action="CLOSE", new_stop_loss=None, reason="structure invalidation"),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert len(trades) == 1
+    assert trades[0].cost == 0.0
+
+
+def test_explicit_close_history_query_raising_still_records_the_close(tmp_path, monkeypatch):
+    _record_metadata(tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0)
+    adapter = SpyAdapter([_position(ticket=1, symbol="XAUUSD", direction="BUY")])
+    adapter.close_result = OrderResult(
+        success=True, broker_ticket=1, filled_price=2410.0, filled_volume=0.1,
+        retcode=None, message="closed",
+    )
+
+    def _boom(ticket):
+        raise RuntimeError("simulated MT5 history failure")
+
+    adapter.get_closed_trade_info = _boom
+    wl = _loop(adapter, tmp_path)
+
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(action="CLOSE", new_stop_loss=None, reason="structure invalidation"),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)  # must not raise
+
+    trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert len(trades) == 1
+    assert trades[0].cost == 0.0
+    assert position_metadata.get_position_metadata(1, tmp_path / "position_metadata.json") is None
 
 
 def test_explicit_close_is_not_double_counted_by_reconciliation_same_or_later_cycle(tmp_path, monkeypatch):
@@ -830,7 +891,9 @@ def test_explicit_close_is_not_double_counted_by_reconciliation_same_or_later_cy
     # non-double-counting guarantee: reconciliation (which runs after the
     # open-positions loop, in the same run_cycle() call) must see ticket=1's
     # metadata already gone (removed by the explicit-close path moments
-    # earlier) and so never call get_closed_trade_info for it at all.
+    # earlier) and so never process it as a closed-tracked ticket. (The ONE
+    # get_closed_trade_info call below is the explicit-close path's own
+    # 2026-07-29 cost fetch, not reconciliation re-processing the ticket.)
     adapter = SpyAdapter([_position(ticket=1, symbol="XAUUSD", direction="BUY")])
     adapter.close_result = OrderResult(
         success=True, broker_ticket=1, filled_price=2410.0, filled_volume=0.1,
@@ -847,7 +910,7 @@ def test_explicit_close_is_not_double_counted_by_reconciliation_same_or_later_cy
     )
 
     wl.run_cycle({"XAUUSD": _history()}, NOW)
-    assert adapter.get_closed_trade_info_calls == []
+    assert adapter.get_closed_trade_info_calls == [1]  # the explicit close's own cost fetch only
 
     # A later cycle: ticket=1 has no metadata anymore, so neither the
     # per-position management loop (no recorded metadata -> skip) nor
@@ -855,7 +918,7 @@ def test_explicit_close_is_not_double_counted_by_reconciliation_same_or_later_cy
     wl.run_cycle({"XAUUSD": _history()}, NOW)
 
     assert adapter.close_calls == [(1, None)]  # never closed a second time
-    assert adapter.get_closed_trade_info_calls == []
+    assert adapter.get_closed_trade_info_calls == [1]  # no further queries in the later cycle
     trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
     assert len(trades) == 1  # exactly one record total, no double-counting
 

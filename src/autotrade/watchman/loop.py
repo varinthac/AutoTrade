@@ -505,12 +505,48 @@ class WatchmanLoop:
         self, metadata: PositionMetadata, result: OrderResult, exit_reason: journal.ExitReason, now: datetime,
     ) -> None:
         """Explicit-close path (see module docstring): computes the trade
-        record directly from `PositionMetadata` + the close `OrderResult` --
-        no MT5 history query. `exit_time` uses the current cycle time `now`
-        as a proxy for the real fill time (not carried on `OrderResult`),
-        and `cost` (commission/swap) is left at `0.0` -- neither is available
-        without an extra history query, which the reconciliation path (not
-        this one) already performs for exactly this reason."""
+        record directly from `PositionMetadata` + the close `OrderResult`.
+        `exit_time` uses the current cycle time `now` as a proxy for the
+        real fill time (not carried on `OrderResult`).
+
+        `cost` (commission/swap): previously always `0.0` here (a documented
+        trade-off -- no history query on this path). A 2026-07-29
+        trade-history audit measured the real cost of that trade-off:
+        journal `net_pnl`/`r_multiple` off by the actual commission+swap
+        (e.g. -$1.70 on one overnight-held trade), which also skews what
+        `CircuitBreaker.record_trade_close` counts toward the daily-loss/
+        consecutive-loss gates -- growing with every overnight hold. Now
+        best-effort fetched via the same `get_closed_trade_info()` history
+        query the reconciliation path already uses: the close we just
+        executed is synchronous, so its deals are essentially always
+        immediately visible. ONLY `cost` is taken from it -- exit_reason
+        stays the Watchman decision's own classification (history would
+        re-derive a less specific one), and price/volume/gross stay from
+        the `OrderResult`/metadata as before (audit confirmed those were
+        already exactly right). Any failure/None falls back to the old
+        `cost=0.0` behavior -- recording the close is never blocked or
+        delayed on a history query (metadata is removed right after this
+        returns, so there is no retry-next-cycle here, unlike
+        reconciliation)."""
+        cost = 0.0
+        try:
+            info = self._adapter.get_closed_trade_info(metadata.ticket)
+            if info is not None:
+                cost = info.cost
+            else:
+                logger.warning(
+                    "explicit close ticket=%s: get_closed_trade_info returned no data -- recording "
+                    "cost=0.0 (commission/swap excluded from this trade's net_pnl, the pre-2026-07-29 "
+                    "behavior).",
+                    metadata.ticket,
+                )
+        except Exception:
+            logger.exception(
+                "explicit close ticket=%s: get_closed_trade_info raised -- recording cost=0.0 "
+                "(commission/swap excluded from this trade's net_pnl, the pre-2026-07-29 behavior).",
+                metadata.ticket,
+            )
+
         self._write_trade_record(
             symbol=metadata.symbol, direction=metadata.direction,
             entry_time=metadata.opened_at, entry_price=metadata.entry_price,
@@ -520,7 +556,7 @@ class WatchmanLoop:
                 exit_price=result.filled_price, lot_size=result.filled_volume,
                 symbol_spec=self._resolve_symbol_spec(metadata.symbol),
             ),
-            cost=0.0, initial_stop_distance=metadata.initial_stop_distance,
+            cost=cost, initial_stop_distance=metadata.initial_stop_distance,
             broker_ticket=metadata.ticket, recorded_at=now,
             entry_spread_points=metadata.entry_spread_points, actual_slippage=metadata.actual_slippage,
         )

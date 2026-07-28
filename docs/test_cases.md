@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1434 (including all parametrized variants)
+- **Total Test Count**: 1436 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -71,11 +71,11 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_connectivity_watchdog.py | 15 |
 | | test_evaluate.py | 7 |
 | | test_exit_conditions.py | 19 |
-| | test_loop.py | 47 |
+| | test_loop.py | 49 |
 | | test_news_protection.py | 10 |
 | | test_position_metadata.py | 11 |
 | | test_stop_logic.py | 38 |
-| **Watchman Subtotal** | | **157** |
+| **Watchman Subtotal** | | **159** |
 | Scripts & CLI | test_autotrade_control.py | 24 |
 | | test_calendar_export_watchdog.py | 12 |
 | | test_clock.py | 1 |
@@ -106,7 +106,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **398** |
 | | | |
-| **GRAND TOTAL** | | **1434** |
+| **GRAND TOTAL** | | **1436** |
 
 ---
 
@@ -1222,7 +1222,9 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_reconciliation_no_history_found_yet_retains_metadata_and_does_not_crash
 - test_reconciliation_skips_tickets_still_open
 - test_partial_close_does_not_trigger_reconciliation_or_remove_metadata
-- test_explicit_close_writes_trade_record_immediately_without_history_query
+- test_explicit_close_writes_trade_record_immediately_with_real_cost_from_history
+- test_explicit_close_falls_back_to_cost_zero_when_history_unavailable
+- test_explicit_close_history_query_raising_still_records_the_close
 - test_explicit_close_is_not_double_counted_by_reconciliation_same_or_later_cycle
 - test_remove_position_metadata_failure_after_explicit_close_does_not_double_write
 - test_duplicate_trade_record_write_does_not_also_double_notify
