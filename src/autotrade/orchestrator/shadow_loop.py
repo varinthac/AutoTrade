@@ -178,6 +178,32 @@ def _log_borderline_case(case: BorderlineCase, path: Path) -> None:
         f.write(json.dumps(payload, default=str) + "\n")
 
 
+# 2026-07-30: thresholds for TradeRecord.entry_classification (see
+# store/models.py's docstring for the full enum). Calibrated against this
+# system's own real trade history: normal entries' opened_at-minus-bar.time
+# gap is a few seconds (poll_interval_sec + processing), and normal
+# actual_slippage has stayed under ~1.5 points -- the one confirmed real
+# incident (ticket=1822406958, a ~12-minute delayed evaluation) measured
+# 7.51 points of slippage, an order of magnitude past every normal trade.
+_ENTRY_DELAY_THRESHOLD_SEC = 300.0  # 5 minutes -- normal poll jitter is single-digit seconds
+_HIGH_SLIPPAGE_POINTS_THRESHOLD = 3.0
+
+
+def _classify_entry(bar_time, opened_at, actual_slippage: float | None) -> str:
+    """See store/models.py's `TradeRecord.entry_classification` docstring
+    for the enum this returns. `+`-joins multiple anomalies (order:
+    delayed_entry, then high_slippage) rather than picking just one, so
+    neither signal is silently dropped when both fire together (the one
+    real incident to date, ticket=1822406958, was actually both at once)."""
+    anomalies = []
+    delay_sec = (opened_at - bar_time).total_seconds()
+    if delay_sec > _ENTRY_DELAY_THRESHOLD_SEC:
+        anomalies.append("delayed_entry")
+    if actual_slippage is not None and actual_slippage > _HIGH_SLIPPAGE_POINTS_THRESHOLD:
+        anomalies.append("high_slippage")
+    return "+".join(anomalies) if anomalies else "normal"
+
+
 @dataclass(frozen=True)
 class ShadowLoopConfig:
     """Strategy/risk parameters for one shadow-loop run -- values come from
@@ -684,6 +710,7 @@ class ShadowLoop:
             actual_slippage = (
                 abs(result.filled_price - plan.entry) if result.filled_price is not None else None
             )
+            entry_classification = _classify_entry(bar.time, opened_at, actual_slippage)
             try:
                 position_metadata.record_position_opened(
                     ticket=result.broker_ticket, symbol=symbol, direction=plan.direction,
@@ -697,11 +724,21 @@ class ShadowLoop:
                     # really needs, immune to restart/reseed frame shifts
                     # (2026-07-29 bugfix; see PositionMetadata.entry_swing_level).
                     entry_swing_level=swing[1],
+                    entry_classification=entry_classification,
                 )
                 logger.info(
-                    "%s %s: Watchman position metadata recorded for ticket=%s (entry=%s at %s)",
+                    "%s %s: Watchman position metadata recorded for ticket=%s (entry=%s at %s, "
+                    "classification=%s)",
                     symbol, bar.time, result.broker_ticket, result.filled_price, opened_at,
+                    entry_classification,
                 )
+                if entry_classification != "normal":
+                    logger.warning(
+                        "%s %s: ticket=%s entry classified as %r (delay=%.1fs, slippage=%s) -- "
+                        "worth reviewing.",
+                        symbol, bar.time, result.broker_ticket, entry_classification,
+                        (opened_at - bar.time).total_seconds(), actual_slippage,
+                    )
             except Exception:
                 logger.exception(
                     "%s %s: FAILED to record Watchman position metadata for ticket=%s -- the "

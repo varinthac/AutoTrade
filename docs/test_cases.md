@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1444 (including all parametrized variants)
+- **Total Test Count**: 1459 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -37,10 +37,10 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_scoring.py | 25 |
 | | test_trivial_signal.py | 6 |
 | **Council Subtotal** | | **160** |
-| Dashboard | test_app.py | 51 |
+| Dashboard | test_app.py | 53 |
 | | test_positions.py | 6 |
 | | test_webapp_auth.py | 20 |
-| **Dashboard Subtotal** | | **77** |
+| **Dashboard Subtotal** | | **79** |
 | Execution | test_demo_adapter.py | 92 |
 | | test_noop_adapter.py | 8 |
 | **Execution Subtotal** | | **100** |
@@ -56,26 +56,26 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_telegram.py | 45 |
 | | test_telegram_control.py | 82 |
 | **Notify Subtotal** | | **153** |
-| Orchestrator | test_shadow_loop.py | 49 |
-| **Orchestrator Subtotal** | | **49** |
+| Orchestrator | test_shadow_loop.py | 58 |
+| **Orchestrator Subtotal** | | **58** |
 | Risk | test_circuit_breaker.py | 32 |
 | | test_sizing.py | 20 |
 | **Risk Subtotal** | | **52** |
 | Shield | test_checkpoint.py | 20 |
 | | test_correlation.py | 4 |
 | **Shield Subtotal** | | **24** |
-| Store | test_journal.py | 18 |
+| Store | test_journal.py | 19 |
 | | test_models.py | 3 |
-| **Store Subtotal** | | **21** |
+| **Store Subtotal** | | **22** |
 | Watchman | test_autotrading_watchdog.py | 10 |
 | | test_connectivity_watchdog.py | 15 |
 | | test_evaluate.py | 8 |
 | | test_exit_conditions.py | 25 |
-| | test_loop.py | 49 |
+| | test_loop.py | 51 |
 | | test_news_protection.py | 10 |
-| | test_position_metadata.py | 12 |
+| | test_position_metadata.py | 13 |
 | | test_stop_logic.py | 38 |
-| **Watchman Subtotal** | | **167** |
+| **Watchman Subtotal** | | **170** |
 | Scripts & CLI | test_autotrade_control.py | 24 |
 | | test_calendar_export_watchdog.py | 12 |
 | | test_clock.py | 1 |
@@ -106,7 +106,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **398** |
 | | | |
-| **GRAND TOTAL** | | **1444** |
+| **GRAND TOTAL** | | **1459** |
 
 ---
 
@@ -530,6 +530,8 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_trades_to_export_rows_matches_to_trade_row_field_values
 - test_to_trade_row_carries_cost_field_from_trade_record
 - test_to_trade_row_carries_broker_ticket
+- test_to_trade_row_carries_entry_classification
+- test_trades_page_shows_ok_for_normal_entry_and_flags_an_anomalous_one
 - test_trades_to_export_rows_empty_list
 - test_trades_to_export_rows_escapes_formula_injection_prefixes
 - test_trades_to_export_rows_does_not_touch_safe_string_values
@@ -983,6 +985,15 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_successful_trade_records_position_metadata
 - test_successful_position_metadata_write_logs_confirmation
 - test_position_metadata_write_failure_is_logged_specifically_and_does_not_crash_the_bar
+- test_classify_entry_on_time_low_slippage_is_normal
+- test_classify_entry_missing_slippage_data_does_not_flag_high_slippage
+- test_classify_entry_delay_at_threshold_boundary_is_not_flagged
+- test_classify_entry_delay_past_threshold_is_delayed_entry
+- test_classify_entry_slippage_at_threshold_boundary_is_not_flagged
+- test_classify_entry_slippage_past_threshold_is_high_slippage
+- test_classify_entry_both_anomalies_join_with_plus
+- test_classify_entry_negative_delay_is_not_flagged
+- test_entry_classification_is_threaded_through_to_recorded_metadata
 - test_place_order_receives_current_atr_kwarg
 - test_ticket_none_does_not_record_position_metadata
 - test_run_wires_watchman_cycle_as_on_iteration_end_hook_when_given
@@ -1104,6 +1115,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 - test_wal_mode_enabled
 - test_record_and_query_closed_trade_round_trips_every_field
+- test_record_closed_trade_entry_classification_defaults_to_normal
 - test_record_closed_trade_returns_true_on_genuine_insert
 - test_record_closed_trade_returns_false_on_swallowed_duplicate_ticket
 - test_record_and_query_blocked_signal_round_trips
@@ -1226,10 +1238,12 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_middle_of_three_positions_raising_still_evaluates_before_and_after
 - test_news_protection_close_half_fires_once_then_suppressed_for_remainder_of_window
 - test_reconciliation_writes_trade_record_for_ticket_gone_from_open_positions
+- test_reconciliation_close_carries_entry_classification_through
 - test_reconciliation_no_history_found_yet_retains_metadata_and_does_not_crash
 - test_reconciliation_skips_tickets_still_open
 - test_partial_close_does_not_trigger_reconciliation_or_remove_metadata
 - test_explicit_close_writes_trade_record_immediately_with_real_cost_from_history
+- test_explicit_close_carries_a_non_normal_entry_classification_through
 - test_explicit_close_falls_back_to_cost_zero_when_history_unavailable
 - test_explicit_close_history_query_raising_still_records_the_close
 - test_explicit_close_is_not_double_counted_by_reconciliation_same_or_later_cycle
@@ -1271,6 +1285,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_default_state_path_lives_under_data_db
 - test_get_position_metadata_missing_ticket_returns_none
 - test_record_and_get_round_trips_every_field
+- test_entry_classification_defaults_to_normal
 - test_legacy_record_without_entry_swing_level_loads_as_none
 - test_state_survives_a_fresh_process_pointed_at_the_same_file
 - test_multiple_tickets_coexist_independently

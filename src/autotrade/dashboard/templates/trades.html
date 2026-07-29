@@ -72,6 +72,7 @@
         <th>Net P&amp;L</th>
         <th>R multiple</th>
         <th>Exit reason</th>
+        <th>Entry</th>
       </tr>
     </thead>
     <tbody>
@@ -99,6 +100,18 @@
         <td class="{{ 'pnl-positive' if row.net_pnl > 0 else ('pnl-negative' if row.net_pnl < 0 else '') }}">{{ row.net_pnl | round(4) }}</td>
         <td class="{{ 'pnl-positive' if row.r_multiple > 0 else ('pnl-negative' if row.r_multiple < 0 else '') }}">{{ row.r_multiple | round(4) }}</td>
         <td>{{ row.exit_reason }}</td>
+        {# entry_classification (store/models.py's TradeRecord docstring):
+           "normal" = went through the full entry pipeline with nothing
+           flagged -- shown quietly, no badge. Anything else (orphan_seeded /
+           delayed_entry / high_slippage, or a "+"-joined combination) is a
+           real irregularity worth the operator's attention -- shown as a
+           red badge with the raw classification text so it's specific, not
+           just a generic "wrong" flag. #}
+        {% if row.entry_classification == "normal" %}
+        <td class="entry-ok">OK</td>
+        {% else %}
+        <td><span class="badge badge-flag" title="{{ row.entry_classification }}">{{ row.entry_classification }}</span></td>
+        {% endif %}
       </tr>
       {% endfor %}
     </tbody>

@@ -148,6 +148,11 @@ tbody tr:hover { background: var(--accent-soft); }
 
 .badge-buy { background: var(--win-soft); color: var(--win); }
 .badge-sell { background: var(--loss-soft); color: var(--loss); }
+/* entry_classification (trades.html): "normal" entries are shown quietly
+   (no badge); any other value is a real irregularity worth flagging, same
+   red language as a loss so it reads as "needs attention" at a glance. */
+.badge-flag { background: var(--loss-soft); color: var(--loss); }
+.entry-ok { color: var(--text-muted); }
 
 .pnl-positive { color: var(--win); font-weight: 600; }
 .pnl-negative { color: var(--loss); font-weight: 600; }

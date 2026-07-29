@@ -135,13 +135,14 @@ class _AllClearNewsProvider:
 
 def _record_metadata(
     tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0,
-    entry_spread_points=None, actual_slippage=None,
+    entry_spread_points=None, actual_slippage=None, entry_classification="normal",
 ):
     position_metadata.record_position_opened(
         ticket=ticket, symbol=symbol, direction=direction, entry_price=entry_price,
         initial_stop_distance=stop_distance, entry_swing_index=0, opened_at=NOW,
         state_path=tmp_path / "position_metadata.json",
         entry_spread_points=entry_spread_points, actual_slippage=actual_slippage,
+        entry_classification=entry_classification,
     )
 
 
@@ -726,6 +727,28 @@ def test_reconciliation_writes_trade_record_for_ticket_gone_from_open_positions(
     # PositionMetadata recorded at entry, not left None (should-fix #5).
     assert trade.entry_spread_points == 12.0
     assert trade.actual_slippage == 0.3
+    assert trade.entry_classification == "normal"
+
+
+def test_reconciliation_close_carries_entry_classification_through(tmp_path):
+    # 2026-07-30: PositionMetadata.entry_classification must survive onto
+    # the TradeRecord via the reconciliation close path too, not just the
+    # explicit-close path.
+    _record_metadata(
+        tmp_path, ticket=2, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0,
+        entry_classification="orphan_seeded",
+    )
+    adapter = SpyAdapter([])
+    adapter.closed_trade_info[2] = ClosedTradeInfo(
+        close_price=2410.0, close_time=NOW, closed_volume=0.1,
+        gross_pnl=150.0, cost=3.0, exit_reason="take_profit",
+    )
+    wl = _loop(adapter, tmp_path)
+
+    wl.run_cycle({}, NOW)
+
+    trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert trades[0].entry_classification == "orphan_seeded"
 
 
 def test_reconciliation_no_history_found_yet_retains_metadata_and_does_not_crash(tmp_path):
@@ -830,6 +853,30 @@ def test_explicit_close_writes_trade_record_immediately_with_real_cost_from_hist
     # PositionMetadata recorded at entry, not left None (should-fix #5).
     assert trade.entry_spread_points == 8.0
     assert trade.actual_slippage == 0.2
+    assert trade.entry_classification == "normal"  # 2026-07-30: carried through from PositionMetadata
+
+
+def test_explicit_close_carries_a_non_normal_entry_classification_through(tmp_path, monkeypatch):
+    _record_metadata(
+        tmp_path, ticket=1, symbol="XAUUSD", direction="BUY", entry_price=2395.0, stop_distance=5.0,
+        entry_classification="high_slippage",
+    )
+    adapter = SpyAdapter([_position(ticket=1, symbol="XAUUSD", direction="BUY")])
+    adapter.close_result = OrderResult(
+        success=True, broker_ticket=1, filled_price=2410.0, filled_volume=0.1,
+        retcode=None, message="closed",
+    )
+    wl = _loop(adapter, tmp_path)
+
+    monkeypatch.setattr(
+        loop_module, "evaluate_watchman",
+        lambda **kwargs: WatchmanDecision(action="CLOSE", new_stop_loss=None, reason="structure invalidation"),
+    )
+
+    wl.run_cycle({"XAUUSD": _history()}, NOW)
+
+    trades = journal.get_trades_for_day(NOW.date(), db_path=tmp_path / "trade_journal.sqlite")
+    assert trades[0].entry_classification == "high_slippage"
 
 
 def test_explicit_close_falls_back_to_cost_zero_when_history_unavailable(tmp_path, monkeypatch):
@@ -1275,6 +1322,9 @@ def test_orphan_position_with_matching_magic_seeds_metadata_and_alerts(tmp_path,
     assert metadata.direction == "BUY"
     assert metadata.entry_price == pytest.approx(2400.0)
     assert metadata.initial_stop_distance == pytest.approx(5.0)  # |2400.0 - 2395.0|
+    # 2026-07-30: seeded metadata's true entry is unknown/unreliable -- must
+    # be labeled distinctly from a normal-pipeline entry.
+    assert metadata.entry_classification == "orphan_seeded"
 
     assert len(calls) == 1
     assert "50" in calls[0]

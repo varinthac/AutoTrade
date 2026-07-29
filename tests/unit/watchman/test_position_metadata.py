@@ -40,6 +40,7 @@ def test_record_and_get_round_trips_every_field(tmp_path):
         opened_at=opened_at,
         state_path=state_path,
         entry_swing_level=2387.5,
+        entry_classification="high_slippage",
     )
 
     meta = get_position_metadata(1001, state_path=state_path)
@@ -53,6 +54,19 @@ def test_record_and_get_round_trips_every_field(tmp_path):
     assert meta.entry_swing_index == 250
     assert meta.opened_at == opened_at
     assert meta.entry_swing_level == 2387.5
+    assert meta.entry_classification == "high_slippage"
+
+
+def test_entry_classification_defaults_to_normal(tmp_path):
+    state_path = tmp_path / "position_metadata.json"
+
+    record_position_opened(
+        ticket=1003, symbol="XAUUSD", direction="BUY", entry_price=2400.0,
+        initial_stop_distance=12.5, entry_swing_index=250,
+        opened_at=datetime(2026, 7, 19, 9, 0), state_path=state_path,
+    )
+
+    assert get_position_metadata(1003, state_path=state_path).entry_classification == "normal"
 
 
 def test_legacy_record_without_entry_swing_level_loads_as_none(tmp_path):
@@ -75,6 +89,10 @@ def test_legacy_record_without_entry_swing_level_loads_as_none(tmp_path):
     assert meta is not None
     assert meta.entry_swing_level is None
     assert meta.entry_swing_index == 212
+    # Same legacy-record fallback for entry_classification -- a record
+    # written before this field existed genuinely WAS a normal-pipeline
+    # entry, not an unknown/unclassifiable one.
+    assert meta.entry_classification == "normal"
 
 
 def test_state_survives_a_fresh_process_pointed_at_the_same_file(tmp_path):

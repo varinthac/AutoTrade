@@ -329,6 +329,7 @@ class WatchmanLoop:
             initial_stop_distance=metadata.initial_stop_distance,
             broker_ticket=ticket, recorded_at=now,
             entry_spread_points=metadata.entry_spread_points, actual_slippage=metadata.actual_slippage,
+            entry_classification=metadata.entry_classification,
         )
         remove_position_metadata(ticket, self._state_path)
         logger.info(
@@ -448,6 +449,7 @@ class WatchmanLoop:
             entry_price=position.current_price,
             initial_stop_distance=abs(position.current_price - position.current_sl),
             entry_swing_index=0, opened_at=now, state_path=self._state_path,
+            entry_classification="orphan_seeded",
         )
 
     def _write_trade_record(
@@ -468,6 +470,7 @@ class WatchmanLoop:
         recorded_at: datetime,
         entry_spread_points: float | None = None,
         actual_slippage: float | None = None,
+        entry_classification: str = "normal",
     ) -> None:
         """Shared record-building/persistence for both close paths -- same
         `net_pnl = gross_pnl - cost` / `r_multiple = net_pnl / risk_amount`
@@ -483,7 +486,7 @@ class WatchmanLoop:
             exit_time=exit_time, exit_price=exit_price, exit_reason=exit_reason, lot_size=lot_size,
             gross_pnl=gross_pnl, cost=cost, net_pnl=net_pnl, r_multiple=r_multiple,
             entry_spread_points=entry_spread_points, actual_slippage=actual_slippage,
-            broker_ticket=broker_ticket, recorded_at=recorded_at,
+            broker_ticket=broker_ticket, recorded_at=recorded_at, entry_classification=entry_classification,
             db_path=self._journal_db_path,
         )
         if not inserted:
@@ -559,6 +562,7 @@ class WatchmanLoop:
             cost=cost, initial_stop_distance=metadata.initial_stop_distance,
             broker_ticket=metadata.ticket, recorded_at=now,
             entry_spread_points=metadata.entry_spread_points, actual_slippage=metadata.actual_slippage,
+            entry_classification=metadata.entry_classification,
         )
 
     def _manage_one_position(

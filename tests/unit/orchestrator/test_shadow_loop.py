@@ -993,6 +993,8 @@ def test_successful_trade_records_position_metadata(monkeypatch, tmp_path):
     assert recorded.opened_at == BASE_TIME
     assert recorded.entry_spread_points is not None  # Appendix A §5.1 daily-report field
     assert recorded.actual_slippage == pytest.approx(0.0)  # FakeAdapter fills exactly at request.entry
+    # 2026-07-30: a clean, on-time, low-slippage fill must classify "normal".
+    assert recorded.entry_classification == "normal"
     # 2026-07-29 frame-shift bugfix: the entry swing's PRICE level must be
     # recorded (swing-low bar's low for this BUY), so structure invalidation
     # never needs the restart-fragile positional index again. The swing was
@@ -1057,6 +1059,96 @@ def test_position_metadata_write_failure_is_logged_specifically_and_does_not_cra
         "FAILED to record Watchman position metadata" in record.message and "ticket=1" in record.message
         for record in caplog.records
     )
+
+
+# --- _classify_entry() (2026-07-30) -----------------------------------------
+
+
+def test_classify_entry_on_time_low_slippage_is_normal():
+    bar_time = datetime(2026, 1, 1, 12, 0)
+    opened_at = bar_time + timedelta(seconds=4)  # normal poll-cycle processing time
+
+    assert shadow_loop_module._classify_entry(bar_time, opened_at, actual_slippage=0.3) == "normal"
+
+
+def test_classify_entry_missing_slippage_data_does_not_flag_high_slippage():
+    bar_time = datetime(2026, 1, 1, 12, 0)
+    opened_at = bar_time + timedelta(seconds=4)
+
+    assert shadow_loop_module._classify_entry(bar_time, opened_at, actual_slippage=None) == "normal"
+
+
+def test_classify_entry_delay_at_threshold_boundary_is_not_flagged():
+    bar_time = datetime(2026, 1, 1, 12, 0)
+    opened_at = bar_time + timedelta(seconds=shadow_loop_module._ENTRY_DELAY_THRESHOLD_SEC)
+
+    assert shadow_loop_module._classify_entry(bar_time, opened_at, actual_slippage=0.3) == "normal"
+
+
+def test_classify_entry_delay_past_threshold_is_delayed_entry():
+    bar_time = datetime(2026, 1, 1, 12, 0)
+    opened_at = bar_time + timedelta(seconds=shadow_loop_module._ENTRY_DELAY_THRESHOLD_SEC + 1)
+
+    assert shadow_loop_module._classify_entry(bar_time, opened_at, actual_slippage=0.3) == "delayed_entry"
+
+
+def test_classify_entry_slippage_at_threshold_boundary_is_not_flagged():
+    bar_time = datetime(2026, 1, 1, 12, 0)
+    opened_at = bar_time + timedelta(seconds=4)
+
+    assert shadow_loop_module._classify_entry(
+        bar_time, opened_at, actual_slippage=shadow_loop_module._HIGH_SLIPPAGE_POINTS_THRESHOLD,
+    ) == "normal"
+
+
+def test_classify_entry_slippage_past_threshold_is_high_slippage():
+    bar_time = datetime(2026, 1, 1, 12, 0)
+    opened_at = bar_time + timedelta(seconds=4)
+
+    assert shadow_loop_module._classify_entry(
+        bar_time, opened_at, actual_slippage=shadow_loop_module._HIGH_SLIPPAGE_POINTS_THRESHOLD + 0.01,
+    ) == "high_slippage"
+
+
+def test_classify_entry_both_anomalies_join_with_plus():
+    # The one real incident to date (ticket=1822406958) was both at once --
+    # neither signal should be silently dropped.
+    bar_time = datetime(2026, 1, 1, 12, 0)
+    opened_at = bar_time + timedelta(seconds=shadow_loop_module._ENTRY_DELAY_THRESHOLD_SEC + 60)
+
+    result = shadow_loop_module._classify_entry(bar_time, opened_at, actual_slippage=7.51)
+
+    assert result == "delayed_entry+high_slippage"
+
+
+def test_classify_entry_negative_delay_is_not_flagged():
+    # A bar re-evaluated slightly "before" its own timestamp per a test
+    # fixture's fixed clock (never happens in real chronological operation,
+    # but must not raise or misclassify).
+    bar_time = datetime(2026, 1, 1, 12, 0)
+    opened_at = bar_time - timedelta(hours=5)
+
+    assert shadow_loop_module._classify_entry(bar_time, opened_at, actual_slippage=0.3) == "normal"
+
+
+def test_entry_classification_is_threaded_through_to_recorded_metadata(monkeypatch, tmp_path):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df()
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=10_000.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    state_path = tmp_path / "position_metadata.json"
+    loop = _default_loop(
+        adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl",
+        position_metadata_path=state_path,
+    )
+    monkeypatch.setattr(shadow_loop_module, "_classify_entry", lambda *a, **kw: "delayed_entry+high_slippage")
+
+    new_bar = _bar_from_row(df, AS_OF)
+    loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=new_bar))
+
+    recorded = position_metadata.get_position_metadata(1, state_path)
+    assert recorded.entry_classification == "delayed_entry+high_slippage"
 
 
 def test_place_order_receives_current_atr_kwarg(monkeypatch, tmp_path):

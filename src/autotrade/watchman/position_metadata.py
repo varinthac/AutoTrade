@@ -123,6 +123,14 @@ class PositionMetadata:
     # such legacy records and for orphan-seeded metadata (true entry swing
     # unknown).
     entry_swing_level: float | None = None
+    # 2026-07-30: how this position's entry was recorded -- see
+    # store/models.py's TradeRecord.entry_classification docstring for the
+    # full enum; carried onto TradeRecord unchanged at close time by
+    # whichever of watchman/loop.py's two close paths observes it. "normal"
+    # for any record written before this field existed (nothing to migrate
+    # -- their entries genuinely were the normal pipeline path; see the
+    # 2026-07-30 one-time DB backfill for the historical trade_records rows).
+    entry_classification: str = "normal"
 
 
 def _load_all(state_path: Path) -> dict:
@@ -166,6 +174,7 @@ def record_position_opened(
     entry_spread_points: float | None = None,
     actual_slippage: float | None = None,
     entry_swing_level: float | None = None,
+    entry_classification: str = "normal",
 ) -> None:
     """Record entry-time context for a newly opened position, keyed by
     broker `ticket`. Overwrites any existing record for the same ticket."""
@@ -182,6 +191,7 @@ def record_position_opened(
         "entry_spread_points": entry_spread_points,
         "actual_slippage": actual_slippage,
         "entry_swing_level": entry_swing_level,
+        "entry_classification": entry_classification,
     }
     _save_all(path, all_positions)
 
@@ -209,6 +219,7 @@ def get_position_metadata(ticket: int, state_path: Path | None = None) -> Positi
         entry_spread_points=record.get("entry_spread_points"),
         actual_slippage=record.get("actual_slippage"),
         entry_swing_level=record.get("entry_swing_level"),
+        entry_classification=record.get("entry_classification") or "normal",
     )
 
 

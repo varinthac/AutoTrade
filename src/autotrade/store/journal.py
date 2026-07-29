@@ -96,6 +96,7 @@ def record_closed_trade(
     entry_spread_points: float | None = None,
     actual_slippage: float | None = None,
     broker_ticket: int | None = None,
+    entry_classification: str = "normal",
     db_path: Path | None = None,
 ) -> bool:
     """Persist one fully-closed trade. Called exactly once per broker ticket
@@ -103,6 +104,10 @@ def record_closed_trade(
     a second attempt for the same `broker_ticket` (the narrow error-recovery
     race described in the module docstring's "Idempotency" section) hits the
     `UNIQUE` constraint and is swallowed here rather than raised.
+
+    `entry_classification` -- see `TradeRecord.entry_classification`'s own
+    docstring for the enum; defaults to "normal" for any caller that doesn't
+    have a more specific classification available.
 
     Returns `True` if this call genuinely inserted a new `TradeRecord`,
     `False` if it was a swallowed duplicate (nothing new was written) --
@@ -115,7 +120,7 @@ def record_closed_trade(
         exit_time=exit_time, exit_price=exit_price, exit_reason=exit_reason, lot_size=lot_size,
         gross_pnl=gross_pnl, cost=cost, net_pnl=net_pnl, r_multiple=r_multiple,
         entry_spread_points=entry_spread_points, actual_slippage=actual_slippage,
-        broker_ticket=broker_ticket, recorded_at=recorded_at,
+        broker_ticket=broker_ticket, recorded_at=recorded_at, entry_classification=entry_classification,
     )
     with Session(engine) as session:
         session.add(record)

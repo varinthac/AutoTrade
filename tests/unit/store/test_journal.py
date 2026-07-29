@@ -28,7 +28,8 @@ def test_record_and_query_closed_trade_round_trips_every_field(db_path):
         entry_price=2400.0, exit_time=datetime(2026, 7, 19, 12, 0), exit_price=2410.0,
         exit_reason="take_profit", lot_size=0.1, gross_pnl=100.0, cost=2.0, net_pnl=98.0,
         r_multiple=1.96, recorded_at=datetime(2026, 7, 19, 12, 0, 1),
-        entry_spread_points=12.0, actual_slippage=0.3, broker_ticket=555, db_path=db_path,
+        entry_spread_points=12.0, actual_slippage=0.3, broker_ticket=555,
+        entry_classification="delayed_entry", db_path=db_path,
     )
 
     trades = journal.get_trades_for_day(date(2026, 7, 19), db_path=db_path)
@@ -50,6 +51,20 @@ def test_record_and_query_closed_trade_round_trips_every_field(db_path):
     assert trade.entry_spread_points == 12.0
     assert trade.actual_slippage == 0.3
     assert trade.broker_ticket == 555
+    assert trade.entry_classification == "delayed_entry"
+
+
+def test_record_closed_trade_entry_classification_defaults_to_normal(db_path):
+    journal.record_closed_trade(
+        symbol="XAUUSD", direction="BUY", entry_time=datetime(2026, 7, 19, 10, 0),
+        entry_price=2400.0, exit_time=datetime(2026, 7, 19, 12, 0), exit_price=2410.0,
+        exit_reason="take_profit", lot_size=0.1, gross_pnl=100.0, cost=2.0, net_pnl=98.0,
+        r_multiple=1.96, recorded_at=datetime(2026, 7, 19, 12, 0, 1), broker_ticket=556, db_path=db_path,
+    )
+
+    trades = journal.get_trades_for_day(date(2026, 7, 19), db_path=db_path)
+
+    assert trades[0].entry_classification == "normal"
 
 
 def test_record_closed_trade_returns_true_on_genuine_insert(db_path):

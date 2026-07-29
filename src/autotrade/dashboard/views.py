@@ -40,6 +40,7 @@ class TradeRow:
     net_pnl: float
     r_multiple: float
     exit_reason: str
+    entry_classification: str  # 2026-07-30: see TradeRecord.entry_classification's own docstring
 
 
 # Column order/names for the exported .xlsx -- kept alongside TradeRow so an
@@ -62,6 +63,7 @@ def to_trade_row(trade: TradeRecord) -> TradeRow:
         net_pnl=trade.net_pnl,
         r_multiple=trade.r_multiple,
         exit_reason=trade.exit_reason,
+        entry_classification=trade.entry_classification,
     )
 
 

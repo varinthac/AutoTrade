@@ -90,6 +90,26 @@ class TradeRecord(Base):
     r_multiple: Mapped[float]
     entry_spread_points: Mapped[float | None] = mapped_column(default=None)
     actual_slippage: Mapped[float | None] = mapped_column(default=None)
+    entry_classification: Mapped[str] = mapped_column(default="normal")
+    """2026-07-30: how this position's ENTRY was recorded, distinct from
+    `exit_reason` (which describes how it CLOSED). One of, or a `+`-joined
+    combination of:
+    - `normal` -- went through the full entry pipeline (Council -> Risk
+      Voice -> Shield -> CFO sizing -> order placed) with no detected
+      anomaly, computed at entry time in `orchestrator/shadow_loop.py`.
+    - `orphan_seeded` -- `watchman/loop.py`'s `_reconcile_one_orphan_position`
+      (Fix C, 2026-07-25) found this ticket open with no recorded entry
+      metadata at all and seeded approximate values from whatever price/SL
+      were current at DISCOVERY time -- the true entry price/time is
+      unknown/unreliable.
+    - `delayed_entry` -- the order was placed abnormally long after the H1
+      bar it was evaluated on actually closed (evaluation/fill lagged a
+      real bar-close event, e.g. a system hiccup), so the fill reflects
+      later, possibly worse, price action than the signal was based on.
+    - `high_slippage` -- the actual fill deviated from the intended entry
+      price by an abnormally large margin.
+    See `orchestrator/shadow_loop.py`'s `_ENTRY_DELAY_THRESHOLD_SEC` /
+    `_HIGH_SLIPPAGE_POINTS_THRESHOLD` for the exact thresholds."""
     broker_ticket: Mapped[int | None] = mapped_column(default=None, unique=True, index=True)
     """SQLite treats each `NULL` as distinct for a `UNIQUE` constraint, so
     multiple no-ticket records are still allowed -- this only rejects a
