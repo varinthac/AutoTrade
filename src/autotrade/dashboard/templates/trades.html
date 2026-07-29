@@ -85,7 +85,17 @@
         <td>{{ row.entry_price | round(4) }}</td>
         <td>{{ row.exit_price | round(4) }}</td>
         <td>{{ row.lot_size | round(4) }}</td>
-        <td class="{{ 'pnl-negative' if row.cost > 0 else '' }}">{{ row.cost | round(4) }}</td>
+        {# cost convention (store/models.py): positive = a charge subtracted
+           from P&L (red); negative = a CREDIT the broker paid us, e.g.
+           positive swap (green, rendered as +N so it never reads as a
+           charge with a stray minus sign). #}
+        {% if row.cost > 0 %}
+        <td class="pnl-negative">{{ row.cost | round(4) }}</td>
+        {% elif row.cost < 0 %}
+        <td class="pnl-positive">+{{ (-row.cost) | round(4) }}</td>
+        {% else %}
+        <td>0</td>
+        {% endif %}
         <td class="{{ 'pnl-positive' if row.net_pnl > 0 else ('pnl-negative' if row.net_pnl < 0 else '') }}">{{ row.net_pnl | round(4) }}</td>
         <td class="{{ 'pnl-positive' if row.r_multiple > 0 else ('pnl-negative' if row.r_multiple < 0 else '') }}">{{ row.r_multiple | round(4) }}</td>
         <td>{{ row.exit_reason }}</td>
