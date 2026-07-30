@@ -1062,73 +1062,103 @@ def test_position_metadata_write_failure_is_logged_specifically_and_does_not_cra
 
 
 # --- _classify_entry() (2026-07-30) -----------------------------------------
+# `bar_time` is the bar's OPEN time (MT5 convention), so an H1 bar labeled
+# 12:00 closes at 13:00 and a normal entry lands a few seconds AFTER that.
+# The first version of this measured delay from the open and so flagged
+# every single H1 entry (real false positive: ticket=1831995458).
+
+_H1_CLOSE = datetime(2026, 1, 1, 13, 0)  # close of the H1 bar opening at 12:00
+_BAR_OPEN = datetime(2026, 1, 1, 12, 0)
 
 
 def test_classify_entry_on_time_low_slippage_is_normal():
-    bar_time = datetime(2026, 1, 1, 12, 0)
-    opened_at = bar_time + timedelta(seconds=4)  # normal poll-cycle processing time
+    opened_at = _H1_CLOSE + timedelta(seconds=4)  # normal poll-cycle processing time
 
-    assert shadow_loop_module._classify_entry(bar_time, opened_at, actual_slippage=0.3) == "normal"
+    assert shadow_loop_module._classify_entry(_BAR_OPEN, "H1", opened_at, actual_slippage=0.3) == "normal"
+
+
+def test_classify_entry_one_full_timeframe_after_bar_open_is_normal_not_delayed():
+    # Regression guard for the 2026-07-30 false positive: an entry placed
+    # ~1h after an H1 bar's OPEN is simply an entry right after its CLOSE.
+    opened_at = _BAR_OPEN + timedelta(hours=1, seconds=2)
+
+    assert shadow_loop_module._classify_entry(_BAR_OPEN, "H1", opened_at, actual_slippage=0.22) == "normal"
 
 
 def test_classify_entry_missing_slippage_data_does_not_flag_high_slippage():
-    bar_time = datetime(2026, 1, 1, 12, 0)
-    opened_at = bar_time + timedelta(seconds=4)
+    opened_at = _H1_CLOSE + timedelta(seconds=4)
 
-    assert shadow_loop_module._classify_entry(bar_time, opened_at, actual_slippage=None) == "normal"
+    assert shadow_loop_module._classify_entry(_BAR_OPEN, "H1", opened_at, actual_slippage=None) == "normal"
 
 
 def test_classify_entry_delay_at_threshold_boundary_is_not_flagged():
-    bar_time = datetime(2026, 1, 1, 12, 0)
-    opened_at = bar_time + timedelta(seconds=shadow_loop_module._ENTRY_DELAY_THRESHOLD_SEC)
+    opened_at = _H1_CLOSE + timedelta(seconds=shadow_loop_module._ENTRY_DELAY_THRESHOLD_SEC)
 
-    assert shadow_loop_module._classify_entry(bar_time, opened_at, actual_slippage=0.3) == "normal"
+    assert shadow_loop_module._classify_entry(_BAR_OPEN, "H1", opened_at, actual_slippage=0.3) == "normal"
 
 
 def test_classify_entry_delay_past_threshold_is_delayed_entry():
-    bar_time = datetime(2026, 1, 1, 12, 0)
-    opened_at = bar_time + timedelta(seconds=shadow_loop_module._ENTRY_DELAY_THRESHOLD_SEC + 1)
+    opened_at = _H1_CLOSE + timedelta(seconds=shadow_loop_module._ENTRY_DELAY_THRESHOLD_SEC + 1)
 
-    assert shadow_loop_module._classify_entry(bar_time, opened_at, actual_slippage=0.3) == "delayed_entry"
+    assert shadow_loop_module._classify_entry(
+        _BAR_OPEN, "H1", opened_at, actual_slippage=0.3,
+    ) == "delayed_entry"
+
+
+def test_classify_entry_uses_the_given_timeframes_own_duration():
+    # The same wall-clock gap is normal for H4 but late for M15.
+    opened_at = _BAR_OPEN + timedelta(hours=1, seconds=2)
+
+    assert shadow_loop_module._classify_entry(_BAR_OPEN, "H4", opened_at, actual_slippage=0.3) == "normal"
+    assert shadow_loop_module._classify_entry(
+        _BAR_OPEN, "M15", opened_at, actual_slippage=0.3,
+    ) == "delayed_entry"
+
+
+def test_classify_entry_unknown_timeframe_skips_the_delay_check(caplog):
+    opened_at = _BAR_OPEN + timedelta(days=3)  # absurdly late by any real timeframe
+
+    with caplog.at_level(logging.WARNING):
+        result = shadow_loop_module._classify_entry(_BAR_OPEN, "W1", opened_at, actual_slippage=0.3)
+
+    assert result == "normal"  # fails toward NOT crying wolf
+    assert any("unrecognized timeframe" in record.message for record in caplog.records)
 
 
 def test_classify_entry_slippage_at_threshold_boundary_is_not_flagged():
-    bar_time = datetime(2026, 1, 1, 12, 0)
-    opened_at = bar_time + timedelta(seconds=4)
+    opened_at = _H1_CLOSE + timedelta(seconds=4)
 
     assert shadow_loop_module._classify_entry(
-        bar_time, opened_at, actual_slippage=shadow_loop_module._HIGH_SLIPPAGE_POINTS_THRESHOLD,
+        _BAR_OPEN, "H1", opened_at, actual_slippage=shadow_loop_module._HIGH_SLIPPAGE_POINTS_THRESHOLD,
     ) == "normal"
 
 
 def test_classify_entry_slippage_past_threshold_is_high_slippage():
-    bar_time = datetime(2026, 1, 1, 12, 0)
-    opened_at = bar_time + timedelta(seconds=4)
+    opened_at = _H1_CLOSE + timedelta(seconds=4)
 
     assert shadow_loop_module._classify_entry(
-        bar_time, opened_at, actual_slippage=shadow_loop_module._HIGH_SLIPPAGE_POINTS_THRESHOLD + 0.01,
+        _BAR_OPEN, "H1", opened_at,
+        actual_slippage=shadow_loop_module._HIGH_SLIPPAGE_POINTS_THRESHOLD + 0.01,
     ) == "high_slippage"
 
 
 def test_classify_entry_both_anomalies_join_with_plus():
     # The one real incident to date (ticket=1822406958) was both at once --
     # neither signal should be silently dropped.
-    bar_time = datetime(2026, 1, 1, 12, 0)
-    opened_at = bar_time + timedelta(seconds=shadow_loop_module._ENTRY_DELAY_THRESHOLD_SEC + 60)
+    opened_at = _H1_CLOSE + timedelta(seconds=shadow_loop_module._ENTRY_DELAY_THRESHOLD_SEC + 60)
 
-    result = shadow_loop_module._classify_entry(bar_time, opened_at, actual_slippage=7.51)
+    result = shadow_loop_module._classify_entry(_BAR_OPEN, "H1", opened_at, actual_slippage=7.51)
 
     assert result == "delayed_entry+high_slippage"
 
 
 def test_classify_entry_negative_delay_is_not_flagged():
-    # A bar re-evaluated slightly "before" its own timestamp per a test
-    # fixture's fixed clock (never happens in real chronological operation,
-    # but must not raise or misclassify).
-    bar_time = datetime(2026, 1, 1, 12, 0)
-    opened_at = bar_time - timedelta(hours=5)
+    # A bar re-evaluated "before" its own close per a test fixture's fixed
+    # clock (never happens in real chronological operation, but must not
+    # raise or misclassify).
+    opened_at = _BAR_OPEN - timedelta(hours=5)
 
-    assert shadow_loop_module._classify_entry(bar_time, opened_at, actual_slippage=0.3) == "normal"
+    assert shadow_loop_module._classify_entry(_BAR_OPEN, "H1", opened_at, actual_slippage=0.3) == "normal"
 
 
 def test_entry_classification_is_threaded_through_to_recorded_metadata(monkeypatch, tmp_path):

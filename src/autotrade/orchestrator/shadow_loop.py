@@ -110,6 +110,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -179,26 +180,59 @@ def _log_borderline_case(case: BorderlineCase, path: Path) -> None:
 
 
 # 2026-07-30: thresholds for TradeRecord.entry_classification (see
-# store/models.py's docstring for the full enum). Calibrated against this
-# system's own real trade history: normal entries' opened_at-minus-bar.time
-# gap is a few seconds (poll_interval_sec + processing), and normal
-# actual_slippage has stayed under ~1.5 points -- the one confirmed real
-# incident (ticket=1822406958, a ~12-minute delayed evaluation) measured
-# 7.51 points of slippage, an order of magnitude past every normal trade.
+# store/models.py's docstring for the full enum). Normal entries are placed
+# within seconds of the evaluated bar's CLOSE (poll_interval_sec +
+# processing); normal actual_slippage has stayed under ~1.5 points across
+# this system's whole real trade history -- the one confirmed real incident
+# (ticket=1822406958, a ~12-minute-late evaluation) measured 7.51 points,
+# an order of magnitude past every normal trade.
 _ENTRY_DELAY_THRESHOLD_SEC = 300.0  # 5 minutes -- normal poll jitter is single-digit seconds
 _HIGH_SLIPPAGE_POINTS_THRESHOLD = 3.0
 
+# `Bar.time` is MT5's convention: the bar's OPEN time, so a bar's close is
+# `time + one timeframe duration`. Deliberately duplicated here rather than
+# imported from `feed/historical.py`'s equivalent private map: that module
+# pulls in `MetaTrader5`, and this one is deliberately MT5-import-free (see
+# this module's own docstring). Kept in sync manually -- both are plain
+# constant tables over the same fixed MT5 timeframe vocabulary.
+_TIMEFRAME_DURATION = {
+    "M1": timedelta(minutes=1),
+    "M5": timedelta(minutes=5),
+    "M15": timedelta(minutes=15),
+    "M30": timedelta(minutes=30),
+    "H1": timedelta(hours=1),
+    "H4": timedelta(hours=4),
+    "D1": timedelta(days=1),
+}
 
-def _classify_entry(bar_time, opened_at, actual_slippage: float | None) -> str:
+
+def _classify_entry(
+    bar_time: datetime, timeframe: str, opened_at: datetime, actual_slippage: float | None,
+) -> str:
     """See store/models.py's `TradeRecord.entry_classification` docstring
     for the enum this returns. `+`-joins multiple anomalies (order:
     delayed_entry, then high_slippage) rather than picking just one, so
     neither signal is silently dropped when both fire together (the one
-    real incident to date, ticket=1822406958, was actually both at once)."""
+    real incident to date, ticket=1822406958, was actually both at once).
+
+    The delay is measured from the evaluated bar's CLOSE time, NOT its
+    `bar_time` (which is its OPEN time per MT5's convention) -- measuring
+    from the open would count one whole timeframe of perfectly normal
+    waiting as "delay" and flag every single H1 entry (exactly what the
+    first version of this shipped and did to ticket=1831995458 on
+    2026-07-30). An unrecognized `timeframe` skips the delay check
+    entirely rather than guessing a duration and crying wolf again."""
     anomalies = []
-    delay_sec = (opened_at - bar_time).total_seconds()
-    if delay_sec > _ENTRY_DELAY_THRESHOLD_SEC:
-        anomalies.append("delayed_entry")
+    duration = _TIMEFRAME_DURATION.get(timeframe)
+    if duration is None:
+        logger.warning(
+            "_classify_entry: unrecognized timeframe %r -- skipping the delayed-entry check for "
+            "this trade rather than guessing its bar duration.", timeframe,
+        )
+    else:
+        delay_sec = (opened_at - (bar_time + duration)).total_seconds()
+        if delay_sec > _ENTRY_DELAY_THRESHOLD_SEC:
+            anomalies.append("delayed_entry")
     if actual_slippage is not None and actual_slippage > _HIGH_SLIPPAGE_POINTS_THRESHOLD:
         anomalies.append("high_slippage")
     return "+".join(anomalies) if anomalies else "normal"
@@ -710,7 +744,9 @@ class ShadowLoop:
             actual_slippage = (
                 abs(result.filled_price - plan.entry) if result.filled_price is not None else None
             )
-            entry_classification = _classify_entry(bar.time, opened_at, actual_slippage)
+            entry_classification = _classify_entry(
+                bar.time, snapshot.timeframe, opened_at, actual_slippage,
+            )
             try:
                 position_metadata.record_position_opened(
                     ticket=result.broker_ticket, symbol=symbol, direction=plan.direction,

@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1459 (including all parametrized variants)
+- **Total Test Count**: 1462 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -56,8 +56,8 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_telegram.py | 45 |
 | | test_telegram_control.py | 82 |
 | **Notify Subtotal** | | **153** |
-| Orchestrator | test_shadow_loop.py | 58 |
-| **Orchestrator Subtotal** | | **58** |
+| Orchestrator | test_shadow_loop.py | 61 |
+| **Orchestrator Subtotal** | | **61** |
 | Risk | test_circuit_breaker.py | 32 |
 | | test_sizing.py | 20 |
 | **Risk Subtotal** | | **52** |
@@ -106,7 +106,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **398** |
 | | | |
-| **GRAND TOTAL** | | **1459** |
+| **GRAND TOTAL** | | **1462** |
 
 ---
 
@@ -986,9 +986,12 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_successful_position_metadata_write_logs_confirmation
 - test_position_metadata_write_failure_is_logged_specifically_and_does_not_crash_the_bar
 - test_classify_entry_on_time_low_slippage_is_normal
+- test_classify_entry_one_full_timeframe_after_bar_open_is_normal_not_delayed
 - test_classify_entry_missing_slippage_data_does_not_flag_high_slippage
 - test_classify_entry_delay_at_threshold_boundary_is_not_flagged
 - test_classify_entry_delay_past_threshold_is_delayed_entry
+- test_classify_entry_uses_the_given_timeframes_own_duration
+- test_classify_entry_unknown_timeframe_skips_the_delay_check
 - test_classify_entry_slippage_at_threshold_boundary_is_not_flagged
 - test_classify_entry_slippage_past_threshold_is_high_slippage
 - test_classify_entry_both_anomalies_join_with_plus
