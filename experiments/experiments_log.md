@@ -4257,3 +4257,199 @@ an edge; if the user wants the hard weekend-gap cap for peace-of-mind/tail-insur
 risk policy to enable deliberately (best implemented as a real Watchman/Risk-Voice exit, its own pre-registered change),
 with eyes open that it slightly dilutes expectancy and adds Friday-close/Monday-reopen churn for a risk that has fired ~4
 times in 1,000 trades on this data.
+
+## EXP-022 2026-07-31 — `cfo.min_lot_risk_cap_pct` + the min-lot floor at ~$3,000 (NEW family "small-account min-lot floor"; supersedes the 2026-07-22 Stage-1 NOTE's numbers)
+Status: REJECTED (no config change recommended) — for `min_lot_risk_cap_pct` the honest sub-verdict is INSUFFICIENT
+(the parameter is structurally un-tunable on Train, see §3); every ALTERNATIVE tested is REJECTED on its own evidence.
+Trigger: live shadow-loop session 2026-07-31 on the $2,940 demo — 11 of 19 evaluated H1 bars produced BUY signals that
+passed Council + Risk Voice + Shield + confirmed-swing and were then refused at CFO sizing ("computed lot size below
+broker minimum 0.01"), none rescued by `min_lot_risk_cap_pct: 1.5`. User asked to quantify the trade-off. NO live config
+was changed by this experiment; no file under src/ or config/ was edited; no promotion/demotion gate touched (rule 8).
+
+Harness: `experiments/exp022_minlot_harness.py` (committable, read-only). Reuses the 2026-07-22 NOTE's rescued-subset
+attribution method verbatim (ordered sizing-call log zipped 1:1 against the trade list, lot-equality assert on every
+pair) so results are comparable, with two deliberate upgrades: (i) the engine now supports `min_lot_risk_cap_pct`
+NATIVELY, so the wrapper only OBSERVES (it calls the real sizer a second time forced to cap=None purely to LABEL a
+rescue) and cannot alter behavior; (ii) COST MODEL COMPLETE per `scripts/run_backtest.py`'s own definition — slippage =
+min-1-spread AND swap modeled (EXP-018 rates long -53.2 / short +36.8, 3x Wed), commission $0 (IC Markets Standard, the
+real account) instead of the older $7 convention. Shield cooldown modeled (it was NOT in the 2026-07-22 harness).
+FAST-PATH FIDELITY: the harness memoises full-series indicator/swing results to serve prefixes (exact, not approximate:
+`ema`/`rsi`/`atr` are causal `ewm(adjust=False)` from bar 0; a fractal pivot at i depends only on i+-p and
+`_confirmed_swing_indices` already restricts to i <= as_of_index - p). `--mode fidelity` ran a 3,000-bar window with and
+without the shim: ALL metrics byte-identical (identical=True) before any candidate number below was trusted. OK
+
+### 1. MAGNITUDE — the problem is REAL, STRUCTURAL, and NEW (it is the regime, not an outlier)
+Regime table (`--mode regime`, trade-sequence-independent, $3,000 equity; 0.01 lot XAUUSD => $1 risk per $1 of stop, so
+"affordable stop" in $ == risk% x equity):
+```
+window            med price  med ATR  ATR %px  med 0.8xATR  med 1.5xATR  med 2.5xATR | affordable@1.0%  @cap1.5%
+y1 2021-22          1,814.8     4.20    0.231%       $3.36        $6.30       $10.50 |          $30.00     $45.00
+y2 2022-23          1,838.8     4.39    0.239%       $3.51        $6.58       $10.96 |          $30.00     $45.00
+y3 2023-24          2,033.4     4.36    0.215%       $3.49        $6.55       $10.91 |          $30.00     $45.00
+y4 VAL 2024-25      2,751.9     7.26    0.264%       $5.81       $10.89       $18.16 |          $30.00     $45.00
+y5 TEST 2025-26     4,288.9    17.86    0.417%      $14.29       $26.80       $44.66 |          $30.00     $45.00
+```
+TWO compounding drifts, not one: price level x2.4 (1,815 -> 4,289) AND volatility-as-a-fraction-of-price x1.8 (0.23% ->
+0.42%). Dollar stop distance is the product => median mid-stop went $6.30 -> $26.80 (x4.3) while the affordable stop
+stayed pinned at $30/$45 by the account size. In y5, 38.2% of bars have a typical (1.5xATR) stop already unaffordable at
+risk 1.0%, and 12.0% unaffordable even at cap 1.5%. In y1-y3: 0.0%.
+Backtest skip rates at the LIVE config (cap 1.5, risk 1.0%, $3,000, per-year windows, complete costs):
+```
+window            signals->sizing  sub-min%  rescued  STILL SKIPPED %
+y1 2021-22                    266     0.38%        1            0.0%
+y2 2022-23                    254     0.00%        0            0.0%
+y3 2023-24                    233     0.00%        0            0.0%
+y4 VAL 2024-25                263     7.98%       12            3.4%
+y5 TEST 2025-26               589    78.95%      104           61.3%
+```
+**The live 11/19 = 58% refusal rate matches the y5 backtest's 61.3% almost exactly.** Today is NOT an outlier; it is the
+2025-26 regime, and the mechanism (price level x ATR/price) does not mean-revert on any horizon this data can see.
+CAVEAT on the denominator: "signals->sizing" is per-BAR, and a refused setup is re-offered on the next bar while the
+engine is flat, so it is counted repeatedly (this is exactly why live logged 11 refusals from ~1 setup). Skip% is
+therefore a refusal-EVENTS rate, NOT the fraction of distinct opportunities lost — see §2, which is the honest one.
+
+### 2. WHAT THE FLOOR ACTUALLY COSTS — far less than it feels, because the engine simply takes the NEXT signal
+Per-year, $3,000, risk 1.0%, complete costs. `wLoss%`/`w3%` = worst single loss / worst 3-consecutive-loss run, both as %
+of equity AT THE TIME (equity compounds inside a window, so "% of starting equity" would misstate it):
+```
+y4 VAL 2024-25   cap:  None    1.25     1.5    1.75     2.0     2.5     3.0
+  trades              257     258     254     254     255     255     255
+  PF                1.038   1.044   1.096   1.096   1.081   1.081   1.081
+  PF_ex_top5        0.954   0.947   0.987   0.987   0.974   0.974   0.974
+  net$             +141.3  +166.6  +352.6  +351.2  +301.2  +301.2  +301.2
+  maxDD%            11.78   14.02    9.99    9.99    9.85    9.85    9.85
+  max planned risk%  1.00    1.24    1.45    1.50    1.78    1.78    1.78
+  wLoss% / w3%     -1.10/-2.68  -1.28/-3.53  -1.42/-3.07  -1.46/-3.07  -1.78/-3.12   (2.5/3.0 identical to 2.0)
+  rescued n|PF|net$    —   14|1.19|+49  12|2.18|+222  12|2.16|+221  15|1.41|+119     (2.5/3.0 identical to 2.0)
+
+y5 TEST 2025-26  cap:  None    1.25     1.5    1.75     2.0     2.5     3.0     4.0   6.0/10.0(=unlimited)
+  trades              209     222     228     234     240     239     239     239     239
+  skip%              85.5*   79.7    61.3    45.1    28.6    20.6    13.7     1.2     0.0
+  PF                1.071   1.032   1.190   1.197   1.191   1.158   1.118   1.124   1.110
+  PF_ex_top5        0.974   0.937   1.067   1.067   1.046   1.007   0.958     —       —
+  net$             +237.2  +127.1  +845.3  +952.3  +996.3  +838.5  +640.9  +690.5  +623.1
+  maxDD%             9.52   11.02   12.39   16.03   14.64   15.43   17.89   20.96   22.56
+  max planned risk%  1.00    1.25    1.49    1.75    2.00    2.47    2.94    3.93    4.85
+  wLoss%            -1.77   -1.33   -1.94   -1.81   -1.97   -2.49   -2.92   -3.94   -4.84
+  w3%               -3.62   -3.40   -4.20   -4.57   -5.52   -6.32   -6.96  -10.29  -12.01
+  rescued n|PF|net$   —  83|0.68|-674 104|1.14|+375 119|1.03|+90 127|1.06|+235 134|1.04|+161 138|0.99|-59 137|1.01|+23 137|0.99|-44
+  (* see §1's denominator caveat)
+```
+THE DECIDING FACT (Q1 "what fraction is lost / what does it cost"): **trade count barely moves.** y5 executes 209 trades
+with the floor at its most restrictive (cap=None, ~85% refusal rate) vs 239 with the floor effectively removed (cap
+unlimited) — a 14% difference, not the near-total paralysis the live log feels like. Cause: this is a
+`max_positions_per_symbol: 1` engine; a refused signal leaves it FLAT, so it simply sizes the NEXT signal an hour later.
+The floor DELAYS and RE-SELECTS entries; it does not switch trading off.
+AND the re-selection is not harmful: taking EVERY refused signal (cap unlimited) yields a rescued set of 137 trades with
+**PF 0.99 / net -$44 in isolation** — the wide-stop signals the floor currently discards have, as a group, NO measurable
+edge in the current regime, while admitting them costs +10pp of max drawdown (12.4% -> 22.6%) and takes the worst
+3-consecutive-loss run from -4.2% to -12.0% of equity. The marginal trades beyond cap 1.5 net **-$419 over ~33 trades**.
+
+### 3. WHY NO NEW VALUE CAN BE ADOPTED FOR `min_lot_risk_cap_pct` (rule 6 + the split problem, stated plainly)
+The parameter is **structurally un-tunable on Train**: y1/y2/y3 contain 1, 0 and 0 rescued trades respectively, because
+the regime that activates the fallback (gold >$3,000, ATR >0.4% of price) does not exist before 2024. All information
+about this parameter lives in y4 (VALIDATION, **12 rescued trades**) and y5 (the held-out TEST year, 104). n=12 on the
+only legitimate deciding window is an order of magnitude below rule 6's 100-trade floor. Any value picked to fit y5 would
+be fit on the Test set — refused. So:
+- On the deciding window (y4/VAL) the CURRENT value 1.5 is already the joint best (PF 1.096, tied with 1.75) and sits on
+  a plateau: its +-20% neighbours 1.25 (1.044, -4.7%) and 1.75 (1.096, +-0%) are both inside the ~15% band (rule 5). OK
+- Every candidate ABOVE the plateau is worse on y4 (2.0/2.5/3.0 all PF 1.081) AND monotonically worse on tail risk.
+- The status quo needs no new evidence; a CHANGE does, and there is none. Verdict: keep `min_lot_risk_cap_pct: 1.5`.
+HONESTY UPDATE TO THE 2026-07-22 NOTE (it is quoted in `config/base.yaml` and `risk/sizing.py`'s docstring): its headline
+"rescued subset PF 1.60" does NOT fully replicate. Re-running its own convention (full history compounding, $3,000,
+commission $7, swap OFF) but WITH Shield modeled (which it predates) gives rescued PF **1.45** (53 trades, +$740, cap
+1.5), and under the correct complete cost model in the current regime (y5, commission $0 + swap ON, per-year $3,000
+anchor) the rescued subset is only **PF 1.14** (104 trades, +$375). Direction intact (rescued trades are NOT dead weight,
+and cap 1.5 is still the peak of the cap sweep in both conventions), magnitude materially weaker. That comment/docstring
+claim should be read as "modestly positive", not "PF 1.60".
+
+### 4. ALTERNATIVES — all REJECTED on their own evidence
+(a) **Tighter stops (`order.sl_max_atr` 2.5 -> 2.0/1.5/1.2/1.0)**, $3,000, cap 1.5. This is the one lever that genuinely
+    fixes affordability (y5 sub-min 79% -> 13% at 1.2). It destroys the edge on Train:
+```
+  sl_max_atr      2.5     2.0     1.5     1.2     1.0
+  y1 PF        1.0159  0.9215  0.8884  0.8977  0.8434
+  y2 PF        0.9949  0.9592  0.9737  0.9625  0.8967
+  y3 PF        1.2020  1.1018  1.0164  0.9509  0.9866
+  y4 VAL PF    1.0961  1.1785  1.0084  1.0043  0.9814
+  y5 PF        1.1903  1.2077  1.1355  1.2312  1.1216
+```
+    2.5 is the best value in ALL THREE Train years and tightening is monotonically destructive there (mechanism is causal
+    and obvious: a stop placed to fit the ACCOUNT instead of the STRUCTURE sits inside noise and gets hit).
+    `sl_max_atr=2.0` is better on y4 — but it is worse in all three Train years, i.e. the Train/Val ranking INVERTS, the
+    exact overfit signature EXP-020 and EXP-001-C4 were rejected for. REJECT. (Spec bounds respected: 2.5 is the
+    Risk-voice ceiling and everything tested was <= it.)
+(b) **ATR volatility-halving (`risk/sizing.py`'s `current_atr`/`avg_atr_20d`/`volatility_multiplier_threshold`)** —
+    CANNOT be tuned: it is **dead code today**. Verified by grep: there is no config key for it anywhere, and BOTH
+    `backtest/engine.py` (BacktestConfig docstring: "left disabled ... both `None` at every `compute_lot_size` call")
+    and `orchestrator/shadow_loop.py` (module docstring, Phase-3 simplification) pass `None` for both, deliberately.
+    Tuning it is a no-op until someone wires it. ANALYTIC finding (not measured — wiring it would be a src/ change, out
+    of scope here): if it WERE enabled it would make this exact problem STRICTLY WORSE. It halves `risk_per_trade`
+    precisely when `current_atr > 1.5 x avg_atr_20d` — the high-volatility regime causing the refusals — halving the
+    risk-based lot and pushing MORE signals below `volume_min`; and because the `min_lot_risk_cap_pct` check uses FULL
+    equity independent of the halving (by design, see the sizing docstring), those extra sub-minimum signals land in the
+    fallback and get traded at 0.01 lot at up to the FULL 1.5% cap. Net effect: fewer trades at planned risk, more trades
+    at capped-MAXIMUM risk. Do not enable it as a response to this problem.
+(c) **Raise `cfo.risk_per_trade_pct` (1.0 -> 1.25/1.5/2.0)** — the non-surgical version of the same idea (it raises risk
+    on EVERY trade, not just the marginal wide-stop ones). Rejected on both metrics: y4 VAL PF 1.096 (1.0%) -> 1.061
+    (1.25%) -> 1.062 (1.5%) -> 1.038 (2.0%), i.e. the current value is the VAL optimum; and drawdown explodes on the
+    losing Train year y2 (26% -> 35% -> 40% -> 52%). It also barely helps the stated problem: y5 skip% only falls
+    61% -> 59% at risk 1.25%. Lowering to 0.75% is worse still (y1/y2/y3 all flip to PF < 1.0). REJECT; 1.0 stays.
+(d) **Change nothing** — the measured baseline above. y5 at the live config: 228 trades, PF 1.190, PF_ex_top5 1.067, net
+    +$845 on a $3,000 account, max DD 12.4%, worst single loss 1.94% of equity. The system is not, in aggregate, unable
+    to trade in this regime — it is refusing the widest-stop subset, which is the subset with no measurable edge.
+    RECOMMENDED.
+
+### 5. RISK ANALYSIS (Q4) — why every "just raise the cap" option is worse than it looks on a $3,000 account
+`min_lot_risk_cap_pct` is, by construction, the maximum single-trade risk the system will ever take (the measured
+`max planned risk%` tracks the cap to within 0.06pp in every cell, so it binds exactly as designed). It must be read
+against the CFO's own circuit breakers in `config/base.yaml` — NOT promotion gates, but the account's survival logic:
+`daily_loss_limit_pct: 2.0`, `max_consecutive_losses: 3`, `max_drawdown_halt_pct: 8.0`.
+```
+  cap    max single loss   worst 3-loss run (y5, measured)   coherence with the CFO breakers
+  1.5          1.5%                  -4.2%                   OK — one full stop stays under the 2% daily limit
+  1.75         1.75%                 -4.6%                   OK, marginal
+  2.0          2.0%                  -5.5%                   BREAKS — ONE losing trade trips the 2% daily halt
+  2.5          2.5%                  -6.3%                   BREAKS daily limit; 3 losses ~79% of the 8% master halt
+  3.0          3.0%                  -7.0%                   BREAKS daily limit; 3 losses ~87% of the 8% master halt
+  unlimited    4.9%                 -12.0%                   BREAKS everything — 3 losses blow through the 8% halt
+```
+So `cap = 2.0` is not merely "a bit more risk": it is the value at which a single ordinary stop-out trips the daily-loss
+circuit breaker, making the breaker fire on NORMAL operation rather than on abnormal loss. That is a structural argument
+independent of any backtest number, and it puts a hard ceiling of **< 2.0** on this parameter unless the user separately
+and deliberately decides to loosen `daily_loss_limit_pct` — which I am NOT proposing and did not test (loosening a risk
+control so a tuning result fits is the failure mode rule 8 exists for; recorded here as a refusal).
+Ruin arithmetic at cap 1.5 on $2,940: worst measured single loss 1.94% (~$57); worst measured 3-loss run 4.2% (~$123),
+which is where `max_consecutive_losses: 3` would stop it; worst measured full streak 8 losses / -7.2% (~$212). At cap 3.0
+the same streaks become -7.0% and -8.9%, i.e. the 8% master halt fires and the account goes idle.
+
+### 6. ROBUSTNESS SUMMARY
+neighborhood/plateau OK (cap 1.5 sits on a flat 1.5-1.75 shoulder on y4; no sharp peak) — but see §3: that plateau rests
+on 12 trades. per-year FAIL / informative-only: the parameter has zero effect in y1-y3, so per-year consistency cannot be
+established at all — this is the core reason no change is adoptable. top-5 mixed: y5 cap-1.5 PF_ex_top5 = 1.067 (passes),
+y4 cap-1.5 = 0.987 (fails — but it fails at EVERY cap including None = 0.954, so it is a strategy-level property of y4 at
+$3,000, not cap-attributable; flagged, not attributed). walk-forward n.a. (only 2 of 5 windows contain any rescued trade;
+a rolling walk-forward would be 3 empty windows and 2 near-identical ones). Multiple testing (rule 7): 7 cap values + 3
+unlimited probes + 5 risk% + 5 sl_max = 20 configs this session, ~30 cumulative for this family including the 2026-07-22
+NOTE's 10. At N~30 the required edge is ~1.8 SE; the best candidate's advantage over the status quo on the deciding
+window is 0.000 PF (1.75 exactly ties 1.5). Nothing is remotely near the bar.
+
+### 7. VERDICT — NO CONFIG CHANGE. `cfo.min_lot_risk_cap_pct` stays 1.5; `cfo.risk_per_trade_pct` stays 1.0;
+`order.sl_max_atr` stays 2.5. `config/base.yaml` UNCHANGED, `src/` UNCHANGED, no promotion/demotion gate touched (rule
+8). Test-year budget for this family: recorded as SPENT-FOR-MEASUREMENT-ONLY — y5 was run because the phenomenon under
+study exists ONLY in y5 (same forced-window disclosure as the 2026-07-22 timeframe probe), and NO candidate was selected
+using it; selection was made on y4/VAL, where the status quo won outright.
+The min-lot floor is a real and permanent consequence of $3,000 equity x XAUUSD's 0.01-lot contract at gold $4,100 — not
+a mis-set parameter. The signals it discards have no measurable edge as a group, and every knob that would admit them
+raises single-trade risk into conflict with the account's own circuit breakers.
+ESCALATED TO USER (not config changes, and deliberately not decided here):
+ (i) OPERATIONAL, not risk-related: the 11-refusals-from-~1-setup pattern is the SAME signal re-offered every hour. A
+     dedupe/cooldown on the "below broker minimum" log + Telegram path (mirroring `shield.duplicate_signal_cooldown_hours`)
+     would remove the alarming appearance without touching a single risk number. Recommended; needs its own change.
+ (ii) The genuinely binding fact: at gold >$4,000, $3,000 equity at 1.0% risk buys a $30 stop while the strategy's own
+     structural stops need $40-$60. Within the fixed ~$3,000 constraint the only honest options are the ones measured
+     above; the constraint itself is the thing that would have to move, and that is the user's call, not a parameter's.
+ (iii) BEFORE any future change to this parameter could be adoptable: either (a) the cross-project pre-2021 (2009-2019)
+     data EXP-018/EXP-020 already flagged as the out-of-regime OOS set, at a gold price level where the fallback actually
+     fires, or (b) >=100 rescued trades of paper/live evidence at the current config. Until one of those exists, this
+     parameter cannot clear rule 6 on any window legitimately available for selection.

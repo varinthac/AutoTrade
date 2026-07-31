@@ -85,6 +85,18 @@ cfo:
   # sizing REFRESH + min-lot-fallback measurement") found this recovers 63 real
   # trades out of 1257 total (Test-year window), with that rescued subset alone
   # showing PF 1.60 -- a genuine small-account accommodation, not dead weight.
+  #
+  # 2026-07-31 (EXP-022) CORRECTION to that PF 1.60 figure: it does not
+  # replicate. Re-measured with Shield applied it is 1.45, and under the full
+  # cost model in the current (2025-26) price/volatility regime it is 1.14.
+  # The direction still holds -- the rescued subset is mildly positive, not
+  # dead weight -- but read it as "mildly positive", not "PF 1.60".
+  # EXP-022 also swept this value (1.25/1.5/1.75/2.0/3.0/uncapped) against
+  # today's regime and RE-CONFIRMED 1.5: it wins on the validation year and
+  # sits on a plateau (1.75 ties, 1.25 is worse), taking every rejected
+  # signal has no edge at all (PF 0.99), and cap >= 2.0 is structurally
+  # unacceptable -- a single normal losing trade would then trip
+  # daily_loss_limit_pct: 2.0 above during ordinary operation.
   # See risk/sizing.py::compute_lot_size for the exact cap check (uses full
   # equity, independent of the ATR-based volatility halving).
   min_lot_risk_cap_pct: 1.5

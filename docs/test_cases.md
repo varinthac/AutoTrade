@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1462 (including all parametrized variants)
+- **Total Test Count**: 1464 (including all parametrized variants)
 - **Test Files**: ~58 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -56,8 +56,8 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_telegram.py | 45 |
 | | test_telegram_control.py | 82 |
 | **Notify Subtotal** | | **153** |
-| Orchestrator | test_shadow_loop.py | 61 |
-| **Orchestrator Subtotal** | | **61** |
+| Orchestrator | test_shadow_loop.py | 63 |
+| **Orchestrator Subtotal** | | **63** |
 | Risk | test_circuit_breaker.py | 32 |
 | | test_sizing.py | 20 |
 | **Risk Subtotal** | | **52** |
@@ -106,7 +106,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **398** |
 | | | |
-| **GRAND TOTAL** | | **1462** |
+| **GRAND TOTAL** | | **1464** |
 
 ---
 
@@ -969,6 +969,8 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_shield_record_trade_opened_not_called_when_order_rejected
 - test_on_new_bar_raises_key_error_for_unseeded_symbol
 - test_lot_size_below_broker_minimum_places_no_order
+- test_sub_minimum_lot_rejection_logs_once_then_dedupes_the_same_setup
+- test_sub_minimum_lot_rejection_logs_again_once_the_cooldown_elapses
 - test_rejected_order_result_does_not_raise_and_leaves_history_appended
 - test_multiple_symbols_are_tracked_and_processed_independently
 - test_history_is_trimmed_to_max_history_bars_configured_limit

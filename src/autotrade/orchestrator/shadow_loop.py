@@ -189,6 +189,12 @@ def _log_borderline_case(case: BorderlineCase, path: Path) -> None:
 _ENTRY_DELAY_THRESHOLD_SEC = 300.0  # 5 minutes -- normal poll jitter is single-digit seconds
 _HIGH_SLIPPAGE_POINTS_THRESHOLD = 3.0
 
+# 2026-07-31 (EXP-022): how long the same sub-minimum-lot rejection stays
+# deduped to DEBUG before being re-logged at INFO. 4h mirrors
+# `shield.duplicate_signal_cooldown_hours` -- the same "this is the same
+# setup, not a new one" notion, applied to logging rather than to trading.
+_SUBMIN_LOG_COOLDOWN = timedelta(hours=4)
+
 # `Bar.time` is MT5's convention: the bar's OPEN time, so a bar's close is
 # `time + one timeframe duration`. Deliberately duplicated here rather than
 # imported from `feed/historical.py`'s equivalent private map: that module
@@ -335,6 +341,20 @@ class ShadowLoop:
         self._read_autotrading_state = read_autotrading_state or (lambda: None)
         self._peak_equity: float | None = None
         self._live_start_equity: float | None = None
+        # 2026-07-31 (EXP-022): dedupe for the "computed lot size below broker
+        # minimum" rejection log. In the current high-volatility regime that
+        # branch is hit on most bars, and because a confirmed swing persists
+        # for hours, the SAME rejected setup is re-proposed and re-logged
+        # every single bar close (11 identical lines in one live session) --
+        # which reads like 11 lost opportunities when it is really one setup
+        # the account cannot afford. Keyed on (symbol, direction, swing
+        # LEVEL) -- the price, not `swing_index`, which is positional and
+        # silently renumbers whenever `_append_bar` trims history. Maps to
+        # the bar time last logged at INFO; repeats inside
+        # `_SUBMIN_LOG_COOLDOWN` drop to DEBUG so a genuinely persistent
+        # condition still resurfaces periodically instead of going silent
+        # forever. In-memory only: a restart re-logging once is harmless.
+        self._last_submin_log: dict[tuple[str, str, float], datetime] = {}
 
     def run(
         self,
@@ -626,10 +646,24 @@ class ShadowLoop:
             min_lot_risk_cap_pct=self._cfg.min_lot_risk_cap_pct,
         )
         if lot is None:
-            logger.info(
+            # Deduped per (symbol, direction, swing level) -- see
+            # `self._last_submin_log`'s comment for why this branch would
+            # otherwise repeat the identical line on every bar close for as
+            # long as one unaffordable setup persists.
+            submin_key = (symbol, plan.direction, swing[1])
+            last_logged = self._last_submin_log.get(submin_key)
+            suppressed = last_logged is not None and (bar.time - last_logged) < _SUBMIN_LOG_COOLDOWN
+            message = (
                 "%s %s: %s signal with confirmed swing, but computed lot size below broker "
-                "minimum %.2f -- no trade placed", symbol, bar.time, plan.direction, symbol_spec.volume_min,
+                "minimum %.2f -- no trade placed (stop distance too wide for this equity; "
+                "see cfo.min_lot_risk_cap_pct)"
             )
+            args = (symbol, bar.time, plan.direction, symbol_spec.volume_min)
+            if suppressed:
+                logger.debug(message + " [repeat of the same setup, suppressed]", *args)
+            else:
+                logger.info(message, *args)
+                self._last_submin_log[submin_key] = bar.time
             return history
         if self._cfg.min_lot_risk_cap_pct is not None:
             # Detect whether the fallback actually fired -- i.e. whether the

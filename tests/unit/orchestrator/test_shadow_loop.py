@@ -588,6 +588,55 @@ def test_lot_size_below_broker_minimum_places_no_order(monkeypatch, tmp_path):
     assert len(loop._history["XAUUSD"]) == AS_OF + 1
 
 
+def test_sub_minimum_lot_rejection_logs_once_then_dedupes_the_same_setup(monkeypatch, tmp_path, caplog):
+    # 2026-07-31 (EXP-022): in the current regime this branch is hit on most
+    # bars, and the SAME confirmed swing persists for hours -- without
+    # dedupe it re-logged the identical line every bar close (11 in one live
+    # session), reading like 11 lost opportunities rather than one
+    # unaffordable setup.
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df(n=N + 2)
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=1.0)  # far too small to clear volume_min=0.01
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    with caplog.at_level(logging.INFO):
+        loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=_bar_from_row(df, AS_OF)))
+        loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=_bar_from_row(df, AS_OF + 1)))
+
+    info_lines = [
+        r for r in caplog.records
+        if r.levelno == logging.INFO and "below broker minimum" in r.message
+    ]
+    assert len(info_lines) == 1  # second bar's identical setup suppressed to DEBUG
+    assert adapter.place_order_calls == []
+
+
+def test_sub_minimum_lot_rejection_logs_again_once_the_cooldown_elapses(monkeypatch, tmp_path, caplog):
+    _patch_scores(monkeypatch, bull_total=75, bear_total=30)
+    df = _council_df(n=N + 2)
+    seed = df.iloc[:AS_OF].reset_index(drop=True)
+    adapter = FakeAdapter(equity=1.0)
+    breaker = CircuitBreaker(daily_loss_limit_pct=2.0, max_consecutive_losses=3, max_drawdown_halt_pct=8.0)
+    loop = _default_loop(adapter, breaker, seed, borderline_log_path=tmp_path / "borderline.jsonl")
+
+    with caplog.at_level(logging.INFO):
+        loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=_bar_from_row(df, AS_OF)))
+        # Backdate the recorded log time so the next identical setup falls
+        # outside the cooldown -- a persistent condition must resurface, not
+        # go silent forever.
+        for key in list(loop._last_submin_log):
+            loop._last_submin_log[key] -= shadow_loop_module._SUBMIN_LOG_COOLDOWN + timedelta(minutes=1)
+        loop.on_new_bar(MarketSnapshot(symbol="XAUUSD", timeframe="H1", bar=_bar_from_row(df, AS_OF + 1)))
+
+    info_lines = [
+        r for r in caplog.records
+        if r.levelno == logging.INFO and "below broker minimum" in r.message
+    ]
+    assert len(info_lines) == 2
+
+
 def test_rejected_order_result_does_not_raise_and_leaves_history_appended(monkeypatch, tmp_path):
     _patch_scores(monkeypatch, bull_total=75, bear_total=30)
     df = _council_df()

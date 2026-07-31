@@ -83,6 +83,15 @@ def compute_lot_size(
     (PF 1.60 at cap=1.5 in isolation), not dead weight. `config/base.yaml`'s
     `cfo.min_lot_risk_cap_pct: 1.5` is the user's Stage 2 decision to adopt
     this live.
+
+    **2026-07-31 (EXP-022) correction to that PF 1.60 figure:** it does not
+    replicate -- re-measured with Shield applied it is 1.45, and under the
+    full cost model in the current (2025-26) regime it is 1.14. The
+    direction still holds (the rescued subset is mildly positive, not dead
+    weight) but it should be read as "mildly positive", not "PF 1.60".
+    EXP-022 also swept the cap against today's regime and re-confirmed 1.5;
+    see `config/base.yaml`'s own comment on `cfo.min_lot_risk_cap_pct` for
+    why higher caps were rejected on risk grounds, not just performance.
     """
     if equity <= 0:
         raise ValueError(f"equity must be positive, got {equity}")
