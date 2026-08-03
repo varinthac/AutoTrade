@@ -40,6 +40,17 @@ class DailyReport:
     trades at all)."""
     avg_actual_slippage: float | None
     """`None` if no trade this day recorded a slippage figure."""
+    sl_trade_count: int
+    avg_sl_overshoot_r: float | None
+    """Mean of `(-r_multiple - 1.0)` over this day's `stop_loss` exits;
+    `None` if the day had no stop_loss exit. Positive = the average SL fill
+    realized worse than the intended -1R (gap/slippage past the stop; ~0 =
+    fills at the nominal SL price). Derived from the net-based `r_multiple`,
+    so commission/swap is included -- can go slightly negative on a
+    better-than-SL fill or a swap credit. Added 2026-08-04: live SL exits
+    were realizing -1.33R/-1.34R (intrabar slippage, weekend gap) and
+    intrabar SL slippage is NOT modeled in the backtest, so this is the
+    number to watch as the SL sample grows."""
     anomaly_counts: dict[str, int]
 
 
@@ -63,6 +74,9 @@ def build_daily_report(server_date: date, db_path: Path | None = None) -> DailyR
         [t.actual_slippage for t in trades if t.actual_slippage is not None]
     )
 
+    sl_trades = [t for t in trades if t.exit_reason == "stop_loss"]
+    avg_sl_overshoot_r = _average([-t.r_multiple - 1.0 for t in sl_trades])
+
     blocked_by_source = journal.count_blocked_signals_for_day(server_date, db_path=db_path)
     blocked_total = sum(blocked_by_source.values())
 
@@ -81,6 +95,8 @@ def build_daily_report(server_date: date, db_path: Path | None = None) -> DailyR
         blocked_total=blocked_total,
         avg_entry_spread_points=avg_entry_spread_points,
         avg_actual_slippage=avg_actual_slippage,
+        sl_trade_count=len(sl_trades),
+        avg_sl_overshoot_r=avg_sl_overshoot_r,
         anomaly_counts=anomaly_counts,
     )
 
@@ -108,6 +124,13 @@ def format_daily_report(report: DailyReport) -> str:
     if report.avg_entry_spread_points is not None and report.avg_actual_slippage is not None:
         delta = report.avg_actual_slippage - report.avg_entry_spread_points
         lines.append(f"Slippage delta (actual - expected): {delta:+.2f} points")
+    if report.avg_sl_overshoot_r is None:
+        lines.append("Avg SL overshoot: n/a (0 stop_loss exits)")
+    else:
+        lines.append(
+            f"Avg SL overshoot: {report.avg_sl_overshoot_r:+.3f}R past -1R "
+            f"({report.sl_trade_count} stop_loss exit{'s' if report.sl_trade_count != 1 else ''})"
+        )
     lines.append(f"Anomalies: {sum(report.anomaly_counts.values())} total")
     if report.anomaly_counts:
         for event_type, count in sorted(report.anomaly_counts.items()):

@@ -47,6 +47,7 @@
   <ul>
     <li>Avg entry spread (expected slippage): {{ report.avg_entry_spread_points | round(4) if report.avg_entry_spread_points is not none else "n/a" }} points</li>
     <li>Avg actual slippage: {{ report.avg_actual_slippage | round(4) if report.avg_actual_slippage is not none else "n/a" }} points</li>
+    <li>Avg SL overshoot past -1R: {{ (report.avg_sl_overshoot_r | round(4)) ~ "R over " ~ report.sl_trade_count ~ " stop_loss exit(s)" if report.avg_sl_overshoot_r is not none else "n/a (0 stop_loss exits)" }}</li>
   </ul>
 </div>
 

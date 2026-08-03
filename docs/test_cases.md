@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1474 (including all parametrized variants)
+- **Total Test Count**: 1476 (including all parametrized variants)
 - **Test Files**: ~59 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -16,11 +16,11 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 |-----------|-----------|-----------|
 | Auditor | test_backtest_results.py | 11 |
 | | test_borderline.py | 15 |
-| | test_daily_report.py | 3 |
+| | test_daily_report.py | 5 |
 | | test_demotion.py | 12 |
 | | test_metrics.py | 6 |
 | | test_promotion.py | 31 |
-| **Auditor Subtotal** | | **78** |
+| **Auditor Subtotal** | | **80** |
 | Backtest | test_clock.py | 3 |
 | | test_cost_model.py | 7 |
 | | test_engine.py | 42 |
@@ -107,7 +107,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **398** |
 | | | |
-| **GRAND TOTAL** | | **1464** |
+| **GRAND TOTAL** | | **1466** |
 
 ---
 
@@ -149,6 +149,8 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 - test_build_daily_report_over_seeded_db
 - test_build_daily_report_with_no_data_returns_zeros_and_nones
+- test_sl_overshoot_averages_only_stop_loss_exits
+- test_format_daily_report_shows_na_overshoot_when_no_stop_loss_exit
 - test_format_daily_report_is_human_readable_and_does_not_crash_on_empty_data
 
 ### tests/unit/auditor/test_demotion.py
