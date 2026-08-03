@@ -4750,3 +4750,145 @@ rolling [-2h, +48h] snapshot every 5 minutes. As of this note the snapshot is no
   `MQL5CalendarProvider`), so trigger-window reconstruction is possible for any symbol later.
 - EXP-024 itself is NOT pre-registered here — per EXP-023's escalation it should only be designed once enough weeks
   of real trigger data exist to say how often mode A actually fires (the piece both EXP-023 proxies had to assume).
+
+## EXP-025 2026-08-04 — News-protection TRIGGER LEVEL `watchman.news_profit_threshold_r` (NEW family "news-protection trigger threshold"; sibling of EXP-023's "news-protection min-lot fallback")
+Status: PRE-REGISTERED (this block was written and COMMITTED BEFORE any deciding window was run; only the
+`### EXP-025 RESULTS` section and a final Status line are added afterwards).
+ID NOTE: **EXP-024 is deliberately SKIPPED/RESERVED** for the future real-calendar experiment escalated by EXP-023
+§6(ii) and set up by the 2026-08-03 NOTE (`data/db/news_calendar_history.csv` started accumulating on 2026-08-03; that
+experiment cannot be designed until several weeks of real trigger data exist). This experiment therefore takes the next
+free number, 025, rather than pre-empting 024.
+Scope: Train (y1/y2/y3) + Val (y4) ONLY. **Test year (2025-07-22 → 2026-07-21) NOT touched under ANY outcome** — this
+family's one-touch budget is unspent and stays unspent here. NO change to `config/base.yaml` and NO change to anything
+under `src/` will be made by this experiment whatever the verdict.
+
+### 0. WHY THIS PARAMETER, WHY NOW (direct descendant of EXP-023 §6(iii))
+EXP-023 rejected changing the min-lot fallback ACTION (lock-the-stop) and closed that door permanently: a stop parked
+inside gold's own hourly noise deletes the 2R upside (48.7% → 1.9% TP rate on Val) instead of preserving it. Its §6(iii)
+named the remaining, cheaper lever explicitly: *"if the goal is to stop a min-lot account from banking every winner at
++0.5R, the surgical lever is the TRIGGER, not the fallback action — e.g. raising `news_profit_threshold_r`"*. That is
+this experiment, and nothing else: same mechanism (mode A, close-all at trigger — the live behavior at min-lot per
+`watchman/loop.py::_half_volume_rounded` → CLOSE_ALL), same engine, same account context, ONE parameter moved.
+MECHANISM, stated so the causal role is explicit before any number is read: `news_profit_threshold_r` is the profit
+gate in `watchman/news_protection.check_news_protection` — `profit_r = (price − entry)/initial_stop_distance` measured
+against the ORIGINAL stop distance, and if `profit_r < threshold` the function short-circuits to NO_ACTION and the news
+check is never even consulted. So the threshold decides **which trades ever become eligible for protection at all**, and
+(at min-lot) therefore which trades get force-closed instead of being allowed to run to SL/TP/structure/time-stop.
+Raising it is a strictly monotone shrink of the treated set: `affected(T) ⊆ affected(0.5)` for every `T ≥ 0.5`.
+THE TRADE-OFF BEING PRICED, in one line: raising T re-exposes trades that sit between +0.5R and +T·R to their full
+downside (they can now come back and hit the original SL for −1R) in exchange for letting the survivors reach 2R. This
+is not obviously good — EXP-023 measured A − C = −0.066R (Train) / −0.132R (Val) per affected trade, i.e. protection is
+expensive but the sign was NOT individually significant. The experiment must therefore be able to conclude "0.5 is
+already on the plateau" and that is an entirely expected outcome.
+
+### 1. INHERITED DESIGN DEVIATIONS (EXP-023 D1/D2/D3 — still true, still binding, restated so this block stands alone)
+D1 (inherited). `backtest/engine.py` does NOT model news protection at all; every baseline in EXP-001..EXP-022 is a
+   mode-C run. Mode A is simulated here by the same copied bar loop, not by production code.
+D2 (inherited). There is no historical high-impact-news calendar, so the trigger TIME is proxied, declared up front:
+   **P1 "always-eligible"** (PRIMARY, used for selection) = every bar trigger-eligible → protection fires at the first
+   touch of +T·R; this is exactly the fail-safe regime `news_protection.py` documents when the calendar is unavailable,
+   and it is the maximum-exposure bound (largest affected subset, largest legitimate sample).
+   **P2 "US-macro hours"** (ROBUSTNESS ONLY, never selection) = Mon–Fri server hours {14,15,16,20,21}.
+   P1 overstates trigger FREQUENCY vs a live terminal with a working MQL5 calendar; it does not distort the conditional
+   comparison, which is the deciding one. Making the true rate measurable is EXP-024's job, not this one's.
+D3 (inherited). Primary comparison is TRADE-MATCHED and CONDITIONAL, sequence held FIXED (same entries, same lots,
+   same bars, only the management rule differs), because `max_positions_per_symbol: 1` means any earlier/later exit
+   reshuffles which signal is taken next and that reshuffling noise dominates portfolio deltas (EXP-017/020/021).
+   Full-sequence portfolio runs are reported too, but explicitly as VETO-ONLY evidence.
+
+### 2. NEW DESIGN DECISIONS SPECIFIC TO EXP-025 (declared before results)
+E1. **The pairing subtlety, and how it is resolved.** Because `affected(T) ⊆ affected(0.5)`, the treated subsets are
+    not the same set across arms, so a naive "avgR on each arm's own affected subset" comparison would compare
+    different trades and be meaningless (it would also mechanically favour high T by selection). RESOLUTION, fixed
+    here: the DECIDING metric is the **paired per-trade R difference on the affected(0.5) subset** — the trades the
+    CURRENT LIVE RULE touches — i.e. `A(T) − A(0.5)`, same trades, same entry bars, same lots, SE of the DIFFERENCE.
+    For a trade in affected(0.5) that does NOT reach +T·R, the `A(T)` outcome is simply whatever the untreated
+    management produces (stop_loss / take_profit / structure / time_stop) — which is precisely the point of raising T
+    and must be counted, good or bad. Pooled over Train (y1+y2+y3) and separately over Val (y4).
+E2. **The EXP-023 same-bar/next-bar addendum does NOT arise here, and this is why.** That addendum existed only
+    because mode B places a RESTING BROKER STOP, so "is the fresh stop live for the rest of the triggering bar?" was a
+    real, outcome-changing intrabar-path question. Mode A is a MARKET CLOSE executed at the moment of the trigger: the
+    position is gone within the same poll cycle, there is no later level to be touched, and no convention choice
+    exists. Every arm in this experiment is mode A. Hence ONE convention, no `@samebar` variants, and the arm count
+    stays small.
+E3. **Trigger convention, unchanged from EXP-023** (so the two experiments' numbers are comparable): per bar the
+    priority is SL/TP `check_exit` (engine convention, SL wins a double-touch) > news-protection intrabar trigger >
+    Watchman CLOSE at the bar's close. Trigger price = the bar's OPEN if the position is already ≥ T·R at the open,
+    else the exact +T·R level. Exits fill nominally (engine convention; symmetric across all arms — see EXP-023's
+    HONEST CAVEAT ON EXIT COSTS, which applies here identically and is an order of magnitude smaller than any effect
+    that could change a verdict).
+E4. **No lock-SL variants.** EXP-023 answered that question; re-testing it would be exactly the "shopping for a past
+    result" the protocol forbids. Mode C (no protection) is carried as a REFERENCE BOUND ONLY and is never a
+    candidate: removing a deliberate risk control is out of scope here and belongs to EXP-024's question.
+
+### 3. GRID (one parameter — `watchman.news_profit_threshold_r`)
+| id | mode | T | note |
+|----|------|---|------|
+| A050 | close_all | 0.50 | **BASELINE = current config, current live behavior** |
+| A075 | close_all | 0.75 | |
+| A100 | close_all | 1.00 | **PRIMARY CANDIDATE, declared up front** |
+| A125 | close_all | 1.25 | |
+| A150 | close_all | 1.50 | |
+| C    | none      | n.a. | REFERENCE BOUND ONLY (= T → ∞ / no protection). NOT a candidate. |
+
+PRIMARY-CANDIDATE MECHANISM STORY (declared before results, so it cannot be back-fitted): T = 1.0 is the midpoint of
+the grid and the only value with an a-priori story — it is one full initial-stop-distance of profit (above gold's
+hourly retrace noise, which EXP-023 §2 showed swallows anything parked at +0.3R) and exactly halfway to the 2R
+take-profit, so a trade that reaches it has already earned the right to be *considered* worth protecting, while trades
+that merely poke +0.5R and fold are left to the normal SL/TP machinery.
+Coarse grid only, 5 points across the plausible range, ONE pass — no refinement pass is pre-authorised. If the pooled
+curve turns out to be flat (the null this experiment fully expects), refinement would be fitting noise.
+Configs evaluated (this exp / cumulative for THIS family): 5 T × 2 proxies = **10 / 10** (first-ever in this family).
+Sibling-family history for multiple-testing honesty: EXP-023 burned 20 configs on the adjacent "fallback action"
+question using the SAME windows and the SAME affected subsets. These are different hypotheses, but the DATA is the
+same and the searcher is the same, so the bar is NOT reset to zero: the required edge is set at **1.7 SE**, the level
+EXP-023 itself used at N=20, rather than the nominal 1.6 SE for N=10.
+
+### 4. SPEC BOUNDS
+Appendix A §4.5 states the rule as "ไม้กำไรอยู่ ≥ 0.5×R" with the item tagged `[adjustable]`, and `config/base.yaml`'s
+watchman block plus `news_protection.NewsProtectionConfig`'s docstring both say "all values [adjustable]". No hard
+numeric ceiling is specified. Self-imposed bound, declared here: **T is tested only in [0.5, 1.5], strictly below
+`order.tp_r_multiple` = 2.0.** At T ≥ 2.0 the trigger can never fire before the take-profit and mode A degenerates
+into mode C, i.e. it would be a covert removal of the risk control rather than a tuning of it — out of bounds for this
+experiment by construction, not by result. Nothing else in `config/base.yaml` moves: `news_window_minutes` stays 30,
+`news_close_mode` stays `half` (its min-lot degeneration into CLOSE_ALL is the mechanism under test, not a knob here).
+
+### 5. WINDOWS, ACCOUNT CONTEXT, COST MODEL (identical to EXP-023 so the two are directly comparable)
+Train y1 2021-07-22→2022-07-21, y2 2022-07-22→2023-07-21, y3 2023-07-22→2024-07-21; Val y4 2024-07-22→2025-07-21.
+$3,000 starting equity per-year anchored, `min_lot_risk_cap_pct` 1.5, `risk_per_trade_pct` 1.0, all-24h session,
+be/trail OFF, tp 2.0, pivot 3. COST MODEL COMPLETE: slippage = min-1-spread (`slippage_points=None`), swap modelled
+(EXP-018 rates long −53.2 / short +36.8, 3× Wed), commission $0.00 (IC Markets Standard, the real account).
+Harness: `experiments/exp025_news_threshold_harness.py`; raw outputs `experiments/exp025_cond_out.txt` (conditional /
+deciding) and `experiments/exp025_port_out.txt` (portfolio / veto-only).
+FIDELITY GATES, run and reported BEFORE any candidate number is read (STOP if any fails):
+ 1. `--mode fidelity`: the copied bar loop with the news mechanism OFF must equal `backtest.engine.run_backtest`
+    trade-for-trade, field-for-field, both with and without EXP-022's fast-path memoisation shim.
+ 2. Conditional-replay self-check, asserted in code on every window: replaying each mode-C trade one-by-one must
+    reproduce the full-sequence mode-C trade list EXACTLY.
+ 3. EXTERNAL anchor against a previously RECORDED number: mode C on y4/VAL at $3,000 must reproduce
+    **254 trades, PF 1.0961, net +$352.60, maxDD 9.99%** (EXP-022's cap-1.5 y4 cell, re-confirmed by EXP-023).
+ 4. INTERNAL anchor against EXP-023: at T = 0.5 the A arm must reproduce EXP-023 §1's affected counts
+    (P1 162/152/149/154, P2 124/116/116/124) and its affected-subset avgR (P1 0.501/0.497/0.494/0.495).
+ 5. Monotonicity assert: for every T ≥ 0.5, every trade that triggers under T must also have triggered under 0.5.
+
+### 6. METRIC THAT DECIDES + ACCEPTANCE CRITERION (ALL required to RECOMMEND a T over 0.5; set before any result)
+ (a) TREATMENT EFFECT: pooled paired mean of `R(A(T)) − R(A(0.5))` on the affected(0.5) subset under P1 must exceed
+     **+1.7 SE** of that paired difference on Train (y1+y2+y3) **AND** on Val (y4). Both, not either.
+ (b) PER-YEAR SIGN CONSISTENCY: the paired mean difference must have the SAME SIGN in y1, y2, y3 and y4 — no flips.
+     (EXP-020 / EXP-022(a) precedent: a Train/Val ranking inversion is the overfit signature.)
+ (c) PLATEAU: the winner's ±1 grid-step neighbours must land within ~15% of it on Val. A lone spike with collapsing
+     neighbours is noise → REJECT even if it is the sweep's best number.
+ (d) PORTFOLIO VETO (veto-only, never selection): full-sequence PF and max DD under the winning T within ~15% of
+     A(0.5) on Train and on Val.
+ (e) SAMPLE: ≥100 trades in affected(0.5) per evaluation window. EXP-023 measured 149–162 under P1 and 116–124 under
+     P2, so this should pass; actuals are reported per window regardless.
+ (f) P2 ROBUSTNESS: the SIGN of the effect must survive restriction to news-adjacent hours. An edge that exists only
+     in quiet hours is not an edge on the mechanism being changed.
+ (g) TAIL REPORT (mandatory disclosure, and a veto if it is ugly): raising T re-exposes trades between +0.5R and
+     +T·R to full SL risk — an outcome A(0.5) makes ARITHMETICALLY IMPOSSIBLE (its floor is ~+0.26R). Report, per T
+     and per window: worst single affected-trade R, and the COUNT/FRACTION of affected(0.5) trades that end NEGATIVE.
+     A T that buys its mean with a materially fatter left tail is rejected on this criterion alone.
+ Walk-forward: the 4 windows ARE the rolling confirmation for criterion (b); no separate tooling exists in this repo.
+ Gate-integrity note: nothing in this experiment touches a promotion/demotion gate, an Auditor threshold or a
+ circuit-breaker limit, and no such change will be proposed as a way to make any result pass. If the answer is "0.5 is
+ already on the plateau", that is logged as the result — negative results are results.
