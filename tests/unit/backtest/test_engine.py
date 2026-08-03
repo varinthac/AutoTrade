@@ -20,6 +20,7 @@ from autotrade.backtest.cost_model import CostModelConfig, round_trip_cost
 from autotrade.backtest.engine import BacktestConfig, _risk_voice_inputs, run_backtest
 from autotrade.backtest.news_stub import NoHistoricalNewsDataProvider
 from autotrade.common.symbol_spec import SymbolSpec
+from autotrade.council.news_calendar import NewsEvent
 from autotrade.council.order_construction import OrderPlan
 from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.council.scoring import BullBearScore
@@ -27,6 +28,7 @@ from autotrade.features.indicators import atr
 from autotrade.features.swing import latest_confirmed_swing_low
 from autotrade.shield.checkpoint import ShieldConfig
 from autotrade.watchman.evaluate import WatchmanConfig, evaluate_watchman
+from autotrade.watchman.news_protection import NewsProtectionConfig
 from autotrade.watchman.position_metadata import PositionMetadata
 
 SYMBOL = SymbolSpec(
@@ -1459,3 +1461,211 @@ def test_shield_check_skipped_without_crashing_when_no_confirmed_swing_exists_at
 
     assert len(trades) == 1
     assert trades[0].exit_reason == "take_profit"
+
+
+# --- News protection (Watchman item 5, watchman/news_protection.py) --------
+
+
+class _AlwaysNewsProvider:
+    """Fake `NewsCalendarProvider` -- always reports a high-impact USD event
+    exactly at the query's own `window_start`, so `check_news_protection`'s
+    `_news_incoming` finds it regardless of the exact window bounds this
+    engine builds (mirrors `tests/unit/watchman/test_news_protection.py`'s
+    `AlwaysNewsProvider`)."""
+
+    def get_high_impact_events(self, currency, window_start, window_end):
+        return [NewsEvent(currency=currency, impact="high", event_time=window_start)]
+
+
+class _NoNewsProvider:
+    def get_high_impact_events(self, currency, window_start, window_end):
+        return []
+
+
+_NEWS_PLAN = OrderPlan(direction="BUY", entry=100.0, stop_loss=90.0, take_profit=1000.0, stop_distance=10.0)
+
+
+def _news_backtest_config(
+    news_cfg: NewsProtectionConfig | None,
+    news_calendar,
+    plan: OrderPlan = _NEWS_PLAN,
+    starting_equity: float = STARTING_EQUITY,
+    watchman_cfg: WatchmanConfig | None = None,
+) -> BacktestConfig:
+    return BacktestConfig(
+        starting_equity=starting_equity, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        signal_fn=_fixed_signal_at(SIGNAL_INDEX, plan, []),
+        news_protection_cfg=news_cfg, news_calendar=news_calendar, watchman_cfg=watchman_cfg,
+    )
+
+
+def _news_trigger_rows(bar8: dict) -> list[dict]:
+    """`_swing_setup_rows()` (confirmed swing at index 3, matching
+    `_NEWS_PLAN.stop_loss`) + a fill bar at index 7 (open == entry == 100,
+    zero cost) + one caller-supplied bar 8 to probe the news-trigger
+    geometry."""
+    return _swing_setup_rows() + [
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 7: fill bar
+        bar8,
+    ]
+
+
+def test_news_trigger_fires_at_the_exact_threshold_level_when_touched_intrabar():
+    # profit_threshold_r=0.5 * stop_distance(10) = 5 -> level = 105. Bar 8's
+    # open (103) has not reached it yet, but its high (106) does -- the
+    # trigger price must be the exact level (105), not the bar's high.
+    df = _bars(_news_trigger_rows({"open": 103, "high": 106, "low": 102, "close": 105, "spread": 0}))
+    cfg = NewsProtectionConfig(news_window_minutes=30.0, profit_threshold_r=0.5, close_mode="all")
+    config = _news_backtest_config(cfg, _AlwaysNewsProvider())
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "news_protection"
+    assert trades[0].exit_price == pytest.approx(105.0)
+    assert trades[0].exit_time == df["time"].iloc[8]
+
+
+def test_news_trigger_fires_at_the_bars_own_open_when_already_gapped_past_threshold():
+    df = _bars(_news_trigger_rows({"open": 110, "high": 112, "low": 109, "close": 111, "spread": 0}))
+    cfg = NewsProtectionConfig(news_window_minutes=30.0, profit_threshold_r=0.5, close_mode="all")
+    config = _news_backtest_config(cfg, _AlwaysNewsProvider())
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "news_protection"
+    assert trades[0].exit_price == pytest.approx(110.0)  # the bar's own OPEN, not the exact 105 level
+
+
+def test_check_exit_priority_wins_over_a_same_bar_news_trigger():
+    # Bar 8 both crosses the news threshold (high=106 >= 105) AND touches
+    # take_profit(1000)? No -- use a bar that hits stop_loss(90) instead,
+    # which is far more reachable: SL wins per the documented per-bar
+    # ordering (check_exit is consulted FIRST, unconditionally).
+    df = _bars(_news_trigger_rows({"open": 103, "high": 106, "low": 85, "close": 90, "spread": 0}))
+    cfg = NewsProtectionConfig(news_window_minutes=30.0, profit_threshold_r=0.5, close_mode="all")
+    config = _news_backtest_config(cfg, _AlwaysNewsProvider())
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "stop_loss"
+
+
+def test_news_protection_no_action_when_no_news_incoming():
+    df = _bars(_news_trigger_rows({"open": 110, "high": 112, "low": 109, "close": 111, "spread": 0}))
+    cfg = NewsProtectionConfig(news_window_minutes=30.0, profit_threshold_r=0.5, close_mode="all")
+    config = _news_backtest_config(cfg, _NoNewsProvider())
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "end_of_data"  # never protected, never SL/TP touched either
+
+
+def test_news_protection_no_action_below_profit_threshold_even_with_news_incoming():
+    # Bar 8 never reaches +0.5R (level 105) at all -- profit_r stays below
+    # threshold, so check_news_protection's own short-circuit applies and no
+    # calendar query is even needed.
+    df = _bars(_news_trigger_rows({"open": 101, "high": 102, "low": 100, "close": 101, "spread": 0}))
+    cfg = NewsProtectionConfig(news_window_minutes=30.0, profit_threshold_r=0.5, close_mode="all")
+    config = _news_backtest_config(cfg, _AlwaysNewsProvider())
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "end_of_data"
+
+
+def test_news_protection_cfg_none_never_triggers_even_when_price_and_news_would():
+    # Backward-compatibility regression guard, same shape as
+    # test_watchman_cfg_none_never_trails_or_closes_even_when_price_would_trigger_breakeven:
+    # the exact same price action that (with news modeled, above) protects
+    # the trade must, with news_protection_cfg=None, ride through untouched.
+    df = _bars(_news_trigger_rows({"open": 110, "high": 112, "low": 109, "close": 111, "spread": 0}))
+    config = _news_backtest_config(None, None)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "end_of_data"
+
+
+def test_news_protection_cfg_and_calendar_must_be_given_together():
+    cfg = NewsProtectionConfig()
+    config_missing_calendar = _news_backtest_config(cfg, None)
+    df = _bars(_news_trigger_rows({"open": 110, "high": 112, "low": 109, "close": 111, "spread": 0}))
+
+    with pytest.raises(AssertionError):
+        run_backtest(df, "XAUUSD", SYMBOL, config_missing_calendar)
+
+
+def test_news_protection_min_lot_close_half_and_breakeven_degenerates_to_close_all():
+    # Tiny equity -> compute_lot_size's risk-based lot rounds to EXACTLY
+    # volume_min (0.01) -- half of that (0.005) rounds DOWN to 0.0, below
+    # volume_min, so watchman/loop.py's own CLOSE_HALF_AND_BREAKEVEN ->
+    # CLOSE_ALL degeneration applies (mirrored by engine._half_lot_rounded).
+    # equity=10, risk_pct=1.0 -> risk_amount=0.1; stop_distance=10,
+    # point_value=1.0 -> raw_lot = 0.1 / (10*1.0) = 0.01 == volume_min exactly.
+    df = _bars(_news_trigger_rows({"open": 110, "high": 112, "low": 109, "close": 111, "spread": 0}))
+    cfg = NewsProtectionConfig(news_window_minutes=30.0, profit_threshold_r=0.5, close_mode="half")
+    config = _news_backtest_config(cfg, _AlwaysNewsProvider(), starting_equity=10.0)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "news_protection"
+    assert trades[0].lot_size == pytest.approx(0.01)  # the WHOLE original lot, not a fraction
+
+
+def test_news_protection_genuine_partial_close_moves_remainder_stop_to_breakeven():
+    # starting_equity=10000, risk_pct=1.0%, stop_distance=10 -> lot=10.0 (this
+    # file's own documented default sizing) -- half (5.0) is comfortably
+    # above volume_min(0.01), so this is a GENUINE partial close, not the
+    # min-lot degeneration above.
+    df = _bars(_news_trigger_rows({"open": 110, "high": 112, "low": 109, "close": 111, "spread": 0}) + [
+        {"open": 100.0, "high": 101, "low": 95, "close": 96, "spread": 0},  # 9: dips to the breakeven SL(100)
+    ])
+    cfg = NewsProtectionConfig(news_window_minutes=30.0, profit_threshold_r=0.5, close_mode="half")
+    config = _news_backtest_config(cfg, _AlwaysNewsProvider())
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 2
+    partial, remainder = trades
+    assert partial.exit_reason == "news_protection"
+    assert partial.lot_size == pytest.approx(5.0)
+    assert partial.exit_time == df["time"].iloc[8]
+    # the remaining half keeps the ORIGINAL stop (90) until the NEXT bar's
+    # check_exit call (no look-ahead, same convention as a Watchman MODIFY_SL)
+    # -- bar 9's own open(100) has not gapped past the breakeven stop, but its
+    # low(95) touches it intrabar, so it stops out AT the breakeven level.
+    assert remainder.exit_reason == "stop_loss"
+    assert remainder.lot_size == pytest.approx(5.0)
+    assert remainder.exit_price == pytest.approx(100.0)  # entry price -- the breakeven level, not the original 90.0
+
+
+def test_news_protection_re_trigger_suppression_window_then_re_arms_after_it_elapses():
+    # news_window_minutes=90 -- wider than the 60-minute bar spacing -- so
+    # bar 9 (bar8_time + 60min) is still INSIDE the suppression window
+    # bar 8's partial close set (bar8_time + 90min), and must NOT re-trigger
+    # even though it is still profitable and news is still "incoming" every
+    # query. Bar 10 (bar8_time + 120min) is past the window and re-arms.
+    df = _bars(_news_trigger_rows({"open": 110, "high": 112, "low": 109, "close": 111, "spread": 0}) + [
+        {"open": 106, "high": 108, "low": 105, "close": 107, "spread": 0},  # 9: suppressed, no action
+        {"open": 106, "high": 108, "low": 105, "close": 107, "spread": 0},  # 10: window elapsed, re-triggers
+    ])
+    cfg = NewsProtectionConfig(news_window_minutes=90.0, profit_threshold_r=0.5, close_mode="half")
+    config = _news_backtest_config(cfg, _AlwaysNewsProvider())
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    news_trades = [t for t in trades if t.exit_reason == "news_protection"]
+    assert [t.exit_time for t in news_trades] == [df["time"].iloc[8], df["time"].iloc[10]]
+    assert news_trades[0].lot_size == pytest.approx(5.0)
+    assert news_trades[1].lot_size == pytest.approx(2.5)  # half of the 5.0 remainder
+    # nothing at all recorded at bar 9 -- the suppression window truly
+    # skipped it rather than merely not finding a candidate that bar.
+    assert not any(t.exit_time == df["time"].iloc[9] for t in trades)

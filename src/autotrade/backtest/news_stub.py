@@ -12,17 +12,21 @@ backtesting: it would veto every single historical trade, making Risk Voice
 appear in a backtest as "always blocks everything" rather than modeling its
 actual conditions.
 
-This project has no historical economic-calendar dataset (the working
-`MQL5CalendarProvider` only exports the terminal's forward-looking live
-calendar, and `council/risk_voice.py`'s "Known gap Phase 6b" note already
-flagged historical news modeling as its own, bigger, unsolved follow-up
-decision). Given that, `NoHistoricalNewsDataProvider` always returns `[]`
-("fetched successfully, no high-impact event") rather than `None` -- an
-explicit, honest choice to model Risk Voice's other five conditions
+This provider exists for RISK VOICE's news condition specifically, which is
+STILL not wired to a historical calendar (`council/risk_voice.py`'s "Known
+gap Phase 6b" note) -- a separate, deliberately still-open gap from
+Watchman's own news protection (`watchman/news_protection.py`), which CAN
+now be modeled via `backtest/historical_news_calendar.
+HistoricalNewsCalendarProvider` over EXP-024's real calendar dump (see
+`backtest/engine.py`'s module docstring). This module's `[]`-always
+behavior is unrelated to that dataset's existence or absence; it is a
+deliberate choice to model Risk Voice's other five conditions
 (spread/stop-distance/session/Friday-close/ATR-panic) accurately in
-backtests while leaving the news condition NOT modeled, rather than letting
-the news condition's fail-safe veto silently swallow every other condition's
-signal. `backtest/report.py`'s envelope records `risk_voice_modeled` so a
+backtests while leaving RISK VOICE's news condition NOT modeled, rather than
+letting the news condition's fail-safe veto silently swallow every other
+condition's signal. `NoHistoricalNewsDataProvider` always returns `[]`
+("fetched successfully, no high-impact event") rather than `None` for that
+reason. `backtest/report.py`'s envelope records `risk_voice_modeled` so a
 promotion-gate reader always knows this limitation applies, the same
 "never silently pretend to model something you don't" convention
 `backtest/cost_model.py`'s `commission_per_lot=0.0` placeholder uses.

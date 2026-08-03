@@ -34,6 +34,16 @@ Shield's duplicate-signal cooldown is likewise always modeled, using
 docstring for exactly which of Shield's 6 rules have real effect in this
 single-position engine (only the cooldown does; the other 5 are structurally
 inert here).
+
+Watchman's news protection is OPT-IN via `--model-news-protection` (unlike
+the three above, since it needs a real calendar file this CLI cannot assume
+exists everywhere -- see `backtest/historical_news_calendar.py`'s module
+docstring): builds `config/base.yaml`'s `watchman:` `news_*` thresholds into
+a `NewsProtectionConfig` plus a `HistoricalNewsCalendarProvider` over
+`--news-calendar-path` (default: `scripts/build_backtest_calendar.py`'s
+canonical output). Omit the flag to leave it unmodeled
+(`news_protection_modeled=false` in the envelope), this CLI's prior default
+behavior.
 """
 from __future__ import annotations
 
@@ -49,20 +59,24 @@ import pandas as pd
 
 from autotrade.backtest.cost_model import CostModelConfig, SwapModelConfig
 from autotrade.backtest.engine import BacktestConfig, run_backtest
+from autotrade.backtest.historical_news_calendar import HistoricalNewsCalendarProvider
 from autotrade.backtest.report import BacktestReport, format_report, generate_report
 from autotrade.common.config import REPO_ROOT, load_mt5_credentials, load_yaml_config
 from autotrade.common.mt5_connection import mt5_session
 from autotrade.common.symbol_spec import SymbolSpec
 from autotrade.common.symbols import get_symbol_spec
+from autotrade.council.news_calendar import NewsCalendarProvider
 from autotrade.council.risk_voice import RiskVoiceConfig
 from autotrade.feed.historical import HISTORICAL_DIR
 from autotrade.shield.checkpoint import ShieldConfig
 from autotrade.watchman.evaluate import WatchmanConfig
+from autotrade.watchman.news_protection import NewsProtectionConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "db" / "backtest_reports"
+DEFAULT_NEWS_CALENDAR = HISTORICAL_DIR / "news_calendar_backtest.csv"
 
 
 def build_envelope(
@@ -75,6 +89,7 @@ def build_envelope(
     risk_voice_modeled: bool,
     watchman_exits_modeled: bool,
     shield_modeled: bool,
+    news_protection_modeled: bool,
     min_lot_risk_cap_pct: float | None,
 ) -> dict:
     """The JSON-serializable envelope written to disk -- see
@@ -90,10 +105,15 @@ def build_envelope(
     safeguard instead lives in `main()`'s CLI: `--commission-per-lot` is a
     required argument, so this function is never reached with an
     un-considered commission value in the normal CLI path.
-    `risk_voice_modeled`/`watchman_exits_modeled`/`shield_modeled` mirror
-    that same "don't silently count an incomplete simulation" philosophy for
-    Risk Voice, Watchman's exit management, and Shield's cooldown
+    `risk_voice_modeled`/`watchman_exits_modeled`/`shield_modeled`/
+    `news_protection_modeled` mirror that same "don't silently count an
+    incomplete simulation" philosophy for Risk Voice, Watchman's exit
+    management, Shield's cooldown, and Watchman's news protection
     respectively -- see `backtest/engine.py`'s module docstring.
+    `news_protection_modeled` is deliberately NOT folded into
+    `cost_model_complete` -- it is not a cost-model item, unlike
+    `swap_modeled` (see the 2026-07-25 note below); it gets its own flag,
+    same as `risk_voice_modeled`/`watchman_exits_modeled`/`shield_modeled`.
     `min_lot_risk_cap_pct` records this run's
     `BacktestConfig.min_lot_risk_cap_pct` for auditability (`None` when the
     min-lot risk-cap fallback was disabled) -- see `risk/sizing.py`'s
@@ -127,6 +147,7 @@ def build_envelope(
         "risk_voice_modeled": risk_voice_modeled,
         "watchman_exits_modeled": watchman_exits_modeled,
         "shield_modeled": shield_modeled,
+        "news_protection_modeled": news_protection_modeled,
         "min_lot_risk_cap_pct": min_lot_risk_cap_pct,
         "report": asdict(report),
     }
@@ -144,17 +165,22 @@ def run_and_persist(
     risk_voice_cfg: RiskVoiceConfig | None = None,
     watchman_cfg: WatchmanConfig | None = None,
     shield_cfg: ShieldConfig | None = None,
+    news_protection_cfg: NewsProtectionConfig | None = None,
+    news_calendar: NewsCalendarProvider | None = None,
     pivot_bars: int = 3,
     min_lot_risk_cap_pct: float | None = None,
 ) -> Path:
-    """`risk_voice_cfg=None`/`watchman_cfg=None`/`shield_cfg=None` (the
-    defaults) mean Risk Voice / Watchman's exit management / Shield's
-    cooldown are NOT modeled in this run -- an explicit, honest placeholder
-    (see `backtest/engine.py`'s module docstring), not a silent equivalent to
+    """`risk_voice_cfg=None`/`watchman_cfg=None`/`shield_cfg=None`/
+    `news_protection_cfg=None` (the defaults) mean Risk Voice / Watchman's
+    exit management / Shield's cooldown / Watchman's news protection are NOT
+    modeled in this run -- an explicit, honest placeholder (see
+    `backtest/engine.py`'s module docstring), not a silent equivalent to
     passing one. `scripts/run_backtest.py`'s CLI (`main()`, below) always
-    constructs real ones from `config/base.yaml`'s `risk_voice:`/`watchman:`/
-    `shield:` blocks; leaving any `None` is only appropriate for
-    tests/tooling that don't need that veto/exit/cooldown behavior.
+    constructs real ones from `config/base.yaml`'s `risk_voice:`/`watchman:`
+    blocks unless `--model-news-protection` is omitted; leaving any `None` is
+    only appropriate for tests/tooling that don't need that veto/exit/
+    cooldown/news-protection behavior. `news_protection_cfg` and
+    `news_calendar` must be given together (`run_backtest` asserts this).
     `pivot_bars` defaults to `BacktestConfig`'s own default (3); `main()`
     always passes `config/base.yaml`'s `global.swing_pivot_bars` instead of
     relying on that default. `min_lot_risk_cap_pct=None` (the default)
@@ -164,6 +190,7 @@ def run_and_persist(
     config = BacktestConfig(
         starting_equity=starting_equity, risk_per_trade_pct=risk_per_trade_pct, cost_model=cost_model,
         risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg, shield_cfg=shield_cfg, pivot_bars=pivot_bars,
+        news_protection_cfg=news_protection_cfg, news_calendar=news_calendar,
         min_lot_risk_cap_pct=min_lot_risk_cap_pct,
     )
     trades = run_backtest(df, symbol, symbol_spec, config)
@@ -173,6 +200,7 @@ def run_and_persist(
         risk_voice_modeled=risk_voice_cfg is not None,
         watchman_exits_modeled=watchman_cfg is not None,
         shield_modeled=shield_cfg is not None,
+        news_protection_modeled=news_protection_cfg is not None,
         min_lot_risk_cap_pct=min_lot_risk_cap_pct,
     )
 
@@ -248,6 +276,17 @@ def main() -> int:
         help="Restrict the replay to bars before this date (YYYY-MM-DD, exclusive)",
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument(
+        "--model-news-protection", action="store_true",
+        help="Model Watchman's news protection (`watchman/news_protection.py`, live 'mode A') against the "
+             "real historical calendar built by scripts/build_backtest_calendar.py. Omit to leave it "
+             "unmodeled (envelope news_protection_modeled=false), the prior default behavior.",
+    )
+    parser.add_argument(
+        "--news-calendar-path", type=Path, default=DEFAULT_NEWS_CALENDAR,
+        help="Canonical historical calendar CSV (scripts/build_backtest_calendar.py's output). Only read "
+             "when --model-news-protection is given.",
+    )
     args = parser.parse_args()
 
     csv_path = HISTORICAL_DIR / f"{args.symbol}_H1.csv"
@@ -307,6 +346,26 @@ def main() -> int:
         duplicate_signal_cooldown_hours=cfg["shield"]["duplicate_signal_cooldown_hours"],
     )
 
+    # Opt-in (unlike risk_voice_cfg/watchman_cfg/shield_cfg above): news
+    # protection needs a real calendar file built by
+    # scripts/build_backtest_calendar.py, which is not guaranteed to exist on
+    # every machine that runs this CLI (see backtest/historical_news_calendar.py).
+    news_protection_cfg = None
+    news_calendar = None
+    if args.model_news_protection:
+        if not args.news_calendar_path.exists():
+            logger.error(
+                "--model-news-protection given but no calendar at %s -- run "
+                "scripts/build_backtest_calendar.py first.", args.news_calendar_path,
+            )
+            return 1
+        news_protection_cfg = NewsProtectionConfig(
+            news_window_minutes=cfg["watchman"]["news_window_minutes"],
+            profit_threshold_r=cfg["watchman"]["news_profit_threshold_r"],
+            close_mode=cfg["watchman"]["news_close_mode"],
+        )
+        news_calendar = HistoricalNewsCalendarProvider(args.news_calendar_path)
+
     creds = load_mt5_credentials()
     with mt5_session(creds):
         symbol_spec = get_symbol_spec(args.symbol)
@@ -333,6 +392,7 @@ def main() -> int:
         args.symbol, df, symbol_spec, args.starting_equity, risk_per_trade_pct,
         cost_model, args.out_of_sample, args.output_dir,
         risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg, shield_cfg=shield_cfg,
+        news_protection_cfg=news_protection_cfg, news_calendar=news_calendar,
         pivot_bars=cfg["global"]["swing_pivot_bars"],
         min_lot_risk_cap_pct=min_lot_risk_cap_pct,
     )

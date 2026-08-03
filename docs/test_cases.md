@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1344 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1531 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1488 (including all parametrized variants)
+- **Total Test Count**: 1531 (including all parametrized variants)
 - **Test Files**: ~59 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -23,11 +23,12 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | **Auditor Subtotal** | | **80** |
 | Backtest | test_clock.py | 3 |
 | | test_cost_model.py | 7 |
-| | test_engine.py | 42 |
+| | test_engine.py | 52 |
 | | test_forward_walk.py | 10 |
+| | test_historical_news_calendar.py | 10 |
 | | test_lookahead_validation.py | 3 |
 | | test_report.py | 15 |
-| **Backtest Subtotal** | | **80** |
+| **Backtest Subtotal** | | **100** |
 | Council | test_calendar_archive.py | 10 |
 | | test_decision_matrix.py | 50 |
 | | test_finnhub_news_calendar.py | 12 |
@@ -79,6 +80,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | **Watchman Subtotal** | | **170** |
 | Scripts & CLI | test_autotrade_control.py | 24 |
 | | test_backup_db.py | 8 |
+| | test_build_backtest_calendar.py | 23 |
 | | test_calendar_export_watchdog.py | 12 |
 | | test_clock.py | 1 |
 | | test_cloudflared_watchdog.py | 9 |
@@ -106,9 +108,9 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_service_watchdog.py | 9 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **406** |
+| **Scripts & CLI Subtotal** | | **429** |
 | | | |
-| **GRAND TOTAL** | | **1478** |
+| **GRAND TOTAL** | | **1521** |
 
 ---
 
@@ -276,6 +278,16 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_cooldown_approved_once_the_window_has_elapsed
 - test_shield_cfg_none_never_gates_even_within_the_cooldown_window
 - test_shield_check_skipped_without_crashing_when_no_confirmed_swing_exists_at_signal_time
+- test_news_trigger_fires_at_the_exact_threshold_level_when_touched_intrabar
+- test_news_trigger_fires_at_the_bars_own_open_when_already_gapped_past_threshold
+- test_check_exit_priority_wins_over_a_same_bar_news_trigger
+- test_news_protection_no_action_when_no_news_incoming
+- test_news_protection_no_action_below_profit_threshold_even_with_news_incoming
+- test_news_protection_cfg_none_never_triggers_even_when_price_and_news_would
+- test_news_protection_cfg_and_calendar_must_be_given_together
+- test_news_protection_min_lot_close_half_and_breakeven_degenerates_to_close_all
+- test_news_protection_genuine_partial_close_moves_remainder_stop_to_breakeven
+- test_news_protection_re_trigger_suppression_window_then_re_arms_after_it_elapses
 
 ### tests/unit/backtest/test_forward_walk.py
 
@@ -289,6 +301,19 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_sell_direction_gross_r_sign
 - test_commission_reduces_net_r_independent_of_lot_size
 - test_zero_stop_distance_does_not_raise_and_yields_zero_r_multiples
+
+### tests/unit/backtest/test_historical_news_calendar.py
+
+- test_window_query_returns_only_events_inside_the_inclusive_window
+- test_window_bounds_are_inclusive_at_both_ends
+- test_never_returns_none_for_no_events_in_window
+- test_never_returns_none_for_an_unmapped_currency
+- test_low_and_moderate_importance_rows_are_excluded
+- test_importance_match_is_case_insensitive
+- test_currency_filters_correctly_when_multiple_currencies_present
+- test_events_are_sorted_regardless_of_input_file_order
+- test_structurally_unparseable_file_raises_value_error
+- test_malformed_event_time_row_is_skipped_not_fatal
 
 ### tests/unit/backtest/test_lookahead_validation.py
 
@@ -1393,6 +1418,32 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_main_missing_calendar_archive_does_not_fail_the_run
 - test_main_journal_backup_failure_does_not_block_calendar_copy
 - test_main_calendar_copy_failure_does_not_block_journal_backup
+
+### tests/unit/test_build_backtest_calendar.py
+
+- test_us_dst_on_true_in_july
+- test_us_dst_on_false_in_january
+- test_us_dst_second_sunday_march_boundary_2026
+- test_us_dst_first_sunday_november_boundary_2026
+- test_normalise_event_time_unchanged_in_dst_summer
+- test_normalise_event_time_shifted_back_one_hour_in_dst_off_winter
+- test_dump_rows_are_normalised_and_forecast_previous_actual_preserved
+- test_dump_structurally_unparseable_refuses
+- test_dedup_collapses_exact_key_duplicates
+- test_dedup_keeps_an_importance_regrade_as_a_separate_row
+- test_nfp_gate_passes_when_all_in_range_rows_land_at_15_30
+- test_nfp_gate_fails_on_an_in_range_violation
+- test_nfp_gate_reports_but_does_not_fail_an_out_of_range_violation
+- test_nfp_gate_ignores_non_nfp_or_non_high_or_non_usd_rows
+- test_build_refuses_to_write_when_in_range_nfp_gate_fails
+- test_utc_skew_pair_quarantines_the_earlier_collected_row
+- test_non_matching_rows_are_never_quarantined
+- test_load_archive_missing_file_is_optional_not_fatal
+- test_load_archive_unexpected_header_refuses
+- test_load_archive_applies_quarantine_and_normal_rows_pass_through
+- test_build_writes_merged_deduped_sorted_output_with_the_expected_header
+- test_build_dedups_across_dump_and_archive_on_the_same_key
+- test_build_with_no_archive_file_still_succeeds
 
 ### tests/unit/common/test_calendar_export_watchdog.py
 

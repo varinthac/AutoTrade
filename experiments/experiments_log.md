@@ -5549,3 +5549,26 @@ number here look better. `config/base.yaml` UNCHANGED (`news_profit_threshold_r`
  archive's first two collection cycles carry event times 3 hours behind server time (UTC-looking), which if it happens
  while the shadow loop is running would put live's news windows 3 hours out. Worth one look at
  `mql5/NewsCalendarExporter.mq5`'s behaviour immediately after a terminal restart.
+
+## NOTE (not an EXP) 2026-08-04 — News protection is now MODELABLE in backtest/engine.py (mode A from the real calendar); one fidelity refinement over EXP-023/024/025's harnesses
+Implements EXP-024's escalation (i). `BacktestConfig` gains `news_protection_cfg` + `news_calendar` (default `None` =
+"not modeled", the engine's standard honesty convention — verified bit-for-bit against the mode-C y4 anchor
+254 / 1.0961 / +$352.60 / 9.99%), `scripts/run_backtest.py` gains `--model-news-protection` /
+`--news-calendar-path` and a `news_protection_modeled` envelope flag (NOT folded into `cost_model_complete` — it is
+not a cost-model item). `scripts/build_backtest_calendar.py` builds the canonical normalised calendar
+(`data/historical/news_calendar_backtest.csv`, gitignored/regenerable) from the MT5 dump + live archive with the
+US-DST −1h rule, the NFP=15:30 self-check, and quarantine of the archive's UTC-skewed restart rows. The engine calls
+`check_news_protection()` verbatim (never reimplements) with the EXP-024 per-bar priority and trigger-price
+conventions. +43 tests (1531 total); reviewed.
+
+**Fidelity refinement, disclosed loudly:** EXP-023/024/025's harnesses all simulated the min-lot CLOSE_ALL
+degeneration ONLY — they never modeled the genuine CLOSE_HALF_AND_BREAKEVEN branch that live executes whenever
+half-lot ≥ volume_min (which does occur: lots are not always 0.01 — the live journal itself has a 0.02-lot trade).
+The engine models the genuine partial close (half closed at the trigger price, remainder's stop to breakeven,
+re-trigger suppression window honoured). Consequence on y4/VAL with the real calendar: engine A@real =
+**350 trades / PF 1.0667 / +$259.67 / maxDD 11.42%** vs EXP-024's harness A@real 314 / 1.091 / +$352 / 10.08%;
+forcing the engine to full-close-always reproduces ~the harness numbers (320 trades), isolating the difference to the
+partial-close branch, not a bug. Read: EXP-024's measured parity cost is a mild UNDER-estimate for the
+larger-than-min-lot subset; its conditional A−C treatment estimates and trigger-rate measurements are unaffected
+(trigger logic identical). Portfolio-level numbers remain reshuffling-dominated (veto-only evidence, per EXP-023 D3).
+The honest-Test-baseline question EXP-024 deferred to the user should be run with THIS engine path when taken up.

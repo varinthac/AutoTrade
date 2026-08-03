@@ -123,7 +123,7 @@ def test_build_envelope_cost_model_complete_true_when_commission_set_min_spread_
         "XAUUSD", df, report,
         CostModelConfig(commission_per_lot=3.5, slippage_points=None, swap_model=_SWAP_MODEL),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
-        shield_modeled=True, min_lot_risk_cap_pct=None,
+        shield_modeled=True, news_protection_modeled=False, min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is True
 
@@ -140,7 +140,7 @@ def test_build_envelope_cost_model_complete_true_when_commission_zero_min_spread
         "XAUUSD", df, report,
         CostModelConfig(commission_per_lot=0.0, slippage_points=None, swap_model=_SWAP_MODEL),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
-        shield_modeled=True, min_lot_risk_cap_pct=None,
+        shield_modeled=True, news_protection_modeled=False, min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is True
 
@@ -154,7 +154,7 @@ def test_build_envelope_cost_model_complete_false_when_slippage_explicitly_overr
         "XAUUSD", df, report,
         CostModelConfig(commission_per_lot=3.5, slippage_points=2.0, swap_model=_SWAP_MODEL),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
-        shield_modeled=True, min_lot_risk_cap_pct=None,
+        shield_modeled=True, news_protection_modeled=False, min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is False
 
@@ -168,7 +168,7 @@ def test_build_envelope_cost_model_complete_false_when_swap_not_modeled():
     envelope = run_backtest_script.build_envelope(
         "XAUUSD", df, report, CostModelConfig(commission_per_lot=3.5, slippage_points=None, swap_model=None),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
-        shield_modeled=True, min_lot_risk_cap_pct=None,
+        shield_modeled=True, news_protection_modeled=False, min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is False
     assert envelope["swap_modeled"] is False
