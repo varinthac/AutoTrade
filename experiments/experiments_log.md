@@ -5114,7 +5114,9 @@ Validation (5 checks, scratchpad `validate_calendar_dump.py`, results 2026-08-04
   classification — declare in EXP-024's pre-registration.
 
 ## EXP-024 2026-08-04 — News protection measured against the REAL historical calendar: trigger rate + parity cost of live's mode A (NEW family "news-protection backtest/live parity", the family EXP-023 §6(i) opened; the reserved 024 slot)
-Status: PRE-REGISTERED (results pending). Everything from this line down to `### EXP-024 RESULTS` was written and
+Status: MEASURED — real trigger rate 25.6% (Train) / 28.0% (Val) of trades vs the P1 ~61% / P2 ~47% brackets; real
+parity gap A@real − C = −0.157R ± 0.090 (Train, n=193) / −0.154R ± 0.142 (Val, n=71) per affected trade; NO config
+change, NO src/ change, Test year NOT touched. See `### EXP-024 RESULTS` below. Originally: PRE-REGISTERED (results pending). Everything from this line down to `### EXP-024 RESULTS` was written and
 COMMITTED, together with a results-free `experiments/exp024_real_calendar_harness.py`, BEFORE any A@real number was
 produced. Only the RESULTS section and this Status line are added afterwards.
 **This is a MEASUREMENT experiment, not a selection experiment.** There is no grid, no candidate, no winner, and no
@@ -5329,3 +5331,221 @@ look better. The RESULTS section will close with a recommended ORDER for the thr
 protection in `backtest/engine.py`; re-open the min-lot fallback's SKIP-vs-CLOSE_ALL fail-direction, EXP-025 §6(iii),
 now that it is measurable; or accept the cost) — as a recommendation with reasons, to be decided by the user, not
 here.
+
+### EXP-024 RESULTS (run 2026-08-04) — OUTCOME: MEASURED. Real trigger rate = **25.6% of trades on Train / 28.0% on Val** (vs the P1 ~61% and P2 ~47% brackets EXP-023/025 had to assume). Real parity gap A@real − C = **−0.157R ± 0.090 per affected trade on Train (n=193), −0.154R ± 0.142 on Val (n=71)**. NO config change, NO `src/` change, Test year NOT touched.
+Raw output: `experiments/exp024_calendar_out.txt` (calendar + G3), `experiments/exp024_fidelity_out.txt` (G1/G2),
+`experiments/exp024_livecv_out.txt` (L1/L2), `experiments/exp024_cond_out.txt` (deciding conditional),
+`experiments/exp024_pool_out.txt` (pooled), `experiments/exp024_port_out.txt` (portfolio).
+Harness: `experiments/exp024_real_calendar_harness.py`. Dev PC, `.venv` (Python 3.12.10, pandas 3.0.5).
+Calendar read IN PLACE from the dump as pre-registered: 73,699 raw rows → 73,353 after dedup (dup rate 0.469%, matching
+the NOTE's 0.47%) → 2,617 high-impact USD rows → **1,660 unique normalised event timestamps**, 1,321 of them inside
+the Train+Val range.
+
+FIDELITY / CROSS-VALIDATION GATES — all run and reported BEFORE any A@real number was read:
+ G1 `--mode fidelity`, 4,000-bar window, 197 trades: the copied bar loop with the news mechanism OFF is IDENTICAL to
+    `backtest.engine.run_backtest`, field-for-field, with and without EXP-022's fast-path shim
+    (`copy_off_identical=True copy_off_fastpath_identical=True`). **PASS.**
+ G2 EXTERNAL anchor: mode C on y4/VAL at $3,000 = **254 trades, PF 1.0961, net +$352.60, maxDD 9.9895%** — EXP-022's
+    cap-1.5 y4 cell, re-confirmed by EXP-023 and EXP-025, to the last digit (`match: true`). **PASS.**
+ G3 NFP normalisation: **48/48 in-range** high-impact-USD `Nonfarm Payrolls` rows normalise to exactly **15:30 server**,
+    zero violations. The single out-of-range violation disclosed in the pre-registration reproduced exactly as
+    predicted (`2025-11-20` raw 15:30 → 14:30), and it is in the untouched Test year. **PASS.** Independent
+    corroboration that the normalisation is right, not merely self-consistent: the 1,321 in-range event timestamps
+    land on the US release grid — 15:30 (419 = 08:30 ET), 17:00 (267 = 10:00 ET), 16:45 (174 = 09:45 ET), 17:30
+    (171 = 10:30 ET EIA), 20:00 (99 = 13:00 ET auctions), 21:00 (34 = 14:00 ET FOMC), 21:30 (32 = FOMC presser).
+ G4 CONTINUITY ANCHORS vs EXP-023/EXP-025 — the single most important gate, because it proves this is the same
+    instrument. **PASS, exactly.** A@P1 affected counts **162/152/149/154** and affected-subset avgR
+    **0.501/0.497/0.494/0.495**; A@P2 affected counts **124/116/116/124**. Pooled A@P1 − C = **−0.0655 ± 0.0638
+    (Train) / −0.1320 ± 0.1095 (Val)** — EXP-023 §6(i)'s published "−0.066R ± 0.064 / −0.132R ± 0.110" to three
+    decimals; pooled A@P2 − C = −0.0707 / −0.1658, the mirror of EXP-025 §6(ii)'s "+0.071R / +0.166R". The A@P1/A@P2
+    portfolio cells also reproduce EXP-023 §3 / EXP-025 §3 (y4: 554 trades / PF 0.980 / −$86 / 12.5% and 400 / 1.010 /
+    +$39 / 14.0%).
+ G5 Conditional-replay self-check (asserted in code, every window): replaying each mode-C trade one-by-one reproduces
+    the full-sequence mode-C trade list EXACTLY. **PASS.**
+ L1 LIVE, dangerous direction — **PASS, and it is the strongest single piece of evidence in this experiment.** Trade #1
+    (BUY 2026-07-22 12:00:39 @ 4119.48, +1.272R) first touched its +0.5R level 4136.47 at **16:30:00** server per the
+    terminal's own M1 bars. The reconstruction is INACTIVE for exactly the next **30 minutes** and turns ACTIVE at
+    **17:00:00** (EIA Crude Oil Stocks 17:30, window [17:00, 17:30]). Live left that position alone for those same 30
+    minutes — roughly 360 five-second poll cycles at ≥ +0.5R — and then it was closed at 17:05:04 by this system's own
+    magic (`reconciled_system_close`). The reconstructed window boundary and live's behavioural boundary coincide to
+    the minute, from opposite sides. (Corollary, recorded as a CORRECTION: EXP-023's reading of this trade — "it passed
+    +0.5R without protection firing, so live must be running a working calendar" — was right about the conclusion and
+    wrong about the evidence. It passed +0.5R during a genuinely inactive window and was closed ~5 minutes after that
+    window opened; the close is itself most plausibly a news-protection close whose acknowledgment was lost.)
+ L2 LIVE, benign direction — **3 of 4, PASS by the pre-registered bar (≥ half).** #7 2026-07-29 17:00:03 → EIA 17:30 ✓;
+    #9 2026-07-30 15:05:40 → Core PCE / GDP / Initial Claims 15:30 ✓; #11 2026-08-03 16:15:04 → S&P Global Mfg PMI
+    16:45 ✓; **#6 2026-07-28 14:51:15 → nothing within 30 minutes, MISS** (that day's only high-impact USD event is CB
+    Consumer Confidence 17:00). Exactly the pre-registered benign direction: live fired where the reconstruction says
+    it should not have, which is the documented calendar-unavailable fail-safe, and which makes every rate below a
+    LOWER bound. Not a stop.
+
+### 1. MEASUREMENT (1) — THE REAL TRIGGER RATE (this is the number EXP-023 §6(ii) said had to exist before anything else)
+```
+window            bars  eligible  elig%  | trades  affected@real  rate%  | P1 rate%  P2 rate%
+y1 2021-22        5926       322   5.43  |    266             64  24.06  |    60.90     46.62
+y2 2022-23        5917       306   5.17  |    254             62  24.41  |    59.84     45.67
+y3 2023-24        5894       310   5.26  |    233             67  28.76  |    63.95     49.79
+y4 VAL 2024-25    5913       302   5.11  |    254             71  27.95  |    60.63     48.82
+POOLED TRAIN      17737      938   5.29  |    753            193  25.63  |    61.49     47.28
+POOLED VAL         5913      302   5.11  |    254             71  27.95  |    60.63     48.82
+```
+Read plainly: **only ~5.2% of all bar-hours are trigger-eligible at all**, and protection reaches **one trade in four**,
+not the three in five P1 assumed nor the one in two P2 assumed. The real rate is **0.42× the P1 bracket and 0.55× the
+P2 bracket**, and it is remarkably stable across four years (24.1 / 24.4 / 28.8 / 28.0%), with the calendar-side density
+stable too (5.11–5.43% of bars). P1 was never meant to be a frequency estimate — it is the fail-safe bound — and this
+confirms it overstated frequency by ~2.4×, exactly as EXP-023 D2 warned it would.
+AUDIT OF P2's HOUR MASK, now that the real event clock is visible (event timestamps by server hour, in-range):
+`{15: 468, 17: 440, 16: 184, 20: 105, 21: 67, 18: 33, 19: 10, 5: 7, 22: 3, 14: 2, 9: 1, 23: 1}`. P2's mask
+`{14,15,16,20,21}` captured **62.5%** of real event timestamps while marking ~3× as many bars eligible as the real
+calendar does — and it missed hour **17** entirely, which is the second-busiest hour of the entire US release day
+(10:00 ET: ISM, JOLTS, Consumer Confidence, New Home Sales). Hour 14 — one of the five hours P2 spent — contains **2**
+events in four years. P2 was a reasonable guess and it was substantially wrong; that is worth recording, because P2 was
+carried as "robustness" evidence in two experiments.
+
+### 2. MEASUREMENT (2) — THE REAL PARITY GAP (paired, sequence held FIXED, on the affected@real subset)
+avgR on each window's affected subset, and the paired per-trade difference A − C (same trades, SE of the DIFFERENCE):
+```
+                    tot   aff   aff% | C avgR  A avgR |   A - C      SE       t
+y1 2021-22          266    64  24.06 |  0.700   0.687 |  -0.0124  0.1598   -0.08
+y2 2022-23          254    62  24.41 |  0.876   0.666 |  -0.2106  0.1544   -1.36
+y3 2023-24          233    67  28.76 |  0.927   0.680 |  -0.2467  0.1550   -1.59
+y4 VAL 2024-25      254    71  27.95 |  0.892   0.738 |  -0.1544  0.1422   -1.09
+POOLED TRAIN (n=193)                                  |  -0.1574  0.0902   -1.745   95% CI [-0.334, +0.019]
+POOLED VAL   (n= 71)                                  |  -0.1544  0.1422   -1.086   95% CI [-0.433, +0.124]
+   for comparison, the same statistic on the PROXY subsets (continuity anchors, EXP-023/025's own numbers):
+POOLED TRAIN A@P1 (n=463)                             |  -0.0655  0.0638   -1.026
+POOLED VAL   A@P1 (n=154)                             |  -0.1320  0.1095   -1.205
+POOLED TRAIN A@P2 (n=356)                             |  -0.0707  0.0688   -1.027
+POOLED VAL   A@P2 (n=124)                             |  -0.1658  0.1092   -1.518
+```
+**The headline, and it is the opposite of what "a much lower trigger rate" would naively suggest: per affected trade the
+real cost is ~2.4× the P1 bracket on Train (−0.157R vs −0.066R) and about the same on Val (−0.154R vs −0.132R).** The
+sign is negative in all four windows and the magnitude is stable in the three most recent (−0.21 / −0.25 / −0.15R);
+y1 is the one flat window. Protection fires four times less often than P1 assumed, and each firing costs about 2.4
+times more.
+WHY — and this is the real finding of EXP-024. The real-calendar trigger does not select a random 26% of trades; it
+selects a **materially better** 26%. Under mode C the affected@real subset earns avgR **0.700 / 0.876 / 0.927 / 0.892**
+and reaches the 2R take-profit **48.4 / 54.8 / 56.7 / 56.3%** of the time, versus **0.496 / 0.526 / 0.674 / 0.627** and
+~48.7% (y4) for the affected@P1 subset. A +0.5R touch that happens in the 30 minutes *before* a high-impact USD release
+is disproportionately part of a directional pre-news move that keeps going. So news protection, as implemented at
+min-lot, is not skimming average trades — **it is cashing out the pre-news runners at +0.5R specifically, and those are
+the trades most likely to have reached 2R.** Both brackets EXP-023 used missed this, because both were blind to *which*
+trades a real calendar picks.
+Scaled to every trade rather than every affected trade: −0.157R × 25.6% = **−0.040R per trade on Train**, −0.154R ×
+28.0% = **−0.043R per trade on Val**. For context, mode C's own realised avgR on y4/VAL is **+0.0505R per trade**. On a
+sequence-held-fixed basis the news-protection control therefore consumes on the order of **80–85% of the strategy's
+entire measured per-trade edge on the validation year**. That number is the honest statement of EXP-023 §6(i)'s
+"the backtest has never charged the strategy for it", and it is much larger than EXP-023's own bracket implied.
+
+### 3. MEASUREMENT (2b) — PORTFOLIO DELTAS (full sequence; the reshuffling caveat is essential here, see below)
+$3,000/window, complete cost model. trades | PF | net$ | maxDD% | PF excl. top-5:
+```
+window            C_none                              A_real                              A_P1 (anchor)            A_P2 (anchor)
+y1 2021-22        266 | 1.016 |   +64 | 14.49 | 0.941  325 | 1.040 |  +167 | 15.11 | 0.968  510 | 1.004 |   +16 | 17.11  416 | 1.030 |  +127 | 12.88
+y2 2022-23        254 | 0.995 |   -22 | 26.12 | 0.917  322 | 0.917 |  -387 | 29.04 | 0.846  516 | 0.964 |  -175 | 19.95  396 | 0.897 |  -456 | 23.78
+y3 2023-24        233 | 1.202 |  +773 | 12.27 | 1.103  296 | 1.093 |  +370 | 14.27 | 1.012  486 | 1.075 |  +350 | 15.85  385 | 1.115 |  +497 | 11.15
+y4 VAL 2024-25    254 | 1.096 |  +353 |  9.99 | 0.987  314 | 1.091 |  +352 | 10.08 | 0.995  554 | 0.980 |   -86 | 12.48  400 | 1.010 |   +39 | 13.97
+POOLED TRAIN      753 |       |  +815 |                943 |       |  +151 |                1512 |      |  +192          1197 |      |  +168
+POOLED VAL        254 |       |  +353 |                314 |       |  +352 |                 554 |      |   -86           400 |      |   +39
+```
+Stated with the same honesty EXP-023 §3 used, in both directions:
+ * On **Train** the parity gap is material: three years of $3,000 accounts go from **+$815 to +$151** (−$664, −81% of
+   the profit), PF falls in y2 (0.995→0.917) and y3 (1.202→1.093), and max DD worsens in every Train window
+   (14.5→15.1, 26.1→29.0, 12.3→14.3). PF-excluding-top-5 falls in y2/y3 too.
+ * On **Val the portfolio-level gap is essentially ZERO**: PF 1.096 → 1.091, net +$352.6 → +$352.0, maxDD 9.99 → 10.08.
+   That is not a contradiction of §2 and it must not be reported as one. The mechanism is visible in the trade counts:
+   A@real takes **314 trades where C takes 254** (and 943 vs 753 on Train), because every early news exit frees the
+   single position slot and the engine takes the next signal. The per-trade edge is cut, and the reshuffled extra
+   trades happen to pay for it on y4 but not on y2/y3. Win rate rises everywhere (0.374→0.478 on y4) precisely because
+   many trades that would have been −1R are now banked at +0.5R.
+ * This is exactly the non-causal reshuffling EXP-017/020/021 established as unusable for SELECTION. Nothing is being
+   selected here, so these numbers are reported as what they are: the portfolio-level statement of the parity gap,
+   dominated on any single window by which signals the re-sequenced engine happens to take next. **The deciding
+   measurement remains §2's paired, sequence-fixed number**; §3 is the same effect seen through a noisy lens, and the
+   honest summary of §3 is "materially negative on Train, neutral on Val, with large sequencing noise either way".
+
+### 4. MEASUREMENT (3) — EXIT MIX ON THE AFFECTED@REAL SUBSET (all four windows; y4/VAL was the pre-registered minimum)
+```
+y1 (n=64)   C: 31 take_profit (48.4%), 16 stop_loss, 17 time_stop        -> avgR 0.700, medR 0.287, worstR -1.116, 25 negative, PF 3.56
+            A: 64 news_protection (100%)                                 -> avgR 0.687, medR 0.551, worstR +0.331,  0 negative, PF inf
+y2 (n=62)   C: 34 take_profit (54.8%), 11 stop_loss, 16 time_stop, 1 str -> avgR 0.876, medR 1.794, worstR -1.186, 21 negative, PF 4.89
+            A: 62 news_protection (100%)                                 -> avgR 0.666, medR 0.516, worstR +0.313,  0 negative, PF inf
+y3 (n=67)   C: 38 take_profit (56.7%), 13 stop_loss, 16 time_stop        -> avgR 0.927, medR 1.802, worstR -1.253, 19 negative, PF 5.36
+            A: 67 news_protection (100%)                                 -> avgR 0.680, medR 0.502, worstR +0.322,  0 negative, PF inf
+y4 VAL      C: 40 take_profit (56.3%), 14 stop_loss, 17 time_stop        -> avgR 0.892, medR 1.857, worstR -1.134, 21 negative, PF 4.91
+   (n=71)   A: 71 news_protection (100%)                                 -> avgR 0.738, medR 0.542, worstR +0.379,  0 negative, PF inf
+```
+The trade being made is now completely explicit, and it is a genuine risk/return trade, not a mistake: mode A converts
+a distribution with a **56% 2R-hit rate and a −1.13R worst case (21 of 71 losers)** into a distribution with **zero
+losers and a +0.38R floor**, at a cost of **−0.154R of mean**. The median moves the other way (1.857 → 0.542) — the
+median affected trade is a big winner under C and a scratch-plus under A. Compare EXP-023 §2's y4/P1 row (C 48.7% TP,
+avgR 0.627): the real-calendar subset is the higher-quality subset on every axis, which is why the same control costs
+more when it is aimed by a real calendar than when it is aimed by "every bar".
+
+### 5. SAMPLE-SIZE HONESTY (rule 6) AND MULTIPLE TESTING (rule 7) — per §9 of the pre-registration, applied as written
+Per-window affected@real is **64 / 62 / 67 / 71**, i.e. **every individual window is below the 100-trade floor** and no
+statement above rests on a single year. Pooled **Train n=193 clears the floor**; pooled **Val n=71 does not**, so, in
+the pre-registered words: **the Val figure is a MEASUREMENT WITH WIDE ERROR BARS** — −0.154R with SE 0.142 and a 95%
+interval of **[−0.433, +0.124]** that comfortably contains zero. The Train figure's interval is **[−0.334, +0.019]**,
+also containing zero at t = −1.745. **Neither pooled estimate is statistically significant at any conventional level,
+and this section will not pretend otherwise.** What the data supports is: a consistently negative sign in 4 of 4
+windows and in both proxy subsets, a stable magnitude of roughly −0.15R to −0.25R per affected trade in the three most
+recent windows, and a Train point estimate 2.4× the previously published bracket. That is a measurement with a
+direction and a rough size, not a proof. Rule 7: nothing was selected, no threshold could be chosen by its result, and
+the two anchor arms were pinned to previously published numbers before the run — so no multiple-testing correction is
+warranted and none was applied. Configs evaluated: 4 / 4 for this new family.
+
+### 6. LIMITATIONS, RE-STATED AGAINST THE ACTUAL RESULT (all four were pre-registered; three bias the same way)
+ (i) Current-classification look-ahead: importance/name are MetaQuotes' CURRENT judgement applied to 2021 history.
+     Direction unknown. Unremovable from this source.
+ (ii) Reschedules erased (~1% observed against the live archive). Direction unknown.
+ (iii) **Fail-safe episodes are NOT modelled, and L2's one miss is a live example of one.** Live fires protection
+     whenever the calendar cannot be read; the same journal shows 17 hourly evaluations vetoed for
+     "economic calendar unavailable for USD" in 13 days, including a 14-hour outage on 2026-07-27. So the true live
+     trigger rate is **above** the 25.6% / 28.0% measured here, somewhere between it and P1's 61% fail-safe bound
+     depending on exporter uptime, and the true parity cost is correspondingly larger in magnitude. Measuring that
+     residual is the accumulating archive's job (`data/db/news_calendar_history.csv`, running since 2026-08-03).
+ (iv) H1 bar resolution: eligibility is bar-granular (5.2% of bars), live is 5-second granular. Both directions.
+ (v) Unchanged from EXP-023/025 and applying identically to BOTH arms: the engine bakes spread/slippage into the ENTRY
+     fill only, so mode A's market close at +0.5R is modelled ~1 spread (~$0.35, ≈0.01–0.03R) too favourably. It is an
+     order of magnitude below the effect measured in §2 and it makes A look BETTER than it is, i.e. §2 is if anything
+     a slight under-statement of the cost.
+
+### 7. WHAT THIS EXPERIMENT DID NOT DO, AND WHY THAT WAS DELIBERATE
+The **Test year 2025-07-22 → 2026-07-21 was NOT touched**; the harness refuses `--window y5*`. This family's one-touch
+budget is UNSPENT. The obvious and important question — *what do the promotion-gate numbers (Appendix A §5.2) look like
+on Test under real mode A, i.e. what is the honest Test baseline for the configuration actually running live?* — is
+therefore still open, by design, and it is a **user-level decision**, not this experiment's to make: it should be spent
+once, on the final agreed model of news protection, not on a bespoke harness. Rule 8 restated: no promotion/demotion
+gate, Auditor threshold or circuit-breaker limit was touched, and none is proposed for change as a way to make any
+number here look better. `config/base.yaml` UNCHANGED (`news_profit_threshold_r` 0.5, `news_window_minutes` 30,
+`news_close_mode` half); `src/` UNCHANGED.
+
+### 8. ESCALATION — recommended ORDER with reasons (a recommendation only; nothing is decided or changed here)
+ **(1) FIRST: model news protection in `backtest/engine.py` permanently (engine change, separate task, user decision).**
+ It is the only one of the three that is a pure HONESTY change rather than a strategy change: it alters no live
+ behaviour and adds no risk, and it retires a whole class of error this project has already been bitten by once
+ (EXP-018's swap gap, same shape — a real cost the backtest simply did not charge). Until it lands, every future
+ experiment keeps measuring mode C by default, which is now known to overstate per-trade edge by ~0.04R on both Train
+ and Val. It also has to land BEFORE any honest Test baseline is produced, so that the one Test touch is spent on
+ production code rather than on an experiment harness. Concretely it needs: an optional `NewsCalendarProvider` on
+ `BacktestConfig`, the eligibility rule of §4(e) of the pre-registration, and a `cost_model_complete`-style honesty
+ flag that says whether the run modelled news protection.
+ **(2) SECOND, and only after (1): re-open the min-lot fallback fail-direction, SKIP vs CLOSE_ALL (EXP-025 §6(iii)).**
+ It is now measurable for the first time, and §2/§4 say exactly why it is the only remaining mechanism with a plausible
+ upside: the control is cashing out a subset that hits 2R 56% of the time, so the choice between "close the whole
+ position" and "skip protection when half-volume is impossible" is worth roughly 0.15R on 26% of trades ≈ 0.04R per
+ trade. But it is a risk-control WEAKENING direction — it removes the only reason the affected subset currently has a
+ zero-loser, +0.33R floor — so it needs its own pre-registration, an explicit tail criterion, and a user decision about
+ risk appetite, not just a favourable mean. It must NOT be run as another grid on the same four windows without that.
+ **(3) THIRD / DEFAULT: accept the cost.** This is a legitimate outcome and deserves to be stated as such rather than
+ treated as a failure: on the validation year the portfolio-level cost is nil (PF 1.096 → 1.091, +$353 → +$352), the
+ control converts a 30% loser rate on the affected subset into zero losers, and the whole Train-side gap is at
+ t = −1.75 — real-looking, not proven. "We know what it costs, we priced it, we keep it" is a defensible end state, and
+ it is strictly better than today's state, in which the cost was neither known nor charged.
+ Explicitly NOT recommended: switching news protection off. Mode C was carried here as the reference arm describing
+ what the backtest has always measured, never as a candidate.
+ Also escalated, separately, as a LIVE-CORRECTNESS item rather than a tuning one: §10's observation that the live
+ archive's first two collection cycles carry event times 3 hours behind server time (UTC-looking), which if it happens
+ while the shadow loop is running would put live's news windows 3 hours out. Worth one look at
+ `mql5/NewsCalendarExporter.mq5`'s behaviour immediately after a terminal restart.
