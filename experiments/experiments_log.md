@@ -4144,119 +4144,119 @@ registered experiment on the cross-project pre-2021 (2009-2019) different-regime
 — exactly EXP-018's next-step (ii); only if it beats baseline THERE should a Test-year confirmation be spent.
 Test set (2025-07-21→2026-07-21) left UNTOUCHED — this new family's one-touch budget is UNSPENT (nothing cleared
 Val, so nothing earned a Test confirmation). Auditor gate thresholds NOT touched (rule 8).
-
-## EXP-021 2026-07-25 — Force-close before weekend vs hold-over-weekend (SL-only) (NEW family "weekend-gap exit")
-Status: PRE-REGISTERED (before results) — Train (y1/y2/y3) + Val ONLY; Test (2025-07-21→2026-07-21) NOT touched regardless of result.
-Trigger: user question — is it better to (A, CURRENT) hold open positions across the Sat/Sun market closure relying only
-on the broker-side SL, or (B) force-close every open position before Friday's weekly close to avoid weekend gap risk?
-Real motivating risk (not hypothetical): a broker SL is a LIMIT on the intended stop PRICE; across a weekend gap the
-Monday-reopen can jump past the SL and the stop fills at the next available price, so realized loss can exceed intended
-risk. Live context (NOT weighted): one XAUUSD SELL 0.01 lot is currently held into this weekend under Option A.
-
-MECHANISM I AM COMPARING AGAINST (read council/risk_voice.py + backtest/engine.py first, confirmed):
-- `friday_close_hour` (=20, server time) in risk_voice.py TODAY only vetoes NEW entries on Friday hour>=20 (condition 5).
-  It does NOT close any already-open position. There is NO force-close-before-weekend mechanism anywhere in the codebase.
-- backtest/engine.py ALREADY models the weekend gap faithfully IF the data has gap bars: SL fills at its nominal price
-  UNLESS the bar's OPEN has gapped past it, in which case it fills at that bar's actual (worse) OPEN — engine.py module
-  docstring "including weekend gap bars". So Option A's gap tail is MEASURABLE in-sample.
-- DATA CHECK (instrument context, not a strategy outcome): XAUUSD_H1.csv has NO Sat/Sun bars; Friday runs to hour 23,
-  Monday resumes ~hour 0-1 => a genuine weekend gap. 261 weekend boundaries; abs Monday open-gap: median $1.56, p90
-  $13.35, p99 $52.44, max $75.46 — vs intraweek hourly abs open-move median $0.01 / p99 $0.40. Weekend gaps are ~1-2
-  orders of magnitude larger than intraweek bar-to-bar moves: the tail mechanism is real and present in this data.
-
-Option A (baseline) = current live adopted config, engine-exact, no forced weekend close (be/trail OFF per EXP-008,
-structure+time ON, tp 2.0, pivot 3, all-24h Risk Voice, Shield cooldown, min-lot cap 1.5, risk 1.0%, commission $0
-IC Markets Standard, $10k equity — same baseline as EXP-017/019 for direct per-year comparability).
-Option B (hypothesis) = identical, PLUS: while a position is open, at the first bar that is Friday AND server hour >=
-`friday_close_hour`, close it at that bar's CLOSE (same "close at bar close" convention Watchman CLOSE uses), reason
-"weekend_close". Precedence: the existing SL/TP `check_exit` is still checked FIRST (an intra-week SL/TP that legitimately
-fires that same bar still wins); the weekend-close is checked next, PRE-EMPTING the Watchman for that bar (irrelevant —
-closing anyway). Re-entry: risk_voice condition 5 ALREADY vetoes new Friday hour>=20 entries, so no same-Friday re-entry;
-Monday signals proceed normally (fresh entry, re-paying entry cost) — this is the symmetric reuse of friday_close_hour the
-user asked for. Primary cutoff = 20 (the existing config value); NO config/base.yaml change either way.
-
-This is a RISK-REDUCTION hypothesis, NOT an expectancy-improvement one: Option B spends expectancy (closes some winners
-early on Friday + re-pays entry cost Monday) to BUY weekend-gap tail insurance. The bar is therefore asymmetric.
-
-Pre-registered metric & pass/fail bar (set BEFORE seeing results; ALL required to RECOMMEND Option B):
- (a) TAIL REDUCTION IS REAL & MATERIAL (the whole point): on Train AND Val, Option B measurably reduces the worst single-
-     trade net loss and the worst-10% tail-mean vs Option A. If it does not reduce the tail, REJECT outright.
- (b) THE TAIL BEING CUT IS ACTUALLY A WEEKEND-GAP TAIL: Option A's worst losses must demonstrably ALIGN with weekend-gap
-     fills (exit bar follows a >30h data gap AND the SL filled at a gapped open, worse than nominal). If Option A's worst
-     losses are NOT weekend gaps, the mechanism is absent in-sample => "no measurable benefit", REJECT.
- (c) EXPECTANCY COST IS ACCEPTABLE: Option B must not gut the edge to buy the insurance — per-year PF stays within ~15%
-     of Option A and remains directionally intact; Val net stays positive if Option A's is.
- (d) SAMPLE DISCIPLINE (rule 6): trade count stays >=100/window; if forcing weekend closes materially cuts the sample,
-     report it and do NOT extrapolate.
- (e) PLATEAU / NOT-A-KNIFE-EDGE (rule 5): cutoff-hour sensitivity friday_close_hour ∈ {18, 20, 22} must behave
-     consistently (the tail-reduction/expectancy-cost trade-off must not flip sign on a 2-hour change). Primary = 20.
-Configs evaluated (this exp / cumulative for this family): 4 (OptionA + OptionB@{18,20,22}) / 4 (first-ever this family).
-Decision policy: this is an EXIT-RULE / strategy change — even if all (a)-(e) clear, do NOT auto-adopt into
-config/base.yaml, do NOT add code to src/, do NOT touch any promotion gate (rule 8). Escalate to the user with full
-evidence, same pattern as every gate-adjacent decision here. Test year stays pristine for a possible future user-
-authorised confirmation. Harness: experiments/exp021_weekend_close_harness.py (VERBATIM run_backtest loop; weekend-close
-DISABLED => byte-identical to the engine, fidelity-checked on y1 before any candidate number is trusted).
-
-### EXP-021 RESULTS (run 2026-07-25) — VERDICT: REJECT Option B for adoption (Option A / hold-over-weekend STANDS)
-Raw output: experiments/exp021_out.txt. Harness: experiments/exp021_weekend_close_harness.py.
-FIDELITY: weekend-close DISABLED + swap OFF re-sim == real run_backtest on y1, 265 trades byte-for-byte (identical=true).
-Per-year swap-OFF Option-A numbers reproduce EXP-017/019 baseline EXACTLY (y1 1.033/+502, y2 0.975/−406, y3 1.224/+3321,
-val 1.078/+1158) — harness trusted. $10k equity, commission $0 IC Markets Standard, swap OFF (parity with recorded baseline).
-
-PF | net$ | worst-single | worst-10%-mean | #gapped-SL-fills(Option A only) | #weekend-closes(B):
-              Option A (hold)                      Option B @ cutoff 20 (primary)
- y1   1.033 | +502  | −157.49 | −109.68           1.033 | +493  | −157.49 | −107.02   (A: 2 gapped-SL fills, net −221.64)
- y2   0.975 | −406  | −129.10 | −121.86           0.981 | −293  | −125.88 | −120.28   (A: 0 gapped-SL fills)
- y3   1.224 | +3321 | −142.70 | −135.73           1.229 | +3483 | −141.00 | −135.16   (A: 0 gapped-SL fills)
- val  1.078 | +1158 | −132.06 | −118.25           1.087 | +1356 | −162.93 | −124.21   (A: 1 gapped-SL fill = the −132.06 worst)
- cutoff plateau (Option B, net$): y1 [18→184, 20→493, 22→418]; y2 [−372,−293,−266]; y3 [+3251,+3483,+3343]; val [+1557,+1356,+1419]
-
-THE DECIDING FINDING — the motivating weekend-gap tail BARELY EXISTS in-sample:
-- Across all ~1,000 Train+Val trades, only 4 trades EVER had an SL that filled through a gapped weekend open (y1=2, y2=0,
-  y3=0, val=1). The engine DOES model this (SL fills at the worse gapped Monday open — fidelity-confirmed on real gap bars),
-  so the near-absence is a real property of the strategy on this data, not a modelling gap: XAUUSD H1 stop distances
-  (~0.8–2.5×ATR) usually exceed the typical weekend gap (median $1.56), the single-position engine is often flat over the
-  weekend anyway, and most Monday-gap-bar exits (n_gap_exit 11–16/yr) are favorable or don't breach the stop.
-- In 3 of the 4 windows (y1/y2/y3) the WORST single-trade loss is an ordinary intra-week 1R SL hit and is UNCHANGED by
-  Option B (−157.49, −129→−126, −142.7→−141). Only in val is the single worst loss a weekend gap (−132.06) — and there,
-  removing it made the tail WORSE, not better (see below). So the tail Option B is designed to cut is not, in fact, the tail.
-
-Robustness vs pre-registered bars (ALL required; the hypothesis fails the two that matter most):
- (a) TAIL REDUCTION real & material — ✗ FAIL. On the DECIDING Validation window Option B makes the tail WORSE: worst single
-     loss −132.06 → −162.93, worst-10% mean −118.25 → −124.21 (consistent across cutoffs 18/20/22, all −162.93 worst). On
-     y1/y2/y3 the worst loss is essentially unchanged (±$3). Net across the board: no material tail reduction anywhere; a
-     tail INCREASE on Validation. Cause: force-closing Friday reshuffles which trades the single-position engine takes next
-     (fresh Monday re-entries), and that reshuffle introduced a −162.93 intra-week loser bigger than the gap it removed.
- (b) TAIL being cut is a WEEKEND-GAP tail — ✗ FAIL. 4 gapped-SL fills in ~1,000 trades; the worst losses are intra-week SL
-     hits, not gaps, in 3 of 4 windows. The mechanism the user is worried about is real but almost never fires in this
-     strategy/data, so Option B removes almost no gap risk while restructuring the whole trade sequence.
- (c) EXPECTANCY COST acceptable — ✓ at cutoff 20/22 (mixed: net roughly flat-to-slightly-BETTER in y2/y3/val, slightly
-     worse in y1), ✗ at cutoff 18 (y1 +502 → +184). NOTE: any net IMPROVEMENT here is NOT from the hypothesized gap-
-     insurance mechanism (4 trades) — it is downstream trade-reshuffling, the same non-causal single-position-engine
-     artifact EXP-017/EXP-020 flagged. It cannot justify the change, and its sign is not stable.
- (d) SAMPLE discipline — ✓. All windows 240–288 trades (≥100). Counts RISE under B (extra Monday re-entries), not fall.
- (e) PLATEAU / not-a-knife-edge — ✗ FAIL. cutoff 18 vs 20 vs 22 give materially different net$ and the best cutoff flips by
-     window (y1 favours 20, val favours 18, y3 favours 20) — the classic reshuffling-noise signature, no stable optimum.
- top-5 / walk-forward: n.a. (rejected before any Test touch).
-
-Decision & rationale: REJECT Option B for adoption. Keep Option A (hold over weekend, broker-SL-only) as the CURRENT
-behavior — config/base.yaml UNCHANGED, no src/ code added, no promotion gate touched (rule 8), Test year (2025-07-21→
-2026-07-21) NOT touched (this family's one-touch budget UNSPENT — nothing cleared the pre-registered bar, so nothing earned
-a Test confirmation). The in-sample evidence does not support force-closing: the weekend-gap tail it targets is nearly
-absent (4/1000 trades), it delivers NO tail reduction (a tail INCREASE on Validation), and its only net-positive readings
-are non-causal reshuffling noise that fails the cutoff-hour plateau check.
-
-HONEST CAVEAT ESCALATED TO USER (this is a risk-appetite decision, not purely a backtest-expectancy one): the backtest can
-only price the weekend gaps that OCCURRED in 2021–2026 (empirical abs Monday open-gap: median $1.56, p99 $52.44, max
-$75.46). It CANNOT price a once-a-decade catastrophic weekend gap (geopolitical shock over a closed market), and the engine
-fills a gapped SL at the Monday-open — likely OPTIMISTIC vs a real thin-Sunday-reopen fill that could slip further. So
-force-closing before the weekend is a legitimate INSURANCE choice against an un-sampled fat tail — but it must be justified
-as insurance the user chooses to pay for (a small, real expectancy/robustness cost + trade churn), NOT as a backtest-
-supported improvement, because the backtest shows no measurable benefit and it is not free. Recommendation: do NOT adopt as
-an edge; if the user wants the hard weekend-gap cap for peace-of-mind/tail-insurance reasons, that is a defensible manual
-risk policy to enable deliberately (best implemented as a real Watchman/Risk-Voice exit, its own pre-registered change),
-with eyes open that it slightly dilutes expectancy and adds Friday-close/Monday-reopen churn for a risk that has fired ~4
-times in 1,000 trades on this data.
+
+## EXP-021 2026-07-25 — Force-close before weekend vs hold-over-weekend (SL-only) (NEW family "weekend-gap exit")
+Status: PRE-REGISTERED (before results) — Train (y1/y2/y3) + Val ONLY; Test (2025-07-21→2026-07-21) NOT touched regardless of result.
+Trigger: user question — is it better to (A, CURRENT) hold open positions across the Sat/Sun market closure relying only
+on the broker-side SL, or (B) force-close every open position before Friday's weekly close to avoid weekend gap risk?
+Real motivating risk (not hypothetical): a broker SL is a LIMIT on the intended stop PRICE; across a weekend gap the
+Monday-reopen can jump past the SL and the stop fills at the next available price, so realized loss can exceed intended
+risk. Live context (NOT weighted): one XAUUSD SELL 0.01 lot is currently held into this weekend under Option A.
+
+MECHANISM I AM COMPARING AGAINST (read council/risk_voice.py + backtest/engine.py first, confirmed):
+- `friday_close_hour` (=20, server time) in risk_voice.py TODAY only vetoes NEW entries on Friday hour>=20 (condition 5).
+  It does NOT close any already-open position. There is NO force-close-before-weekend mechanism anywhere in the codebase.
+- backtest/engine.py ALREADY models the weekend gap faithfully IF the data has gap bars: SL fills at its nominal price
+  UNLESS the bar's OPEN has gapped past it, in which case it fills at that bar's actual (worse) OPEN — engine.py module
+  docstring "including weekend gap bars". So Option A's gap tail is MEASURABLE in-sample.
+- DATA CHECK (instrument context, not a strategy outcome): XAUUSD_H1.csv has NO Sat/Sun bars; Friday runs to hour 23,
+  Monday resumes ~hour 0-1 => a genuine weekend gap. 261 weekend boundaries; abs Monday open-gap: median $1.56, p90
+  $13.35, p99 $52.44, max $75.46 — vs intraweek hourly abs open-move median $0.01 / p99 $0.40. Weekend gaps are ~1-2
+  orders of magnitude larger than intraweek bar-to-bar moves: the tail mechanism is real and present in this data.
+
+Option A (baseline) = current live adopted config, engine-exact, no forced weekend close (be/trail OFF per EXP-008,
+structure+time ON, tp 2.0, pivot 3, all-24h Risk Voice, Shield cooldown, min-lot cap 1.5, risk 1.0%, commission $0
+IC Markets Standard, $10k equity — same baseline as EXP-017/019 for direct per-year comparability).
+Option B (hypothesis) = identical, PLUS: while a position is open, at the first bar that is Friday AND server hour >=
+`friday_close_hour`, close it at that bar's CLOSE (same "close at bar close" convention Watchman CLOSE uses), reason
+"weekend_close". Precedence: the existing SL/TP `check_exit` is still checked FIRST (an intra-week SL/TP that legitimately
+fires that same bar still wins); the weekend-close is checked next, PRE-EMPTING the Watchman for that bar (irrelevant —
+closing anyway). Re-entry: risk_voice condition 5 ALREADY vetoes new Friday hour>=20 entries, so no same-Friday re-entry;
+Monday signals proceed normally (fresh entry, re-paying entry cost) — this is the symmetric reuse of friday_close_hour the
+user asked for. Primary cutoff = 20 (the existing config value); NO config/base.yaml change either way.
+
+This is a RISK-REDUCTION hypothesis, NOT an expectancy-improvement one: Option B spends expectancy (closes some winners
+early on Friday + re-pays entry cost Monday) to BUY weekend-gap tail insurance. The bar is therefore asymmetric.
+
+Pre-registered metric & pass/fail bar (set BEFORE seeing results; ALL required to RECOMMEND Option B):
+ (a) TAIL REDUCTION IS REAL & MATERIAL (the whole point): on Train AND Val, Option B measurably reduces the worst single-
+     trade net loss and the worst-10% tail-mean vs Option A. If it does not reduce the tail, REJECT outright.
+ (b) THE TAIL BEING CUT IS ACTUALLY A WEEKEND-GAP TAIL: Option A's worst losses must demonstrably ALIGN with weekend-gap
+     fills (exit bar follows a >30h data gap AND the SL filled at a gapped open, worse than nominal). If Option A's worst
+     losses are NOT weekend gaps, the mechanism is absent in-sample => "no measurable benefit", REJECT.
+ (c) EXPECTANCY COST IS ACCEPTABLE: Option B must not gut the edge to buy the insurance — per-year PF stays within ~15%
+     of Option A and remains directionally intact; Val net stays positive if Option A's is.
+ (d) SAMPLE DISCIPLINE (rule 6): trade count stays >=100/window; if forcing weekend closes materially cuts the sample,
+     report it and do NOT extrapolate.
+ (e) PLATEAU / NOT-A-KNIFE-EDGE (rule 5): cutoff-hour sensitivity friday_close_hour ∈ {18, 20, 22} must behave
+     consistently (the tail-reduction/expectancy-cost trade-off must not flip sign on a 2-hour change). Primary = 20.
+Configs evaluated (this exp / cumulative for this family): 4 (OptionA + OptionB@{18,20,22}) / 4 (first-ever this family).
+Decision policy: this is an EXIT-RULE / strategy change — even if all (a)-(e) clear, do NOT auto-adopt into
+config/base.yaml, do NOT add code to src/, do NOT touch any promotion gate (rule 8). Escalate to the user with full
+evidence, same pattern as every gate-adjacent decision here. Test year stays pristine for a possible future user-
+authorised confirmation. Harness: experiments/exp021_weekend_close_harness.py (VERBATIM run_backtest loop; weekend-close
+DISABLED => byte-identical to the engine, fidelity-checked on y1 before any candidate number is trusted).
+
+### EXP-021 RESULTS (run 2026-07-25) — VERDICT: REJECT Option B for adoption (Option A / hold-over-weekend STANDS)
+Raw output: experiments/exp021_out.txt. Harness: experiments/exp021_weekend_close_harness.py.
+FIDELITY: weekend-close DISABLED + swap OFF re-sim == real run_backtest on y1, 265 trades byte-for-byte (identical=true).
+Per-year swap-OFF Option-A numbers reproduce EXP-017/019 baseline EXACTLY (y1 1.033/+502, y2 0.975/−406, y3 1.224/+3321,
+val 1.078/+1158) — harness trusted. $10k equity, commission $0 IC Markets Standard, swap OFF (parity with recorded baseline).
+
+PF | net$ | worst-single | worst-10%-mean | #gapped-SL-fills(Option A only) | #weekend-closes(B):
+              Option A (hold)                      Option B @ cutoff 20 (primary)
+ y1   1.033 | +502  | −157.49 | −109.68           1.033 | +493  | −157.49 | −107.02   (A: 2 gapped-SL fills, net −221.64)
+ y2   0.975 | −406  | −129.10 | −121.86           0.981 | −293  | −125.88 | −120.28   (A: 0 gapped-SL fills)
+ y3   1.224 | +3321 | −142.70 | −135.73           1.229 | +3483 | −141.00 | −135.16   (A: 0 gapped-SL fills)
+ val  1.078 | +1158 | −132.06 | −118.25           1.087 | +1356 | −162.93 | −124.21   (A: 1 gapped-SL fill = the −132.06 worst)
+ cutoff plateau (Option B, net$): y1 [18→184, 20→493, 22→418]; y2 [−372,−293,−266]; y3 [+3251,+3483,+3343]; val [+1557,+1356,+1419]
+
+THE DECIDING FINDING — the motivating weekend-gap tail BARELY EXISTS in-sample:
+- Across all ~1,000 Train+Val trades, only 4 trades EVER had an SL that filled through a gapped weekend open (y1=2, y2=0,
+  y3=0, val=1). The engine DOES model this (SL fills at the worse gapped Monday open — fidelity-confirmed on real gap bars),
+  so the near-absence is a real property of the strategy on this data, not a modelling gap: XAUUSD H1 stop distances
+  (~0.8–2.5×ATR) usually exceed the typical weekend gap (median $1.56), the single-position engine is often flat over the
+  weekend anyway, and most Monday-gap-bar exits (n_gap_exit 11–16/yr) are favorable or don't breach the stop.
+- In 3 of the 4 windows (y1/y2/y3) the WORST single-trade loss is an ordinary intra-week 1R SL hit and is UNCHANGED by
+  Option B (−157.49, −129→−126, −142.7→−141). Only in val is the single worst loss a weekend gap (−132.06) — and there,
+  removing it made the tail WORSE, not better (see below). So the tail Option B is designed to cut is not, in fact, the tail.
+
+Robustness vs pre-registered bars (ALL required; the hypothesis fails the two that matter most):
+ (a) TAIL REDUCTION real & material — ✗ FAIL. On the DECIDING Validation window Option B makes the tail WORSE: worst single
+     loss −132.06 → −162.93, worst-10% mean −118.25 → −124.21 (consistent across cutoffs 18/20/22, all −162.93 worst). On
+     y1/y2/y3 the worst loss is essentially unchanged (±$3). Net across the board: no material tail reduction anywhere; a
+     tail INCREASE on Validation. Cause: force-closing Friday reshuffles which trades the single-position engine takes next
+     (fresh Monday re-entries), and that reshuffle introduced a −162.93 intra-week loser bigger than the gap it removed.
+ (b) TAIL being cut is a WEEKEND-GAP tail — ✗ FAIL. 4 gapped-SL fills in ~1,000 trades; the worst losses are intra-week SL
+     hits, not gaps, in 3 of 4 windows. The mechanism the user is worried about is real but almost never fires in this
+     strategy/data, so Option B removes almost no gap risk while restructuring the whole trade sequence.
+ (c) EXPECTANCY COST acceptable — ✓ at cutoff 20/22 (mixed: net roughly flat-to-slightly-BETTER in y2/y3/val, slightly
+     worse in y1), ✗ at cutoff 18 (y1 +502 → +184). NOTE: any net IMPROVEMENT here is NOT from the hypothesized gap-
+     insurance mechanism (4 trades) — it is downstream trade-reshuffling, the same non-causal single-position-engine
+     artifact EXP-017/EXP-020 flagged. It cannot justify the change, and its sign is not stable.
+ (d) SAMPLE discipline — ✓. All windows 240–288 trades (≥100). Counts RISE under B (extra Monday re-entries), not fall.
+ (e) PLATEAU / not-a-knife-edge — ✗ FAIL. cutoff 18 vs 20 vs 22 give materially different net$ and the best cutoff flips by
+     window (y1 favours 20, val favours 18, y3 favours 20) — the classic reshuffling-noise signature, no stable optimum.
+ top-5 / walk-forward: n.a. (rejected before any Test touch).
+
+Decision & rationale: REJECT Option B for adoption. Keep Option A (hold over weekend, broker-SL-only) as the CURRENT
+behavior — config/base.yaml UNCHANGED, no src/ code added, no promotion gate touched (rule 8), Test year (2025-07-21→
+2026-07-21) NOT touched (this family's one-touch budget UNSPENT — nothing cleared the pre-registered bar, so nothing earned
+a Test confirmation). The in-sample evidence does not support force-closing: the weekend-gap tail it targets is nearly
+absent (4/1000 trades), it delivers NO tail reduction (a tail INCREASE on Validation), and its only net-positive readings
+are non-causal reshuffling noise that fails the cutoff-hour plateau check.
+
+HONEST CAVEAT ESCALATED TO USER (this is a risk-appetite decision, not purely a backtest-expectancy one): the backtest can
+only price the weekend gaps that OCCURRED in 2021–2026 (empirical abs Monday open-gap: median $1.56, p99 $52.44, max
+$75.46). It CANNOT price a once-a-decade catastrophic weekend gap (geopolitical shock over a closed market), and the engine
+fills a gapped SL at the Monday-open — likely OPTIMISTIC vs a real thin-Sunday-reopen fill that could slip further. So
+force-closing before the weekend is a legitimate INSURANCE choice against an un-sampled fat tail — but it must be justified
+as insurance the user chooses to pay for (a small, real expectancy/robustness cost + trade churn), NOT as a backtest-
+supported improvement, because the backtest shows no measurable benefit and it is not free. Recommendation: do NOT adopt as
+an edge; if the user wants the hard weekend-gap cap for peace-of-mind/tail-insurance reasons, that is a defensible manual
+risk policy to enable deliberately (best implemented as a real Watchman/Risk-Voice exit, its own pre-registered change),
+with eyes open that it slightly dilutes expectancy and adds Friday-close/Monday-reopen churn for a risk that has fired ~4
+times in 1,000 trades on this data.
 
 ## EXP-022 2026-07-31 — `cfo.min_lot_risk_cap_pct` + the min-lot floor at ~$3,000 (NEW family "small-account min-lot floor"; supersedes the 2026-07-22 Stage-1 NOTE's numbers)
 Status: REJECTED (no config change recommended) — for `min_lot_risk_cap_pct` the honest sub-verdict is INSUFFICIENT
@@ -4453,3 +4453,282 @@ ESCALATED TO USER (not config changes, and deliberately not decided here):
      data EXP-018/EXP-020 already flagged as the out-of-regime OOS set, at a gold price level where the fallback actually
      fires, or (b) >=100 rescued trades of paper/live evidence at the current config. Until one of those exists, this
      parameter cannot clear rule 6 on any window legitimately available for selection.
+
+## EXP-023 2026-08-03 — News-protection min-lot fallback: CLOSE-ALL (A) vs LOCK-STOP (B, `lock_frac`) (NEW family "news-protection min-lot fallback"; sibling of EXP-022's "small-account min-lot floor")
+Status: REJECTED (mode B rejected at every `lock_frac`; mode A stands; no config change) — see §5 below. The block
+immediately following was written and committed as a PRE-REGISTRATION BEFORE any result was looked at; only the
+`### EXP-023 RESULTS` section and this Status line were added afterwards.
+Scope: Train (y1/y2/y3) + Val (y4) ONLY; Test year
+(2025-07-22→2026-07-21) NOT touched regardless of outcome. NO change to `config/base.yaml` and NO change to anything
+under `src/` will be made by this experiment whatever the verdict (adoption is a separate, escalated decision).
+
+TRIGGER (live evidence, cited as the motivation — NOT as a statistical sample):
+Paper trading on the ~$2,940 IC Markets demo, 2026-07-22 → 2026-08-03, journal snapshot
+`trade_journal_paper_vps_latest.sqlite`, 11 closed trades. Verified directly from that DB (not from the report text):
+4 trades have `exit_reason='news_protection'` with r_multiple **+0.658, +0.670, +0.513, +0.516** — i.e. 4 of the 5
+winning trades (the 5th is +1.272, `reconciled_system_close`). Losers ran −0.943, −1.335, −0.215, −1.339, −1.002,
+−0.290. TP (2R) was never reached once. Live avg win ≈ +0.73R vs avg loss ≈ −0.85R at 5/11 WR.
+Mechanism, from the live shadow-loop log (2026-08-03 08:15:04) and confirmed in code
+(`watchman/loop.py::_half_volume_rounded` + `_act_on_news_decision`): at 0.01 lot, half rounds to 0.00 < `volume_min`,
+so `_half_volume_rounded` returns `None` and the CLOSE_HALF_AND_BREAKEVEN branch recurses into **CLOSE_ALL**. At the
+min-lot sizing that is the norm on a $3k account (EXP-022 §1), the spec's "de-risk half, let the rest run" (Appendix A
+§4.5) therefore degenerates into "full exit at ~0.5R" on every trigger, while TP sits 2R away. This is a structural
+asymmetry specific to min-lot accounts, not a read on 11 trades.
+
+HYPOTHESIS / MECHANISM UNDER TEST:
+Mode A (CURRENT LIVE) = when news protection fires and half-volume < `volume_min`, close the WHOLE position at the
+current price. Mode B (candidate) = instead keep the position open and TIGHTEN the stop to `entry ± lock_frac × R`
+(profit direction), TP untouched, stop never loosened (idempotent — a re-trigger recomputes the same level, so there is
+no ratchet and no second treatment). B is still strictly risk-reducing vs doing nothing (the position can no longer
+lose), and it is the closest min-lot-feasible analogue of the spec's own intent (at `lock_frac=0.0` it IS the spec's
+"ย้าย SL เป็น break-even" half of the rule, minus the impossible half-close). Question: does B beat A on expectancy of
+the AFFECTED trades without an unacceptable tail (news-spike reversal blowing through the locked stop)?
+
+### DESIGN DEVIATIONS FORCED BY CODE READING (declared here, before results, per the "adjust only if ill-posed" clause)
+D1. **The backtest does NOT model news protection at all.** `backtest/engine.py`'s module docstring, line 49: "One
+    Watchman sub-condition remains genuinely unmodeled: news protection ... for the same reason not attempted here."
+    Verified by grep — `check_news_protection` is never imported by the engine. The project memory note "news
+    protection is modeled in the backtest since Phase 9" is WRONG (Shield is; news protection is not). Consequence
+    that must be stated loudly: **every baseline in this log (EXP-001..EXP-022) is a mode-C run** (no news protection),
+    i.e. none of them describe what the live system actually does today. Mode A has never been backtested.
+D2. **There is no historical high-impact-news calendar, so the TRIGGER TIME cannot be simulated faithfully.**
+    `backtest/news_stub.NoHistoricalNewsDataProvider` returns `[]` always, deliberately; `MQL5CalendarProvider` only
+    exports the terminal's forward-looking calendar; no calendar file exists on disk. The trigger must therefore be
+    PROXIED, and the proxy is declared up front, not chosen after seeing results:
+      * **P1 "always-eligible"** (primary): every bar is trigger-eligible, so protection fires at the FIRST touch of
+        +`profit_threshold_r` (0.5R). This is exactly the behavior when the calendar is unavailable
+        (`StubNewsCalendarProvider` → `None` → `news_protection.py`'s documented fail-safe TRIGGERS protection), and it
+        is the MAXIMUM-exposure bound: the largest possible affected subset, hence the largest legitimate sample.
+      * **P2 "US-macro hours"** (robustness only, never used for selection): trigger-eligible only on Mon–Fri server
+        hours {14,15,16,20,21} — a coarse stand-in for the hours in which high-impact USD releases (XAUUSD maps to
+        USD only, `risk_voice._SYMBOL_CURRENCIES`) and FOMC actually land. It is a PROXY, not a calendar; its only job
+        is to answer "does the A-vs-B effect survive when restricted to genuinely news-adjacent, higher-volatility
+        bars?", which is precisely where B's locked stop is most at risk.
+    Live today most likely runs with a WORKING calendar (MQL5 provider), not the fail-safe: the +1.272R trade passed
+    through 0.5R without protection firing, which the always-fail-safe regime could not produce. So P1 overstates
+    trigger FREQUENCY vs today's live; it does not distort the conditional A-vs-B comparison, which is the deciding one.
+D3. **Primary comparison is trade-matched and conditional, not portfolio-level.** Because this is a
+    `max_positions_per_symbol: 1` engine, closing early under A changes which signal is taken next; EXP-017/020/021 all
+    established that the resulting portfolio deltas are dominated by non-causal RESHUFFLING noise. So: (i) DECIDING
+    metric = per-trade outcome on the AFFECTED SUBSET with the trade sequence held FIXED (same entries, same lots, same
+    bars; only the management rule differs) — a genuine treatment effect; (ii) full-sequence portfolio runs are ALSO
+    reported for PF/DD/net$, but explicitly as a contamination check, and can only VETO a candidate (materially worse),
+    never carry it.
+
+### HARNESS
+`experiments/exp023_news_lock_harness.py` (committable, read-only w.r.t. `src/` and `config/`). It contains a VERBATIM
+copy of `run_backtest`'s bar loop with the news mechanism inserted (EXP-021's pattern), and reuses EXP-022's validated
+fast-path memoisation shim. Fidelity gate, run BEFORE any candidate number is trusted: with the news mechanism OFF the
+copy must reproduce the real `backtest.engine.run_backtest` trade-for-trade, field-for-field (`--mode fidelity`).
+Per-bar ordering convention (a real methodology decision, declared before results): within a bar, priority is
+**SL/TP `check_exit` (unchanged engine convention, SL wins a double-touch) > news-protection intrabar trigger >
+Watchman CLOSE at bar close**. Rationale: the live loop polls every ~5s, so a level touched intrabar is acted on
+BEFORE that bar's close, which is when Watchman's closed-bar structure/time verdict can first change. Live's own
+ordering (Watchman first, then news, news skipped if Watchman already closed) is preserved for everything that is
+decided at the bar's close. Trigger price: bar OPEN if the position is already ≥0.5R at the open, else the exact
++0.5R level. Exits fill nominally (engine convention; symmetric between A and B, and B's locked stop is a real
+broker-side stop that CAN gap through — gap-throughs are counted, not assumed away).
+COST MODEL COMPLETE per `scripts/run_backtest.py`'s own definition: slippage = min-1-spread (`slippage_points=None`)
+AND swap modelled (EXP-018 rates long −53.2 / short +36.8, 3× Wed); commission $0.00 (IC Markets Standard, the real
+account). Account context per EXP-022: **$3,000 starting equity, per-year anchored**, `min_lot_risk_cap_pct: 1.5`,
+`risk_per_trade_pct: 1.0`, all-24h session, be/trail OFF, tp 2.0, pivot 3 — the adopted live config, unchanged.
+
+### GRID (one mechanism, one parameter — `lock_frac`)
+| id | mode | lock_frac | note |
+|----|------|-----------|------|
+| A  | close_all | n.a. | BASELINE = current live behavior |
+| B0 | lock_sl   | 0.0  | breakeven — the spec's own §4.5 wording |
+| B2 | lock_sl   | 0.2  | |
+| B3 | lock_sl   | 0.3  | **PRIMARY CANDIDATE, declared up front** |
+| B5 | lock_sl   | 0.5  | locks the full trigger profit; can only exit ≥+0.5R or at TP |
+| C  | none      | n.a. | REFERENCE BOUND ONLY (= what every prior experiment measured). NOT a candidate for adoption: removing news protection is the removal of a deliberate risk control, out of scope here. |
+
+Configs evaluated (this exp / cumulative for this family): 6 per proxy × 2 proxies = 12 / 12 (first-ever this family).
+At N=12 rule 7's multiple-testing inflation is modest but the required edge is still ~1.6 SE.
+
+### METRIC THAT DECIDES + ACCEPTANCE CRITERION (all required to RECOMMEND B; set before any result)
+ (a) TREATMENT EFFECT, conditional/no-reshuffle, on the AFFECTED SUBSET (trades that trigger under A), under P1:
+     mean R(B3) > mean R(A) on Train (y1+y2+y3) AND on Val (y4), by more than 1.6 SE of the paired difference.
+     Paired, per-trade — the same trades under both rules — so the SE is of the DIFFERENCE, not of two means.
+ (b) TAIL: B must not buy its expectancy with a fat tail. Report, per window: worst single R under B, the count and
+     size of exits BELOW the locked level (gap-throughs of the locked stop), and the fraction of affected trades where
+     B ends WORSE than A. Fail if B's worst affected-trade R is materially negative (a locked stop should make a
+     negative outcome impossible except through a gap) or if the gap-through rate is non-trivial.
+ (c) PLATEAU (rule 5): `lock_frac` neighbours ±1 grid step of the winner must land within ~15% of it on Val. A single
+     sharp `lock_frac` is noise → REJECT even if it is the sweep's best.
+ (d) PORTFOLIO NON-DEGRADATION (veto-only): full-sequence PF and max DD under B3 within ~15% of A on Train and Val.
+ (e) SAMPLE (rule 6): ≥100 affected trades per evaluation window; below that the window reports INSUFFICIENT and is
+     not used for selection.
+ (f) PER-YEAR CONSISTENCY: the treatment effect must have the same sign in y1, y2, y3 and y4 — an effect owed to one
+     regime is rejected (EXP-020/EXP-022(a) precedent: a Train/Val ranking inversion is the overfit signature).
+ (g) P2 ROBUSTNESS: the sign of the treatment effect must survive restriction to news-adjacent hours. If B's edge
+     exists only in quiet hours, it is not an edge on the mechanism actually being changed.
+Rule 8 note: nothing in this experiment touches a promotion/demotion gate or a circuit-breaker threshold, and no such
+change will be proposed as a way to make any result pass.
+
+### EXP-023 ADDENDUM (logged mid-experiment, BEFORE the deciding windows were read — full disclosure of when)
+Timing, stated plainly: this was added AFTER the y1/P1 conditional output was printed and BEFORE any y2/y3/y4 number
+existed. It is a MECHANISM-FIDELITY fix, not a metric change and not a hypothesis change — and it works AGAINST the
+status quo (it removes an artificial penalty on the candidate), so disclosing it costs the candidate nothing and the
+alternative (leaving a known-unfaithful simulation in place because it happened to favour the baseline) would be the
+dishonest option.
+WHAT: when a `lock_sl` trigger fires, is the freshly-locked stop live for the REMAINDER of the triggering bar, or only
+from the next bar? The engine's documented rule ("the bar that produces a tighter stop can never itself be the bar that
+gets stopped out by it") exists because Watchman's MODIFY_SL is decided at the bar's CLOSE, when the bar is already
+over. The news trigger here is INTRABAR, so that rationale does not transfer: live places the broker-side stop within
+~5s of the trigger, and a reversal later in the same hour would fill AT the locked level. The next-bar-only convention
+instead lets the NEXT bar's open gap far below the lock — manufacturing losses (y1 showed worst affected-trade R of
+−1.13 under a supposedly "locked" stop, 35 of 143 lock exits filling below the lock) that live would not suffer.
+RESOLUTION: both conventions are now run for every `lock_frac`, reported side by side (`0.3` vs `0.3@samebar`), and
+**B must beat A under BOTH to be recommended.** `@samebar` fills exactly at the locked level (the price was at ≥+0.5R
+when the stop was placed, so the level is inside the bar's remaining range, not gapped) and keeps the engine's
+pessimistic same-bar-touches-both rule (if the bar reaches the lock AND the take-profit, the stop wins). Genuine
+overnight/weekend gaps on LATER bars still fill at the gapped open under both conventions, so real gap risk is not
+assumed away. Configs evaluated rises from 12 to 20 for this family (4 lock_frac × 2 conventions × 2 proxies, + A + C).
+
+### EXP-023 RESULTS (run 2026-08-03) — VERDICT: REJECT mode B at every `lock_frac` (0.0/0.2/0.3/0.5), under BOTH intrabar conventions and BOTH trigger proxies. Mode A (close-all) STANDS as the live behavior. NO config change, NO src/ change.
+Raw output: `experiments/exp023_cond_out.txt` (conditional/deciding), `experiments/exp023_port_out.txt` (portfolio/veto-only).
+Harness: `experiments/exp023_news_lock_harness.py`.
+
+FIDELITY (both gates passed before any candidate number below was read):
+ 1. `--mode fidelity`, 4,000-bar window, 197 trades: the harness's copied bar loop with the news mechanism OFF is
+    IDENTICAL to the real `backtest.engine.run_backtest`, field-for-field — both with and without EXP-022's fast-path
+    shim (`copy_off_identical=True copy_off_fastpath_identical=True`).
+ 2. Conditional-replay self-check (asserted in code, every window): replaying each mode-C trade one-by-one reproduces
+    the full-sequence mode-C trade list EXACTLY, so the counterfactual replays differ from the baseline only by the
+    management rule under test.
+ 3. EXTERNAL cross-validation against a previously RECORDED number: mode C on y4/VAL at $3,000 gives
+    **254 trades, PF 1.0961, net +$352.60, maxDD 9.99%** — EXP-022's own y4 cap-1.5 cell to the last digit
+    (254 / 1.096 / +352.6 / 9.99). The whole stack (interpreter, pandas build, fast path, config, cost model)
+    reproduces this log's history.
+
+### 1. DECIDING EVIDENCE — conditional treatment effect on the AFFECTED subset (sequence held fixed)
+Affected = trades that trigger news protection (reach +0.5R while eligible). Sample per window: **P1 162/152/149/154,
+P2 124/116/116/124** — every window clears rule 6's 100-trade floor. avgR on the affected subset:
+```
+P1 (always-eligible)     tot  aff | C(none) A(close_all) | B0.0  B0.0@sb  B0.2  B0.2@sb  B0.3  B0.3@sb  B0.5  B0.5@sb
+y1 2021-22               266  162 |  0.496    0.501      | 0.543  0.249  0.443   0.253  0.424   0.340  0.423   0.507
+y2 2022-23               254  152 |  0.526    0.497      | 0.398  0.227  0.412   0.273  0.397   0.325  0.445   0.492
+y3 2023-24               233  149 |  0.674    0.494      | 0.518  0.288  0.510   0.348  0.498   0.372  0.486   0.494
+y4 VAL 2024-25           254  154 |  0.627    0.495      | 0.499  0.288  0.484   0.342  0.524   0.326  0.502   0.495
+```
+POOLED paired treatment effect **B − A** (same trades, so the SE is of the DIFFERENCE; pre-registered bar: > +1.6 SE):
+```
+P1        TRAIN (n=463)                 VAL (n=154)
+B0.0      -0.010 +-0.041 (t -0.25)      +0.004 +-0.071 (t +0.06)
+B0.0@sb   -0.243 +-0.031 (t -7.97)      -0.207 +-0.057 (t -3.65)
+B0.2      -0.043 +-0.032 (t -1.34)      -0.011 +-0.058 (t -0.20)
+B0.2@sb   -0.207 +-0.018 (t -11.34)     -0.153 +-0.040 (t -3.86)
+B0.3      -0.059 +-0.027 (t -2.14)      +0.029 +-0.054 (t +0.54)     <- PRIMARY CANDIDATE
+B0.3@sb   -0.152 +-0.013 (t -11.85)     -0.169 +-0.018 (t -9.16)     <- PRIMARY, live-faithful convention
+B0.5      -0.047 +-0.021 (t -2.28)      +0.007 +-0.041 (t +0.17)
+B0.5@sb   +0.001 +-0.003 (t +0.16)      +0.000 +-0.000 (t  0.00)     <- degenerate: identical to A
+P2        TRAIN (n=356)                 VAL (n=124)
+B0.3      -0.010 +-0.036 (t -0.26)      +0.069 +-0.063 (t +1.08)
+B0.3@sb   -0.097 +-0.026 (t -3.67)      -0.091 +-0.040 (t -2.29)
+```
+**Not one of the 8 B variants clears the pre-registered bar on Train AND Val. The primary candidate `lock_frac=0.3` is
+significantly WORSE than A on Train (t −2.14) and indistinguishable on Val (t +0.54) under the generous convention, and
+overwhelmingly worse under the live-faithful one (t −11.9 Train, −9.2 Val).**
+
+### 2. WHY B FAILS — the mechanism, not the statistics
+Exit mix of the affected subset on y4/VAL (n=154), the cleanest statement of the whole experiment:
+```
+  C (no protection):   75 take_profit (48.7%), 49 stop_loss, 27 time_stop  -> avgR 0.627, medR 0.313, worstR -1.346
+  A (close all):      154 news_protection                                  -> avgR 0.495, medR 0.500, worstR +0.264
+  B0.3 (next-bar):    127 lock-stop, 26 take_profit (16.9%), 1 time_stop   -> avgR 0.524, medR 0.300, worstR -0.685
+  B0.3@samebar:       151 lock-stop,  3 take_profit (1.9%)                 -> avgR 0.326, medR 0.300, worstR +0.064
+```
+A gold H1 bar that pokes +0.5R retraces to within 0.3R of entry, IN THE SAME HOUR, in the overwhelming majority of
+cases. So a stop parked at +0.3R is not "letting the rest run" — it is a near-certain scratch: it converts the 49%
+of affected trades that would otherwise have reached the 2R take-profit into 1.9% (live-faithful) or 16.9% (generous).
+B is therefore strictly worse than BOTH alternatives: worse than A (which at least banks the full +0.5R with
+certainty) and worse than C (which keeps the real 2R upside). The hypothesis's premise — "preserve the upside to TP" —
+is arithmetically incompatible with a stop placed inside the instrument's own hourly noise amplitude. This is the same
+causal finding EXP-008 already established for `breakeven_at_r`/`trail_start_r` ("the breakeven-then-trail mechanism
+engages well before trades reach the 2R target, cutting winners short") — the news lock is that mechanism again, just
+triggered by a different clock.
+Secondary but decisive on its own: the "locked" stop is NOT a floor. Under the engine-consistent next-bar convention
+20-29% of lock exits (35/143, 43/136, 30/127, 34/127) fill BELOW the lock, worst single affected trade −0.53R to
+−1.13R, versus A's guaranteed floor of +0.26R..+0.33R. Under the live-faithful same-bar convention that tail closes
+(worst +0.06R..+0.13R) but only by paying it back in the mean.
+
+### 3. PORTFOLIO (full-sequence; pre-registered as VETO-ONLY evidence, never selection evidence)
+$3,000/window, complete cost model. PF | net$ | maxDD%:
+```
+P1                y1                    y2                     y3                    y4 VAL
+C_none      1.016 |   +64 | 14.5   0.995 |   -22 | 26.1   1.202 |  +773 | 12.3   1.096 |  +353 | 10.0
+A_close_all 1.004 |   +16 | 17.1   0.964 |  -175 | 20.0   1.076 |  +350 | 15.8   0.980 |   -86 | 12.5
+B_lock_0.3  0.882 |  -433 | 22.2   0.900 |  -386 | 18.8   1.068 |  +275 | 19.3   1.056 |  +209 |  8.8
+B_lock_0.3@sb 0.648| -1163 | 40.0   0.694 | -1068 | 36.8   0.777 |  -813 | 36.1   0.696 | -1034 | 38.6
+P2 (news-hours)
+A_close_all 1.030 |  +127 | 12.9   0.897 |  -456 | 23.8   1.115 |  +497 | 11.2   1.010 |   +39 | 14.0
+B_lock_0.3  0.935 |  -241 | 14.0   0.955 |  -188 | 21.4   1.138 |  +541 | 13.6   1.086 |  +321 |  9.3
+B_lock_0.3@sb 0.873|  -454 | 20.3   0.857 |  -556 | 29.0   0.978 |   -85 | 20.9   1.016 |   +58 | 11.2
+```
+Under the live-faithful convention B0.3 destroys the account in every window (PF 0.65-0.78, −$800 to −$1,160 on
+$3,000, 36-40% drawdown) — an unambiguous veto. Under the generous convention it is worse than A on Train and better
+on Val, i.e. exactly the Train/Val ranking INVERSION that EXP-020 and EXP-022(a) were rejected for. `B_lock_0.5@samebar`
+reproduces A's portfolio numbers to 3 decimals in y3/y4 (identical trade counts, 486/554), confirming the degeneracy
+noted above rather than offering a candidate.
+
+### 4. ROBUSTNESS vs THE PRE-REGISTERED BARS (6 of 7 failed; only sample discipline passed)
+ (a) treatment effect > +1.6 SE on Train AND Val — **FAIL** for all 8 variants (see §1).
+ (b) tail — **FAIL**. Next-bar: 20-29% of lock exits fill below the lock, worst affected trade −0.53R..−1.13R vs A's
+     +0.26R floor. Same-bar: tail clean, mean crushed. There is no convention under which B is both safe and better.
+ (c) plateau — **N/A, and reported as such rather than as a pass**: on Val the four `lock_frac` values give
+     +0.004/−0.011/+0.029/+0.007 (next-bar) — a flat field of noise around zero, not a plateau around a peak. There is
+     no signal for a plateau to be the shape of.
+ (d) portfolio non-degradation — **FAIL** (see §3).
+ (e) sample >=100 per window — **PASS** (149-162 affected under P1, 116-124 under P2).
+ (f) per-year sign consistency — **FAIL** under next-bar (B0.3: −0.077, −0.100, +0.004, +0.029 — sign flips);
+     "consistent" under same-bar only in the sense of being consistently and heavily negative.
+ (g) P2 news-hours robustness — **FAIL**: same picture, B0.3@sb t −3.67 Train / −2.29 Val.
+ walk-forward: n.a. (nothing cleared the bar; a rolling confirmation would be confirming a rejected candidate).
+ Multiple testing (rule 7): 20 configs evaluated this session (4 lock_frac × 2 conventions × 2 proxies, + A + C),
+ 20 cumulative for this family. At N=20 the required edge is ~1.7 SE; the best variant's edge over A is NEGATIVE.
+
+### 5. VERDICT
+**REJECT mode B (lock-the-stop) at every tested `lock_frac`.** `config/base.yaml` UNCHANGED (`watchman.news_close_mode`
+stays `half`, `news_profit_threshold_r` stays 0.5, `news_window_minutes` stays 30), `src/` UNCHANGED — in particular
+`watchman/loop.py`'s `_half_volume_rounded`-to-CLOSE_ALL fallback is NOT modified. No promotion/demotion gate or
+circuit-breaker threshold was touched or proposed for change (rule 8). Test year (2025-07-22 → 2026-07-21) NOT touched;
+this family's one-touch budget is UNSPENT, because nothing earned a Test confirmation.
+The live observation that started this (4 of 5 winners banked at ~+0.5R while TP was never reached) is REAL and
+correctly diagnosed — but the proposed remedy is worse than the disease. Trading a certain +0.5R for a stop parked
+inside gold's own hourly noise does not "preserve the upside"; it deletes it (48.7% -> 1.9% TP rate on Val).
+
+### 6. THE BIGGER FINDING — ESCALATED, NOT DECIDED HERE (this is the real result of EXP-023)
+ (i) **BACKTEST/LIVE PARITY GAP, same class as EXP-018's swap gap.** News protection is not modeled in
+     `backtest/engine.py` at all (D1). Every promotion-gate number this project has ever produced — including the
+     Gate-1 arithmetic EXP-008 was adopted on — describes **mode C**, while the live system runs **mode A**. Measured
+     cost of that gap on the affected subset (~60% of all trades under P1, ~46% under P2), pooled: A − C =
+     **−0.066R ± 0.064 on Train, −0.132R ± 0.110 on Val** per affected trade (individually not significant, negative
+     in 3 of 4 windows and largest in the two most recent). At portfolio level under P1 it turns Val from PF 1.096 /
+     +$353 into PF 0.980 / −$86, and under P2 into PF 1.010 / +$39. The honest summary is: **news protection as
+     currently implemented on a min-lot account is a materially expensive risk control, and the backtest has never
+     charged the strategy for it.** This deserves its own pre-registered experiment (and, if the sign holds, an
+     engine change so `cost_model_complete`-style honesty flags cover it) — it is NOT decided here, and it is NOT a
+     licence to switch the control off: mode C is "no news protection at all", which is a deliberate risk-control
+     removal and was carried here only as a reference bound.
+ (ii) **The trigger frequency is un-measurable today and that is the biggest uncertainty in (i).** There is no
+     historical calendar (D2); P1 (~60% of trades affected) is the always-fail-safe upper bound and P2 (~46%) is a
+     coarse hour-mask, whereas today's live loop most likely runs a working MQL5 calendar with a far lower true rate.
+     Before (i) can be decided, someone has to make the trigger rate measurable — e.g. by ACCUMULATING the MQL5
+     exporter's forward-looking calendar to disk from now on (it is already running on the VPS), which after a few
+     months yields a real, honest calendar for the paper window. Until then the magnitude in (i) is bracketed, not known.
+ (iii) **A cheaper, mechanism-honest alternative exists and was NOT tested here** (out of scope: one experiment, one
+     mechanism): if the goal is to stop a min-lot account from banking every winner at +0.5R, the surgical lever is
+     the TRIGGER, not the fallback action — e.g. raising `news_profit_threshold_r`, or narrowing
+     `news_window_minutes`, or making the min-lot fallback SKIP protection instead of closing all (the current code
+     comment explicitly chose "close whole" over "skip" as the safe direction, and that choice is worth re-testing on
+     evidence rather than on instinct). Each is a single pre-registered parameter with a live-observable meaning.
+     Recommended order if the user wants to continue: (1) make the trigger measurable per (ii); (2) then test the
+     threshold/window; (3) never the fallback action again — this experiment has answered that one.
+
+HONEST CAVEAT ON EXIT COSTS (applies to both arms, does not change the verdict): per the engine's documented cost
+convention, spread/slippage is baked into the ENTRY fill only; exits fill nominally. So mode A's market close at the
+trigger price and mode B's stop-out at the locked level are both modelled ~1 spread too favourably (~$0.35 on a
+$10-30 stop distance, i.e. ~0.01-0.03R). The effect is near-symmetric between the two arms and an order of magnitude
+smaller than the measured B-vs-A gap (0.15-0.24R under the live-faithful convention), so it cannot flip the verdict.
+It is the one place where this simulation is optimistic for BOTH modes relative to live.
