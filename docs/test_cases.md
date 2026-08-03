@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1484 (including all parametrized variants)
+- **Total Test Count**: 1488 (including all parametrized variants)
 - **Test Files**: ~59 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -31,13 +31,13 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | Council | test_calendar_archive.py | 10 |
 | | test_decision_matrix.py | 50 |
 | | test_finnhub_news_calendar.py | 12 |
-| | test_mql5_calendar_provider.py | 26 |
+| | test_mql5_calendar_provider.py | 30 |
 | | test_news_calendar.py | 2 |
 | | test_order_construction.py | 10 |
 | | test_risk_voice.py | 29 |
 | | test_scoring.py | 25 |
 | | test_trivial_signal.py | 6 |
-| **Council Subtotal** | | **170** |
+| **Council Subtotal** | | **174** |
 | Dashboard | test_app.py | 53 |
 | | test_positions.py | 6 |
 | | test_webapp_auth.py | 20 |
@@ -108,7 +108,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **406** |
 | | | |
-| **GRAND TOTAL** | | **1474** |
+| **GRAND TOTAL** | | **1478** |
 
 ---
 
@@ -409,6 +409,10 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_resolve_commondata_path_returns_path_when_terminal_info_available
 - test_resolve_commondata_path_returns_none_when_terminal_info_unavailable
 - test_csv_columns_matches_mql5_exporters_header_write_call
+- test_utc_skewed_export_fails_safe
+- test_plausible_offset_export_is_served
+- test_export_without_generated_at_comment_skips_the_guard
+- test_parse_generated_at_roundtrip_and_malformed
 - test_going_stale_notifies_once
 - test_repeated_calls_while_still_stale_do_not_re_notify
 - test_recovering_from_stale_notifies_recovery

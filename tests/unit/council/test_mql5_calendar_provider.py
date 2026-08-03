@@ -33,7 +33,12 @@ WINDOW_START = datetime(2026, 7, 20, 12, 0)  # naive server time -- module's own
 WINDOW_END = datetime(2026, 7, 20, 13, 0)
 
 _HEADER = "event_time,currency,importance,event_name,forecast,previous,actual"
-_COMMENT = "# generated_at_server_time=2026-07-20 10:00:00"
+# Server-time comment consistent with the broker's real +2h UTC offset
+# relative to the mtimes the tests below stamp (the 2026-08-04 UTC-skew
+# guard fails safe when generated_at - mtime implies an offset < +1h, so a
+# fixture whose comment implied UTC-or-earlier would make every test hit
+# that guard instead of the path it means to exercise).
+_COMMENT = "# generated_at_server_time=2026-07-20 14:00:00"
 
 
 def _row(
@@ -447,3 +452,53 @@ def test_csv_columns_matches_mql5_exporters_header_write_call():
     header_columns = tuple(re.findall(r'"([^"]+)"', match.group(0)))
 
     assert header_columns == _CSV_COLUMNS
+
+
+# --- 2026-08-04 UTC-skew guard (EXP-024 §10: exports written before the ---
+# --- terminal connected carry ~UTC event times -> must fail safe) ---------
+
+
+def test_utc_skewed_export_fails_safe(tmp_path):
+    """generated_at ~= mtime means the exporter believed a ~0 server-UTC
+    offset, i.e. the file was written before the terminal connected and its
+    event times are hours wrong -- must return None (fail-safe), never
+    serve the skewed windows."""
+    skewed_comment = "# generated_at_server_time=2026-07-20 12:00:30"  # 30s over NOW's UTC mtime
+    text = "\n".join([skewed_comment, _HEADER, _row()]) + "\n"
+    _write_export(tmp_path, [], mtime=NOW, text=text)
+    provider = _provider(tmp_path)
+
+    assert provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END) is None
+
+
+def test_plausible_offset_export_is_served(tmp_path):
+    """The default fixture's +2h implied offset (the broker's real winter
+    offset) passes the guard -- pinned explicitly so the guard's floor can
+    never silently creep past the real broker offset."""
+    _write_export(tmp_path, [_row()], mtime=NOW)
+    provider = _provider(tmp_path)
+
+    events = provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END)
+
+    assert events is not None and len(events) == 1
+
+
+def test_export_without_generated_at_comment_skips_the_guard(tmp_path):
+    """Files without the `# generated_at_server_time=` line (old exporter
+    builds, hand-made fixtures) can't be offset-checked -- the guard is
+    skipped rather than failing the whole read."""
+    text = "\n".join([_HEADER, _row()]) + "\n"
+    _write_export(tmp_path, [], mtime=NOW, text=text)
+    provider = _provider(tmp_path)
+
+    events = provider.get_high_impact_events("USD", WINDOW_START, WINDOW_END)
+
+    assert events is not None and len(events) == 1
+
+
+def test_parse_generated_at_roundtrip_and_malformed():
+    assert mcp.parse_generated_at(
+        "# generated_at_server_time=2026-07-20 14:00:00\nrest"
+    ) == datetime(2026, 7, 20, 14, 0, 0)
+    assert mcp.parse_generated_at("no comment line\n") is None
+    assert mcp.parse_generated_at("# generated_at_server_time=garbage\n") is None

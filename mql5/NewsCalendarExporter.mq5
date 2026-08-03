@@ -148,6 +148,21 @@ string SanitizeField(string text)
 //+------------------------------------------------------------------+
 int ExportCalendar()
   {
+   // 2026-08-04 (EXP-024 §10 finding): for the first ~2 export cycles after
+   // a terminal restart this service wrote event times ~3h behind server
+   // time (UTC-looking). Cause: until the terminal has (re)connected and
+   // learned the broker's server-time offset, calendar timestamps and
+   // TimeTradeServer() come back without that offset applied. An export
+   // written in that state poisons the live news windows by hours, so:
+   // never export while disconnected -- skipping a cycle just leaves the
+   // previous good file in place (Python side's staleness check + fail-safe
+   // own the "file too old" case, per mql5_calendar_provider.py).
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED))
+     {
+      Print("NewsCalendarExporter: terminal not connected to the trade server -- skipping this export cycle");
+      return -1;
+     }
+
    datetime now       = TimeTradeServer();
    datetime date_from = now - InpLookbackHours * 3600;
    datetime date_to   = now + InpLookaheadHours * 3600;
@@ -229,6 +244,16 @@ void OnStart()
       "NewsCalendarExporter: service starting -- export every %d min, window [-%dh, +%dh] server time",
       InpExportIntervalMinutes, InpLookbackHours, InpLookaheadHours
    );
+
+   // Services auto-start with the terminal, i.e. typically BEFORE the
+   // connection to the trade server is up -- exactly the window where the
+   // 2026-08-04 UTC-skew bug (see ExportCalendar) used to fire. Wait for
+   // the first connection (checking the stop flag every second) plus a
+   // short settle so the first export of the session is already offset-correct.
+   while(!IsStopped() && !TerminalInfoInteger(TERMINAL_CONNECTED))
+      Sleep(1000);
+   if(!IsStopped())
+      Sleep(5000);
 
    while(!IsStopped())
      {

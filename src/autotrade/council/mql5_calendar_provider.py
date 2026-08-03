@@ -97,6 +97,31 @@ EXPORT_FILENAME = "AutoTradeNewsCalendar.csv"
 _HIGH_IMPACT = "high"
 _EVENT_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 _CSV_COLUMNS = ("event_time", "currency", "importance", "event_name", "forecast", "previous", "actual")
+_GENERATED_AT_PREFIX = "# generated_at_server_time="
+
+# The exporter's claimed server time minus the file's true UTC mtime is, to
+# within seconds, the broker's UTC offset at write time (IC Markets: +2h or
+# +3h). EXP-024 §10 found exports written before the terminal (re)connects
+# carry ~UTC times instead (offset ~0) -- hours-wrong news windows. Any
+# export whose implied offset falls below this floor is treated as
+# unavailable (fail-safe), same direction as staleness. Deliberately below
+# +2h with margin for mtime jitter; would need revisiting only for a UTC+0/+1
+# broker, which this project's broker is not (see EXP-018/EXP-024 notes).
+_MIN_PLAUSIBLE_SERVER_UTC_OFFSET = timedelta(hours=1)
+
+
+def parse_generated_at(csv_text: str) -> datetime | None:
+    """Pure, MT5-free: the exporter's own `# generated_at_server_time=...`
+    first line as a naive server-time datetime, or `None` if absent or
+    malformed (old/hand-made files; callers must then skip the offset
+    sanity check rather than fail the read)."""
+    first_line = csv_text.split("\n", 1)[0].strip()
+    if not first_line.startswith(_GENERATED_AT_PREFIX):
+        return None
+    try:
+        return datetime.strptime(first_line[len(_GENERATED_AT_PREFIX):], _EVENT_TIME_FORMAT)
+    except ValueError:
+        return None
 
 
 def resolve_commondata_path() -> str | None:
@@ -265,6 +290,29 @@ class MQL5CalendarProvider:
             logger.warning("MQL5CalendarProvider: export file is fresh again -- calendar recovered.")
             notify("[AutoTrade] ✅ Economic calendar export is fresh again -- news-blackout checks resumed normally.")
             self._alerted_stale = False
+
+        # 2026-08-04 (EXP-024 §10): an export written before the terminal
+        # (re)connected carries ~UTC event times, hours behind server time --
+        # a silently-wrong news window. Its claimed generated-at server time
+        # minus the file's true UTC mtime implies the server offset the
+        # exporter believed in; an implausibly small offset means exactly
+        # that broken state, so fail safe like staleness does. The exporter
+        # itself now also refuses to export while disconnected (defense in
+        # depth -- this guard still matters for any file written by the old
+        # .ex5 or a future regression).
+        generated_at = parse_generated_at(export.text)
+        if generated_at is not None:
+            implied_offset = generated_at - export.mtime.replace(tzinfo=None)
+            if implied_offset < _MIN_PLAUSIBLE_SERVER_UTC_OFFSET:
+                logger.warning(
+                    "MQL5CalendarProvider: export file %s implies a server-UTC offset of %s "
+                    "(generated_at=%s vs mtime=%s) -- below the plausible floor %s, so it was "
+                    "likely written before the terminal connected (UTC-skewed event times). "
+                    "Failing safe (None).",
+                    self._export_path, implied_offset, generated_at, export.mtime,
+                    _MIN_PLAUSIBLE_SERVER_UTC_OFFSET,
+                )
+                return None
 
         rows = parse_export_csv(export.text)
         if rows is None:
