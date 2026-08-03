@@ -5085,3 +5085,30 @@ modelled ~1 spread too favourably (~$0.35, ≈0.01–0.03R) at EVERY T, so the b
 order of magnitude below the paired differences discussed above. It is the one place this simulation is optimistic for
 all arms relative to live.
 
+## NOTE (not an EXP) 2026-08-04 — Historical calendar DUMP obtained from MT5 itself; depth VERIFIED to 2021-07; one timezone quirk found and characterised (EXP-024 unblocked early)
+The wait-for-accumulation plan (2026-08-03 NOTE above) assumed history had to be collected forward. It does not:
+`CalendarValueHistory()` — the same call `mql5/NewsCalendarExporter.mq5` already uses — accepts arbitrary historical
+windows. `mql5/CalendarHistoryDump.mq5` (one-off Script, this commit) dumps 2021-07 → now+48h in the exporter's exact
+CSV format; run 2026-08-04 on the dev PC's IC Markets demo terminal ("MetaTrader 5-2") → 73,699 rows, 5.5 MB, to the
+terminal's Common Files as `AutoTradeNewsCalendarHistory.csv` (dev-PC local, not committed; regenerable by re-running
+the Script).
+
+Validation (5 checks, scratchpad `validate_calendar_dump.py`, results 2026-08-04):
+- DEPTH: earliest event exactly 2021-07-01; high-impact-USD present in all 62 months, no gap months (min/med/max
+  9/43/51 per month) — **the full Train+Val window is covered; EXP-024 need not wait for accumulation.**
+- FOMC: 17/17 known Fed decision dates (2021-09→2025-06) have a high-USD event.
+- OVERLAP vs the live archive: 115/116 keys match; the 1 miss is a reschedule (AUD low event moved 08-04→08-05),
+  i.e. the dump reflects the current schedule while the archive recorded what live SAW — exactly the distinction the
+  archive exists to capture. Keep accumulating it; it stays the cross-check and the reschedule/fail-safe ground truth.
+- HYGIENE: 0 unparseable rows, dup-key rate 0.47% (consumers dedup by key), importance values within the expected set.
+- **TIMEZONE QUIRK (the one real finding): dump event times are UTC + the CURRENT server offset (+3) applied to ALL
+  history, not the per-date server clock.** Symptom: headline NFP prints 15:30 in summer months but 16:30 in every
+  Dec–Mar across 2021-2026 (US-DST-off months). Proof against the very H1 bars the backtests run on
+  (`data/historical/XAUUSD_H1.csv`): on the 20 winter NFP days the max-range bar of {14,15,16,17}:00 is the **15:00
+  bar 12/20** times vs 16:00 only 5/20 (≈ the noise floor — summer control: 15:00 wins 22/37 with the calendar itself
+  saying 15:30). So winter events are stamped 1h LATE relative to the bar clock. **EXP-024 rule: normalise dump times
+  by −1h wherever the server ran UTC+2 (US-DST winter), then require post-normalisation NFP = 15:30 server year-round
+  as a built-in self-check.** The live archive (collected with the then-current offset each cycle) will not show this
+  skew for rows collected in the season they occur — a second reason to keep it running.
+- Standing limitation (unchanged from the dump script's header): importance/name reflect MetaQuotes' CURRENT
+  classification — declare in EXP-024's pre-registration.
