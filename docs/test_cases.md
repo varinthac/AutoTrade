@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1476 (including all parametrized variants)
+- **Total Test Count**: 1484 (including all parametrized variants)
 - **Test Files**: ~59 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -78,6 +78,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_stop_logic.py | 38 |
 | **Watchman Subtotal** | | **170** |
 | Scripts & CLI | test_autotrade_control.py | 24 |
+| | test_backup_db.py | 8 |
 | | test_calendar_export_watchdog.py | 12 |
 | | test_clock.py | 1 |
 | | test_cloudflared_watchdog.py | 9 |
@@ -105,9 +106,9 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_service_watchdog.py | 9 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **398** |
+| **Scripts & CLI Subtotal** | | **406** |
 | | | |
-| **GRAND TOTAL** | | **1466** |
+| **GRAND TOTAL** | | **1474** |
 
 ---
 
@@ -1377,6 +1378,17 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 - test_main_dispatches_status
 - test_main_dispatches_emergency_stop_with_confirm_flag
 - test_main_dispatches_emergency_stop_without_confirm_flag
+
+### tests/unit/test_backup_db.py
+
+- test_backup_journal_produces_a_readable_copy
+- test_copy_calendar_archive_copies_file_contents
+- test_prune_old_removes_only_files_older_than_keep_days
+- test_main_backs_up_both_journal_and_calendar
+- test_main_missing_journal_exits_1_but_still_backs_up_calendar
+- test_main_missing_calendar_archive_does_not_fail_the_run
+- test_main_journal_backup_failure_does_not_block_calendar_copy
+- test_main_calendar_copy_failure_does_not_block_journal_backup
 
 ### tests/unit/common/test_calendar_export_watchdog.py
 
