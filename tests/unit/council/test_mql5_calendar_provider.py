@@ -228,7 +228,7 @@ def test_unparseable_header_returns_none(tmp_path):
 
 
 def test_header_with_columns_in_wrong_order_returns_none(tmp_path):
-    """Pins the column-order-drift risk explicitly: `_parse_export_csv`
+    """Pins the column-order-drift risk explicitly: `parse_export_csv`
     compares `reader.fieldnames` against the exact tuple `_CSV_COLUMNS`
     (order-sensitive), so a header carrying the right *names* but in a
     different order than mql5/NewsCalendarExporter.mq5's own

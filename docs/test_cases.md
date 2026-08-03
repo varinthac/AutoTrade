@@ -4,8 +4,8 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1464 (including all parametrized variants)
-- **Test Files**: ~58 files across `tests/unit/` subdirectories
+- **Total Test Count**: 1474 (including all parametrized variants)
+- **Test Files**: ~59 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
 **Important**: This document is a point-in-time reference snapshot, not automatically generated. As tests are added, modified, or removed, this file must be manually updated to stay in sync with the actual test suite. When adding or changing tests, please update the relevant section and adjust the summary table counts below.
@@ -28,7 +28,8 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_lookahead_validation.py | 3 |
 | | test_report.py | 15 |
 | **Backtest Subtotal** | | **80** |
-| Council | test_decision_matrix.py | 50 |
+| Council | test_calendar_archive.py | 10 |
+| | test_decision_matrix.py | 50 |
 | | test_finnhub_news_calendar.py | 12 |
 | | test_mql5_calendar_provider.py | 26 |
 | | test_news_calendar.py | 2 |
@@ -36,7 +37,7 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 | | test_risk_voice.py | 29 |
 | | test_scoring.py | 25 |
 | | test_trivial_signal.py | 6 |
-| **Council Subtotal** | | **160** |
+| **Council Subtotal** | | **170** |
 | Dashboard | test_app.py | 53 |
 | | test_positions.py | 6 |
 | | test_webapp_auth.py | 20 |
@@ -313,6 +314,19 @@ This document provides a comprehensive list of all 1344 test cases in the AutoTr
 ---
 
 ## Council — Trading signal generation, risk voice, news calendar, market scoring
+
+### tests/unit/council/test_calendar_archive.py
+
+- test_first_run_creates_archive_with_header_and_rows
+- test_rerun_of_identical_snapshot_appends_nothing
+- test_overlapping_snapshot_appends_only_new_rows
+- test_duplicate_rows_within_one_snapshot_archived_once
+- test_importance_regrade_becomes_a_second_row
+- test_unparseable_snapshot_returns_none_and_leaves_archive_untouched
+- test_corrupt_existing_archive_header_refuses_to_append
+- test_event_name_with_comma_round_trips_and_dedups
+- test_archive_export_file_missing_snapshot_returns_none
+- test_archive_export_file_reads_real_snapshot
 
 ### tests/unit/council/test_decision_matrix.py
 

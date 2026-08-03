@@ -25,7 +25,7 @@ MT5 connection, that one MT5-touching step is isolated in
 `resolve_commondata_path()` below; `MQL5CalendarProvider` itself takes the
 already-resolved path as a plain string in its constructor and never
 touches `mt5` again after that -- the actual file-reading/parsing/filtering
-logic (`_read_export_file`, `_parse_export_csv`, `_row_to_event`) is pure
+logic (`_read_export_file`, `parse_export_csv`, `_row_to_event`) is pure
 Python with no MT5 dependency at all, and is what `tests/unit/council/
 test_mql5_calendar_provider.py` exercises directly.
 
@@ -137,7 +137,7 @@ def _read_export_file(path: Path) -> _ExportFile | None:
     return _ExportFile(text=text, mtime=datetime.fromtimestamp(mtime_epoch, tz=timezone.utc))
 
 
-def _parse_export_csv(csv_text: str) -> list[dict[str, str]] | None:
+def parse_export_csv(csv_text: str) -> list[dict[str, str]] | None:
     """Pure, MT5-free: parses the exporter's CSV text into raw row dicts.
     The first line is a `# generated_at_server_time=...` comment (see
     `mql5/NewsCalendarExporter.mq5`), skipped here.
@@ -266,7 +266,7 @@ class MQL5CalendarProvider:
             notify("[AutoTrade] ✅ Economic calendar export is fresh again -- news-blackout checks resumed normally.")
             self._alerted_stale = False
 
-        rows = _parse_export_csv(export.text)
+        rows = parse_export_csv(export.text)
         if rows is None:
             return None
 

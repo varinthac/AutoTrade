@@ -55,6 +55,8 @@ from __future__ import annotations
 
 from autotrade.common import pid_file
 from autotrade.common.calendar_export_watchdog import check_and_recover as check_calendar_export
+from autotrade.common.calendar_export_watchdog import default_export_path
+from autotrade.council.calendar_archive import archive_export_file
 from autotrade.common.cloudflared_watchdog import check_and_restart as check_cloudflared
 from autotrade.common.config import REPO_ROOT
 from autotrade.common.kill_switch_reminder import check_and_remind as check_kill_switch_reminder
@@ -94,6 +96,13 @@ def main() -> int:
     check_kill_switch_reminder()
     check_manual_halt_reminder()
     check_scheduled_tasks()
+
+    # Passive observation, never recovery: fold the current calendar-export
+    # snapshot into the append-only history archive (EXP-023's prerequisite
+    # for ever backtesting news protection -- see council/calendar_archive.py).
+    # Missing/stale export is check_calendar_export()'s problem, not this
+    # call's; it just archives whatever is readable and stays quiet otherwise.
+    archive_export_file(default_export_path())
 
     if running and pid is not None:
         print(f"AutoTrade loop: RUNNING (PID {pid})")

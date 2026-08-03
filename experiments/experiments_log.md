@@ -4732,3 +4732,21 @@ trigger price and mode B's stop-out at the locked level are both modelled ~1 spr
 $10-30 stop distance, i.e. ~0.01-0.03R). The effect is near-symmetric between the two arms and an order of magnitude
 smaller than the measured B-vs-A gap (0.15-0.24R under the live-faithful convention), so it cannot flip the verdict.
 It is the one place where this simulation is optimistic for BOTH modes relative to live.
+
+## NOTE (not an EXP) 2026-08-03 — Historical news-calendar collection STARTED (EXP-024 prerequisite; follows EXP-023 §"escalation")
+EXP-023's verdict escalated (did NOT decide) the bigger question: live runs news-protection mode A while every
+backtest baseline EXP-001..023 is effectively mode C, and settling that (model it? redesign it? remove it?) needs the
+REAL trigger rate — which nothing was recording, because `mql5/NewsCalendarExporter.mq5` only ever overwrites a
+rolling [-2h, +48h] snapshot every 5 minutes. As of this note the snapshot is now folded into an append-only archive:
+
+- Collector: `council/calendar_archive.py` (`archive_export_file()`), called once per heartbeat cycle by
+  `scripts/run_health_check.py` (Task Scheduler, ~10 min) — passive observation only, no live-loop change, no restart
+  needed, inherits the heartbeat's own monitoring. 10 unit tests (`tests/unit/council/test_calendar_archive.py`).
+- Archive: `data/db/news_calendar_history.csv` (gitignored, VPS-local like the journal), append-only, deduped on
+  (event_time, currency, importance, event_name); `first_seen_utc` is metadata (when the row first appeared in a
+  snapshot), NOT comparable to `event_time` (naive server time, exporter's own convention).
+- **Data start date for any future EXP-024: no archived calendar data exists before 2026-08-03.** The archive
+  accumulates ALL currencies/importances (filtering to high-impact USD is the consumer's job, mirroring
+  `MQL5CalendarProvider`), so trigger-window reconstruction is possible for any symbol later.
+- EXP-024 itself is NOT pre-registered here — per EXP-023's escalation it should only be designed once enough weeks
+  of real trigger data exist to say how often mode A actually fires (the piece both EXP-023 proxies had to assume).
