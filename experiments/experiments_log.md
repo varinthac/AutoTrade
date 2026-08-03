@@ -5112,3 +5112,220 @@ Validation (5 checks, scratchpad `validate_calendar_dump.py`, results 2026-08-04
   skew for rows collected in the season they occur — a second reason to keep it running.
 - Standing limitation (unchanged from the dump script's header): importance/name reflect MetaQuotes' CURRENT
   classification — declare in EXP-024's pre-registration.
+
+## EXP-024 2026-08-04 — News protection measured against the REAL historical calendar: trigger rate + parity cost of live's mode A (NEW family "news-protection backtest/live parity", the family EXP-023 §6(i) opened; the reserved 024 slot)
+Status: PRE-REGISTERED (results pending). Everything from this line down to `### EXP-024 RESULTS` was written and
+COMMITTED, together with a results-free `experiments/exp024_real_calendar_harness.py`, BEFORE any A@real number was
+produced. Only the RESULTS section and this Status line are added afterwards.
+**This is a MEASUREMENT experiment, not a selection experiment.** There is no grid, no candidate, no winner, and no
+`config/base.yaml` or `src/` change can follow from it directly. Its whole job is to replace EXP-023's P1 (~60% of
+trades affected) / P2 (~46%) *proxy brackets* with the real number, and to price the parity gap EXP-023 §6(i)
+escalated and EXP-025 §6(ii) re-confirmed as the one open question in this whole line of work.
+Scope: Train (y1/y2/y3) + Val (y4) ONLY. **The Test year 2025-07-22 → 2026-07-21 is NOT touched under any outcome —
+pre-registered here, and enforced in the harness (`--window y5*` returns REFUSED).** The obvious next question ("what
+do the promotion-gate numbers look like on Test under real mode A, i.e. what is the honest Test baseline for the
+config we actually run live?") is deliberately LEFT OPEN by this experiment so that the Test year stays clean for it.
+That is a user-level decision about how to spend this family's one-touch budget, not a decision this experiment may
+make.
+
+### 0. THE QUESTION, AND WHY IT IS ANSWERABLE TODAY AND WAS NOT ON 2026-08-03
+EXP-023 D1 established that `backtest/engine.py` does not model news protection at all: every number this project has
+ever produced (EXP-001..EXP-025, including the Gate-1 arithmetic EXP-008 was adopted on) describes **mode C — no news
+protection** — while the live system runs **mode A — close the whole position at the trigger**, because at min-lot
+`watchman/loop.py::_half_volume_rounded` returns `None` and CLOSE_HALF_AND_BREAKEVEN recurses into CLOSE_ALL. EXP-023
+priced that gap only inside two proxy brackets because no historical calendar existed (its D2). EXP-025 swept the
+trigger LEVEL and concluded the level is not the lever — the same single question reappears at every grid point.
+The 2026-08-04 NOTE removed the blocker: `mql5/CalendarHistoryDump.mq5` pulled MetaQuotes' own
+`CalendarValueHistory()` back to 2021-07-01 (73,699 rows), validated for depth, FOMC coverage, hygiene and one
+timezone quirk. So the trigger rate is now MEASURABLE over the whole Train+Val history, not bracketed.
+
+### 1. INHERITED DESIGN DEVIATIONS (EXP-023 D1/D3 — still binding; D2 is what this experiment RETIRES)
+D1 (inherited, unchanged). The engine does not model news protection; mode A is simulated by EXP-023's VERBATIM copy
+   of the engine bar loop (re-used through `exp025_news_threshold_harness`), never by production code. Nothing under
+   `src/` or `config/` is modified by this experiment.
+D2 (**RETIRED, and that is the point of EXP-024**). The trigger time is no longer proxied. P1/P2 survive here only as
+   CONTINUITY ANCHORS whose job is to reproduce EXP-023/EXP-025's published numbers digit-for-digit and thereby prove
+   this harness is the same instrument. They are anchors, never candidates and never the deciding measurement.
+D3 (inherited, unchanged). The deciding comparison is TRADE-MATCHED and CONDITIONAL with the trade sequence held
+   FIXED (same entries, same fills, same lots, same bars; only the management rule differs), because
+   `max_positions_per_symbol: 1` means an earlier exit reshuffles which signal is taken next, and EXP-017/020/021
+   established that reshuffling noise dominates portfolio deltas. Full-sequence portfolio runs ARE reported here —
+   and unlike EXP-023/025 they are not "veto-only evidence", because there is no candidate to veto: they are the
+   portfolio-level *statement of the parity gap* ("by how much does every historical PF/net$/maxDD in this log
+   overstate the config that actually runs live?"), and they are read as such, with the reshuffling caveat attached.
+
+### 2. DATA CONTRACT AND THE MANDATORY TIMEZONE NORMALISATION (from the 2026-08-04 NOTE; implemented, not re-derived)
+SOURCE: `C:\Users\Varintha\AppData\Roaming\MetaQuotes\Terminal\Common\Files\AutoTradeNewsCalendarHistory.csv`
+(73,699 rows, 2021-07-01 → 2026-08-05, exporter CSV format, first line a `#` comment). **Read IN PLACE, not copied
+into `data/db/`** — it is a 5.5 MB regenerable, gitignored, dev-PC-local artifact and a second copy would only create
+a second thing that can go stale; the path is a `--calendar` argument so the file can move without touching code.
+PARSER: the PRODUCTION parser `council/mql5_calendar_provider.parse_export_csv` is called directly, so the harness
+cannot drift from what live reads. Rows are then deduped on `(event_time, currency, importance, event_name)` exactly
+like `council/calendar_archive.py`'s `_KEY_COLUMNS` (the dump's own dup-key rate is 0.47%).
+NORMALISATION (mandatory, from the NOTE): the dump stamps ALL history as UTC + the CURRENT server offset (+3), while
+the H1 bars the backtest runs on are stamped in the true per-date server clock (UTC+2 in US-DST-off, UTC+3 in
+US-DST-on). Therefore **subtract 1h from every dump event time whose date falls in a US-DST-OFF period**, with the US
+rule implemented properly: DST is ON for `second Sunday of March <= date < first Sunday of November`, computed per
+year, NOT at month granularity. Transition-day granularity is the date, not the 2:00-ET instant; the residual error
+is confined to at most two Sundays a year, on which the US high-impact release calendar is empty.
+
+### 3. ARMS (two, plus two continuity anchors — no parameter is varied anywhere in this experiment)
+| id | what | role |
+|----|------|------|
+| **C** | no news protection | REFERENCE ARM = what every backtest in this log has silently measured |
+| **A@real** | mode A (close-all at +0.5R) triggered from the REAL normalised calendar under live semantics | **THE MEASUREMENT** |
+| A@P1 | mode A, every bar eligible | CONTINUITY ANCHOR (EXP-023/025's primary proxy) — must reproduce their published numbers |
+| A@P2 | mode A, Mon–Fri server hours {14,15,16,20,21} | CONTINUITY ANCHOR (EXP-023/025's robustness proxy) |
+
+`news_profit_threshold_r` stays 0.5, `news_window_minutes` stays 30, `news_close_mode` stays `half` (degenerating to
+CLOSE_ALL at min-lot) — i.e. exactly `config/base.yaml` as adopted. Nothing is swept. Multiple-testing inflation
+(rule 7) is therefore essentially nil: 4 arms, 0 free parameters, 0 selection decisions, and no threshold anywhere in
+this experiment can be "chosen" by its result. Cumulative for this NEW family: 4 / 4.
+
+### 4. LIVE TRIGGER SEMANTICS THIS HARNESS MUST REPRODUCE (exact functions, cited before any number)
+ (a) **Which currencies.** `watchman/news_protection._news_incoming` calls
+     `council/risk_voice.get_symbol_currencies(symbol)`; `_SYMBOL_CURRENCIES["XAUUSD"] = ("USD",)`. So for XAUUSD the
+     calendar is filtered to **USD only** — EUR/GBP/JPY high-impact events are irrelevant to this symbol by design.
+ (b) **What "high impact" means.** `council/mql5_calendar_provider.MQL5CalendarProvider.get_high_impact_events` keeps
+     a row iff `event.impact.lower() == "high"` (`_HIGH_IMPACT = "high"`). The dump's importance vocabulary is
+     none/low/moderate/high, so "high" is a literal string match on the same field the live provider matches on.
+ (c) **The window, and its exact bounds.** `_news_incoming` builds `window_end = now + timedelta(minutes=30)` and
+     calls `get_high_impact_events(currency, now, window_end)`, which admits an event iff
+     `window_start <= event_time <= window_end` — **inclusive at both ends, and FORWARD-LOOKING ONLY.** Protection is
+     therefore active at instant `now` iff some high-impact USD event `e` satisfies `now <= e <= now + 30min`, i.e.
+     `now` lies in `[e - 30min, e]`. **There is no post-event protection window at all** — the moment the event
+     prints, protection stops firing. (This differs from `risk_voice`'s trade-ENTRY blackout, which is two-sided:
+     `news_blackout_before_min: 45` / `news_blackout_after_min: 30`. Different mechanism, not touched here.)
+ (d) **The profit gate.** `check_news_protection` computes `profit_r = (price - entry)/initial_stop_distance` against
+     the ORIGINAL stop distance and short-circuits to NO_ACTION below `profit_threshold_r = 0.5`; the news check is
+     not even consulted below that.
+ (e) **BAR-RESOLUTION CONVENTION (declared, because it is a real methodological choice).** Live polls every ~5 s
+     (`run_shadow_loop.py --poll-interval-sec` default 5.0); the backtest sees H1 bars. An H1 bar with open time `t`
+     spans `[t, t+60min)`. The bar is declared TRIGGER-ELIGIBLE iff the set of live poll instants inside it that
+     would see an active window is non-empty *with positive duration*, i.e. iff there exists an event `e` with
+     `t < e < t + 60min + 30min`. Inside an eligible bar the EXP-023/025 price convention is used unchanged (trigger
+     price = the bar's OPEN if the position is already at or above +0.5R at the open, else the exact +0.5R level;
+     per-bar priority SL/TP `check_exit` > news trigger > Watchman CLOSE at the bar's close; exits fill nominally).
+     This is bar-granular in both directions: it can fire on a +0.5R touch that really happened in the eligible bar's
+     non-eligible minutes, and it cannot fire twice inside an hour. It is the same approximation P1/P2 already made,
+     it is unavoidable at H1, and it is why A@real is a MEASUREMENT WITH A STATED RESOLUTION, not a claim about
+     individual seconds.
+
+### 5. WINDOWS, ACCOUNT CONTEXT, COST MODEL (identical to EXP-022/023/025 so all four are directly comparable)
+Train y1 2021-07-22→2022-07-21, y2 2022-07-22→2023-07-21, y3 2023-07-22→2024-07-21; Val y4 2024-07-22→2025-07-21.
+$3,000 starting equity per-year anchored, `min_lot_risk_cap_pct` 1.5, `risk_per_trade_pct` 1.0, all-24h session,
+be/trail OFF, tp 2.0, pivot 3. COST MODEL COMPLETE: slippage = min-1-spread (`slippage_points=None`), swap modelled
+(EXP-018 long -53.2 / short +36.8, 3x Wed), commission $0.00 (IC Markets Standard, the real account).
+Harness `experiments/exp024_real_calendar_harness.py`; raw outputs `experiments/exp024_*.txt` (gitignored).
+
+### 6. THE DECIDING MEASUREMENTS (three; each is a number to be REPORTED, not a test to be passed)
+ (1) **REAL TRIGGER RATE.** Per window and pooled: (i) the % of trades AFFECTED, i.e. that reach +0.5R while a real
+     news window is active, stated against the P1 (~60%) and P2 (~46%) brackets EXP-023/025 had to assume; (ii) the %
+     of BAR-HOURS in the window that are trigger-eligible at all — the calendar-side density, independent of any
+     trade. Also reported: the distribution of high-impact-USD event times by server hour (a direct audit of how good
+     or bad P2's `{14,15,16,20,21}` hour mask was).
+ (2) **REAL PARITY GAP.** Paired per-trade `R(A@real) - R(C)` on the affected@real subset, sequence held FIXED
+     (EXP-023 D3 / EXP-025 E1 methodology, unchanged), per year and pooled over Train (y1+y2+y3) and, separately, Val
+     (y4), with the SE **of the paired difference**. Restated as portfolio deltas (trades / PF / net$ / maxDD per
+     window, C vs A@real) — that is the number that says how much every historical promotion-gate figure in this log
+     overstates the configuration that is actually running live.
+ (3) **EXIT-MIX TABLE** on the affected@real subset, C vs A@real, in the same form as EXP-023 §2 and EXP-025 §2 —
+     y4/VAL at minimum, all four windows if the counts support it.
+
+### 7. FIDELITY GATES — ALL run and reported BEFORE any A@real number is read; any failure STOPS the experiment
+ G1. `--mode fidelity`: the copied bar loop with the news mechanism OFF must equal `backtest.engine.run_backtest`
+     trade-for-trade, field-for-field, with and without EXP-022's fast-path memoisation shim.
+ G2. `--mode anchor`: EXTERNAL cross-check against a previously RECORDED number — mode C on y4/VAL at $3,000 must be
+     **254 trades / PF 1.0961 / net +$352.60 / maxDD 9.99%** (EXP-022's cap-1.5 y4 cell, re-confirmed by EXP-023 and
+     EXP-025).
+ G3. **NFP normalisation self-check.** After normalisation every high-impact USD `Nonfarm Payrolls` row **whose
+     normalised time falls inside this experiment's data range (2021-07-22 → 2025-07-21)** must land at exactly
+     **15:30 server** — hard abort otherwise. Disclosed up front, because it was found while building the check and
+     hiding it would be dishonest: across the FULL dump (60 NFP rows, 2021-07 → 2026-08) 59 normalise to 15:30 and
+     ONE does not — `2025-11-20` normalises to 14:30 (raw 15:30, where "+3 for all history" predicts 16:30). That
+     date is inside the untouched TEST year, i.e. outside every window this experiment reads, so it cannot affect a
+     single measured number here. The gate is therefore pre-registered as: abort on ANY in-range violation (in-range
+     NFP count is 48); report, but do not abort on, an out-of-range one. It is logged for whoever eventually runs the
+     honest-Test-baseline experiment, for whom it IS in range.
+ G4. **CONTINUITY ANCHORS vs EXP-023/EXP-025.** A@P1 must reproduce affected counts **162/152/149/154** and
+     affected-subset avgR **0.501/0.497/0.494/0.495**; A@P2 must reproduce **124/116/116/124**. These run through
+     literally the same code path as EXP-025 (the real-calendar arm only adds a pre-filter in front of it), so any
+     mismatch means the instrument changed and every EXP-023/025 number would be in doubt too.
+ G5. Conditional-replay self-check, asserted in code on every window (inherited): replaying each mode-C trade
+     one-by-one must reproduce the full-sequence mode-C trade list EXACTLY.
+
+### 8. LIVE CROSS-VALIDATION GATE (the powerful, cheap one — and a FULL DISCLOSURE of what was already inspected)
+The paper journal covers 2026-07-22 → 2026-08-03 and the dump covers those dates, so the reconstruction can be checked
+against what live actually did. **DISCLOSURE, stated plainly and before the gate wording, because the order matters:
+the four live `news_protection` exits and the +1.272R trade were checked against the dump BY HAND while designing this
+gate, i.e. the gate's directional asymmetry below was written AFTER seeing that 3 of the 4 exits reconcile and 1 does
+not.** Nothing in this gate feeds a deciding measurement — it can only STOP the experiment — but the reader is
+entitled to know it was not written blind. Source of the live trades: `trade_journal_paper_vps_latest.sqlite` in the
+repo root (11 closed trades, the freshest copy; `data/db/trade_journal_paper.sqlite` holds only 3 and is stale, and
+the scratchpad VPS snapshot holds 10 — it predates trade #11).
+The gate is DIRECTIONAL, because the two possible failures are not symmetric:
+ L1 (**DANGEROUS direction — hard STOP**). The reconstruction must NOT be active where live demonstrably did not fire.
+    Test case: trade #1, BUY 2026-07-22 12:00:39 @ 4119.48, closed 17:05:04 @ 4162.69 for +1.272R. Its +0.5R level is
+    4136.47; M1 bars pulled from the terminal put the FIRST touch at **16:30 server**, and live did not protect it
+    for the following ~30 minutes (about 360 poll cycles) at or above +0.5R. The reconstruction must be INACTIVE
+    across [16:30, 17:00) on 2026-07-22. (The only high-impact USD event that day is EIA Crude Oil Stocks 17:30 →
+    window [17:00, 17:30]; the position was then closed at 17:05:04 tagged `reconciled_system_close`, which
+    `execution/demo_adapter._classify_expert_closed_reason` defines as *this system's own close whose acknowledgment
+    was lost* — so that close is itself consistent with protection firing once the window opened at 17:00. This is
+    also a correction to EXP-023's reading of that trade: it did not "pass +0.5R with protection never firing"; it
+    passed +0.5R during a window that was genuinely INACTIVE, and was closed shortly after the window opened.)
+ L2 (**BENIGN direction — report, do not stop, unless the majority miss**). At each live `news_protection` exit the
+    reconstruction should be ACTIVE. Known result of the by-hand check: #7 2026-07-29 17:00:03 (EIA 17:30) ok,
+    #9 2026-07-30 15:05:40 (Core PCE / GDP / claims 15:30) ok, #11 2026-08-03 16:15:04 (S&P Global Mfg PMI 16:45) ok,
+    and **#6 2026-07-28 14:51:15 — NO reconstructed event within 30 minutes, MISS** (that day's only high-impact USD
+    event is CB Consumer Confidence 17:00). A miss in this direction means live fired when the reconstruction says it
+    should not have, which is exactly the documented fail-safe channel (`news_protection.py`'s module docstring: a
+    calendar that cannot be read TRIGGERS protection) and makes the measured rate a LOWER bound — the direction
+    already declared in §10. It is therefore reported, not fatal, unless 2 or more of the 4 miss, which would mean
+    the reconstruction is simply wrong. Corroborating evidence that the fail-safe channel is real and not rare on
+    this account: `blocked_signal_records` in the same journal contains **17 hourly signal evaluations vetoed with
+    "economic calendar unavailable for USD -- fail-safe veto"** between 2026-07-23 and 2026-07-27, including one
+    unbroken 14-hour outage on 2026-07-27.
+
+### 9. SAMPLE-SIZE HONESTY (rule 6) AND MULTIPLE TESTING (rule 7) — pre-registered, not decided after the fact
+The real trigger rate is expected to be **far below** P1's ~60%, so affected@real per window may fall well under the
+100-trade floor. Pre-registered handling: **per-year numbers are REPORTED but no deciding statement rests on a single
+year**; the deciding statements pool Train (y1+y2+y3) and, separately, Val (y4). If pooled Train affected@real < 100,
+this experiment reports **"MEASUREMENT WITH WIDE ERROR BARS"** in exactly those words, prints the SE and the implied
+interval, and refuses to convert it into a significance claim. A measurement whose error bars are honestly drawn is
+still a result; a manufactured t-statistic is not. Rule 7: nothing is being selected, no threshold can be chosen by
+its result, and the two anchor arms are pinned to previously published numbers — so no multiple-testing correction is
+warranted and none is applied; that is stated so it cannot later look like an omission.
+
+### 10. DECLARED LIMITATIONS (all known to bias in a stated direction; from the 2026-08-04 NOTE + this design)
+ (i) **Current-classification look-ahead.** The dump's `importance` and `event_name` are MetaQuotes' CURRENT
+     classification of each event, not what the terminal would have said in 2021. An event reclassified
+     moderate→high since then is treated as high for its whole history, and vice versa. Direction unknown; it is a
+     genuine (small) look-ahead and is not removable from this data source.
+ (ii) **Reschedules erased.** The dump reflects the schedule as it now stands; the live archive
+     (`data/db/news_calendar_history.csv`) records what live actually SAW. The one overlap check available measured a
+     1/116 divergence, all of it a reschedule. Direction unknown, magnitude about 1%.
+ (iii) **Fail-safe episodes are NOT modelled.** Live fires protection whenever the calendar cannot be read (stale
+     export file, exporter Service not running, unreadable file) — §8's 17 vetoed evaluations and the unreconciled
+     live exit #6 are direct evidence this happens. The reconstruction has no fail-safe channel, so **the measured
+     trigger rate is a LOWER BOUND on live's true rate**, and the measured parity cost is a lower bound in magnitude
+     too. Quantifying that residual is the accumulating archive's job, not this experiment's.
+ (iv) **H1 bar resolution** (§4(e)) — eligibility is bar-granular, live is 5-second granular.
+ OBSERVATION recorded for the main session, outside this experiment's scope and NOT used by it: the local copy of the
+ live archive `data/db/news_calendar_history.csv` (246 rows, pulled 2026-08-04) contains rows from three collection
+ cycles, and the first two (`first_seen_utc` 16:54:27 and 17:32:21) carry event times exactly **3 hours behind** the
+ third cycle's, and behind both the dump and the dev PC's own current export file — i.e. they look like UTC rather
+ than `TimeTradeServer()`. The plausible mechanism is an MQL5 terminal reporting a zero server offset before its
+ first server sync after a restart. If that ever happens while the shadow loop is running, live's news windows would
+ be wrong by 3 hours for that period. This is a live-correctness question for `mql5/NewsCalendarExporter.mq5`, not a
+ tuning question, and it is flagged rather than chased here.
+
+### 11. WHAT CANNOT FOLLOW FROM THIS EXPERIMENT, AND WHAT IS ESCALATED
+Nothing here may change `config/base.yaml` or `src/`. In particular, a large measured parity cost is NOT a licence to
+disable news protection: mode C is a REFERENCE ARM describing what the backtest has been measuring, never a candidate,
+because switching the control off is the removal of a deliberate risk control. Rule 8 restated: no promotion/demotion
+gate, Auditor threshold or circuit-breaker limit is touched, and none will be proposed as a way to make any number
+look better. The RESULTS section will close with a recommended ORDER for the three possible follow-ups (model news
+protection in `backtest/engine.py`; re-open the min-lot fallback's SKIP-vs-CLOSE_ALL fail-direction, EXP-025 §6(iii),
+now that it is measurable; or accept the cost) — as a recommendation with reasons, to be decided by the user, not
+here.
