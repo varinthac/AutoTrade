@@ -4752,8 +4752,9 @@ rolling [-2h, +48h] snapshot every 5 minutes. As of this note the snapshot is no
   of real trigger data exist to say how often mode A actually fires (the piece both EXP-023 proxies had to assume).
 
 ## EXP-025 2026-08-04 — News-protection TRIGGER LEVEL `watchman.news_profit_threshold_r` (NEW family "news-protection trigger threshold"; sibling of EXP-023's "news-protection min-lot fallback")
-Status: PRE-REGISTERED (this block was written and COMMITTED BEFORE any deciding window was run; only the
-`### EXP-025 RESULTS` section and a final Status line are added afterwards).
+Status: REJECTED (no T beats 0.5; `news_profit_threshold_r` stays 0.5, no config change) - see the RESULTS
+section below. The block that follows this line was written and COMMITTED (d3089d5) BEFORE any deciding window
+was run; only the `### EXP-025 RESULTS` section and this Status line were added afterwards.
 ID NOTE: **EXP-024 is deliberately SKIPPED/RESERVED** for the future real-calendar experiment escalated by EXP-023
 §6(ii) and set up by the 2026-08-03 NOTE (`data/db/news_calendar_history.csv` started accumulating on 2026-08-03; that
 experiment cannot be designed until several weeks of real trigger data exist). This experiment therefore takes the next
@@ -4892,3 +4893,195 @@ FIDELITY GATES, run and reported BEFORE any candidate number is read (STOP if an
  Gate-integrity note: nothing in this experiment touches a promotion/demotion gate, an Auditor threshold or a
  circuit-breaker limit, and no such change will be proposed as a way to make any result pass. If the answer is "0.5 is
  already on the plateau", that is logged as the result — negative results are results.
+
+### EXP-025 RESULTS (run 2026-08-04) — VERDICT: REJECT every raised T (0.75/1.0/1.25/1.5) under BOTH proxies. `watchman.news_profit_threshold_r` STAYS 0.5. NO config change, NO src/ change, Test year NOT touched.
+Raw output: `experiments/exp025_cond_out.txt` (conditional/deciding), `experiments/exp025_pool_out.txt` (pooled paired
+statistics), `experiments/exp025_port_out.txt` (portfolio/veto-only), `experiments/exp025_fidelity_out.txt`.
+Harness: `experiments/exp025_news_threshold_harness.py`. All runs on the dev PC, `.venv` (Python 3.12.10, pandas 3.0.5).
+
+FIDELITY (all five pre-registered gates passed BEFORE any candidate number below was read):
+ 1. `--mode fidelity`, 4,000-bar window, 197 trades: the copied bar loop with the news mechanism OFF is IDENTICAL to
+    the real `backtest.engine.run_backtest`, field-for-field, both with and without EXP-022's fast-path shim
+    (`copy_off_identical=True copy_off_fastpath_identical=True`).
+ 2. Conditional-replay self-check (asserted in code, every window): replaying each mode-C trade one-by-one reproduces
+    the full-sequence mode-C trade list EXACTLY.
+ 3. EXTERNAL anchor: mode C on y4/VAL at $3,000 = **254 trades, PF 1.0961, net +$352.60, maxDD 9.99%** — matches
+    EXP-022's cap-1.5 y4 cell and EXP-023's re-confirmation to the last digit (`--mode anchor`, `match: true`).
+ 4. INTERNAL anchor vs EXP-023: affected(0.5) counts P1 **162/152/149/154**, P2 **124/116/116/124**, and A(0.5)
+    affected-subset avgR P1 **0.501/0.497/0.494/0.495**, C-on-affected avgR P1 **0.496/0.526/0.674/0.627** — every
+    number is EXP-023 §1's, unchanged. The two experiments are measuring the same subsets on the same data.
+ 5. Monotonicity probe (asserted in code, per window per proxy): replaying every NOT-affected(0.5) trade at the
+    smallest raised T (0.75) produced **0 leaks** in all 8 window×proxy cells (unaffected n = 84–142). Since triggering
+    at a higher T implies triggering at every lower one, `affected(T) ⊆ affected(0.5)` holds empirically, as designed.
+
+### 1. DECIDING EVIDENCE — paired per-trade R difference on the affected(0.5) subset, sequence held FIXED
+avgR on the affected(0.5) subset (the trades the CURRENT LIVE RULE force-closes at +0.5R):
+```
+P1 (always-eligible)      tot  aff |  C(none)  A0.5   A0.75  A1.0   A1.25  A1.5
+y1 2021-22                266  162 |  0.496    0.501  0.520  0.549  0.538  0.545
+y2 2022-23                254  152 |  0.526    0.497  0.481  0.507  0.512  0.548
+y3 2023-24                233  149 |  0.674    0.494  0.610  0.623  0.602  0.715
+y4 VAL 2024-25            254  154 |  0.627    0.495  0.500  0.619  0.602  0.646
+P2 (US-macro hours)       tot  aff |  C(none)  A0.5   A0.75  A1.0   A1.25  A1.5
+y1 2021-22                266  124 |  0.597    0.606  0.565  0.654  0.664  0.634
+y2 2022-23                254  116 |  0.645    0.619  0.642  0.586  0.560  0.594
+y3 2023-24                233  116 |  0.816    0.616  0.705  0.784  0.744  0.801
+y4 VAL 2024-25            254  124 |  0.835    0.669  0.687  0.752  0.782  0.786
+```
+POOLED paired treatment effect **A(T) − A(0.5)** on affected(0.5) (same trades, SE is of the DIFFERENCE;
+pre-registered bar: > +1.7 SE on Train AND Val):
+```
+                  TRAIN y1+y2+y3 (n=463)              VAL y4 (n=154)
+P1  T=0.75        +0.0390 +-0.0288 (t +1.35)          +0.0046 +-0.0489 (t +0.09)
+P1  T=1.00        +0.0615 +-0.0403 (t +1.53)          +0.1236 +-0.0643 (t +1.92)   <- PRIMARY CANDIDATE
+P1  T=1.25        +0.0527 +-0.0494 (t +1.07)          +0.1071 +-0.0822 (t +1.30)
+P1  T=1.50        +0.1033 +-0.0558 (t +1.85)          +0.1510 +-0.0942 (t +1.60)
+P1  [C bound]     +0.0655 +-0.0638 (t +1.03)          +0.1320 +-0.1095 (t +1.21)   <- C - A(0.5), reference only
+                  TRAIN (n=356)                       VAL (n=124)
+P2  T=0.75        +0.0224 +-0.0337 (t +0.66)          +0.0185 +-0.0554 (t +0.33)
+P2  T=1.00        +0.0608 +-0.0461 (t +1.32)          +0.0832 +-0.0753 (t +1.11)
+P2  T=1.25        +0.0427 +-0.0558 (t +0.77)          +0.1137 +-0.0903 (t +1.26)
+P2  T=1.50        +0.0618 +-0.0631 (t +0.98)          +0.1169 +-0.1000 (t +1.17)
+P2  [C bound]     +0.0707 +-0.0688 (t +1.03)          +0.1658 +-0.1092 (t +1.52)
+```
+**Not one T clears the pre-registered +1.7 SE bar on Train AND Val.** The primary candidate T=1.0 passes on Val
+(t +1.92) and misses on Train (t +1.53, bar +0.068 vs mean +0.062). T=1.5 is the mirror image: Train passes
+(t +1.85), Val misses (t +1.60). Every effect in the table is positive-leaning and none is individually significant.
+Per-year paired differences, P1 (the per-year consistency evidence for criterion (b)):
+```
+                  T=0.75            T=1.00            T=1.25            T=1.50
+y1 2021-22        +0.0191 (+0.38)   +0.0478 (+0.70)   +0.0368 (+0.44)   +0.0439 (+0.46)
+y2 2022-23        -0.0155 (-0.29)   +0.0096 (+0.13)   +0.0154 (+0.17)   +0.0515 (+0.52)
+y3 2023-24        +0.1163 (+2.57)   +0.1293 (+1.89)   +0.1081 (+1.26)   +0.2207 (+2.31)
+y4 VAL 2024-25    +0.0046 (+0.09)   +0.1236 (+1.92)   +0.1071 (+1.30)   +0.1510 (+1.60)
+```
+Read honestly: the whole family's apparent signal is concentrated in **y3 2023-24**, the one window where it is
+individually significant at any T, and y2 contributes essentially nothing at every T. That is the EXP-020/EXP-022(a)
+"one regime carries it" shape, not a stable effect.
+
+### 2. WHY NO T WORKS — the mechanism (this is the real content of the experiment)
+Exit mix of the affected(0.5) subset on y4/VAL, P1 (n=154) — the cleanest statement, in the same form as EXP-023 §2:
+```
+  C  (no protection)  : 75 take_profit (48.7%), 49 stop_loss, 27 time_stop, 2 structure, 1 eod  -> avgR 0.627, medR 0.313, worstR -1.346, 62 negative
+  A  (T=0.50, LIVE)   : 154 news_protection (100%)                                              -> avgR 0.495, medR 0.500, worstR +0.264,  0 negative
+  A  (T=0.75)         : 132 news_protection, 21 stop_loss, 1 time_stop, 0 take_profit (0.0%)    -> avgR 0.500, medR 0.750, worstR -1.115, 21 negative
+  A  (T=1.00)         : 115 news_protection, 26 stop_loss, 7 time_stop, 4 take_profit (2.6%)    -> avgR 0.619, medR 1.000, worstR -1.115, 30 negative
+  A  (T=1.25)         :  96 news_protection, 38 stop_loss, 11 time_stop, 7 take_profit (4.5%)   -> avgR 0.602, medR 1.223, worstR -1.346, 45 negative
+  A  (T=1.50)         :  80 news_protection, 43 stop_loss, 15 time_stop, 13 take_profit (8.4%)  -> avgR 0.646, medR 1.457, worstR -1.346, 52 negative
+  (P2/y4, n=124, same shape: C 68 TP (54.8%); T=0.5 0; T=0.75 5; T=1.0 13; T=1.25 20; T=1.5 25)
+```
+**Raising T does NOT restore the 2R upside — it just moves the guillotine up the ladder.** The premise that started
+this whole line of inquiry (live banks every winner at +0.5R while TP is never reached) is only *nominally* addressed
+by a higher trigger: on y4/P1 the take-profit rate on the affected subset goes 48.7% (no protection) → 0% (T=0.5) →
+2.6% (T=1.0) → 8.4% (T=1.5). Even at the top of the pre-registered range, 92% of these trades still never see 2R,
+because the trigger is *unconditional on price path* — any T < `tp_r_multiple` simply relabels which rung the certain
+exit happens on. The modal outcome under every arm is still `news_protection` at exactly +T·R (note the median is
+exactly T in every column). What actually changes with T is the SHAPE of the distribution, from "certain +0.5R" to a
+bimodal "+T·R or −1R": under P1 the count of affected trades ending NEGATIVE goes 0 → 15–25 (T=0.75) → 30–42 (T=1.0)
+→ 44–54 (T=1.25) → 46–60 (T=1.5) per window, and the worst single affected trade goes from a guaranteed floor of
++0.26R..+0.33R to −1.11R..−1.84R. That trade-off is a real one to consider, but it is NOT "letting winners run".
+**And the sweep has NO INTERIOR OPTIMUM.** The pooled effect rises (raggedly, with a dip at 1.25) all the way to the
+edge of the pre-registered range, and the mode-C reference bound (T → ∞, no protection at all) sits right inside the
+same band: +0.066R Train / +0.132R Val, statistically indistinguishable from T=1.0 and T=1.5. In other words the
+entire measurable "signal" across the sweep is one and the same effect — **less protection is (weakly, insignificantly)
+better** — and it has no preferred level. That is a statement about whether this risk control pays for itself, which
+is EXP-023 §6(i)'s escalated question and EXP-024's job with a real calendar, NOT something a trigger-level grid can
+answer. There is no plateau here because there is no peak to be on a plateau around.
+
+### 3. PORTFOLIO (full-sequence; pre-registered VETO-ONLY, never selection evidence)
+$3,000/window, complete cost model. PF | net$ | maxDD% | trades:
+```
+P1                y1                        y2                        y3                        y4 VAL
+A@T0.50     1.004 |   +16 | 17.1 | 510   0.964 |  -175 | 20.0 | 516   1.076 |  +350 | 15.8 | 486   0.980 |   -86 | 12.5 | 554
+A@T0.75     1.014 |   +64 | 15.8 | 410   1.023 |  +114 | 15.7 | 417   1.135 |  +688 | 15.4 | 407   1.002 |    +9 | 12.4 | 434
+A@T1.00     1.066 |  +298 | 13.8 | 359   1.023 |  +116 | 21.9 | 355   1.121 |  +534 | 14.5 | 333   1.115 |  +509 |  9.2 | 369
+A@T1.25     1.071 |  +300 | 13.1 | 319   1.035 |  +161 | 21.9 | 311   1.091 |  +415 | 13.5 | 312   1.158 |  +684 | 11.7 | 317
+A@T1.50     1.064 |  +271 | 14.7 | 295   0.955 |  -211 | 26.9 | 293   1.203 |  +977 | 14.4 | 289   1.159 |  +652 | 10.4 | 289
+C_none      1.016 |   +64 | 14.5 | 266   0.995 |   -22 | 26.1 | 254   1.202 |  +773 | 12.3 | 233   1.096 |  +353 | 10.0 | 254
+P2 (news-hours)
+A@T0.50     1.030 |  +127 | 12.9 | 416   0.897 |  -456 | 23.8 | 396   1.115 |  +497 | 11.2 | 385   1.010 |   +39 | 14.0 | 400
+A@T0.75     1.015 |   +59 | 12.9 | 349   0.913 |  -402 | 25.0 | 358   1.213 | +1006 | 12.1 | 344   1.040 |  +153 | 11.5 | 354
+A@T1.00     1.087 |  +373 | 11.5 | 326   0.893 |  -471 | 27.8 | 313   1.182 |  +782 | 13.0 | 300   1.135 |  +547 | 10.4 | 316
+A@T1.25     1.004 |   +18 | 13.0 | 295   0.978 |   -95 | 22.7 | 285   1.140 |  +590 | 14.5 | 279   1.167 |  +650 | 10.3 | 291
+A@T1.50     1.026 |  +104 | 14.3 | 277   0.962 |  -170 | 25.7 | 273   1.108 |  +468 | 13.2 | 274   1.123 |  +468 | 11.4 | 270
+```
+This table does NOT veto T=1.0 — it is better than A@T0.50 on PF in all four windows (+4% to +14%) and its max DD is
+lower in three of four (y2 is +10%, inside the ~15% tolerance). Stated plainly because honesty cuts both ways: the
+veto-only evidence would have LET a raised T through. It did not carry it, and by pre-registration it cannot: these
+full-sequence runs differ from the baseline by 100–200 trades per year (e.g. y4 554 → 369), i.e. they are dominated by
+which signals the re-sequenced engine happens to take next, which is exactly the non-causal reshuffling EXP-017/020/021
+established as unusable for selection. Note also that the trade count falls with T while `news_protection` exits get
+scarcer — the portfolio arms are not comparable populations at all.
+
+### 4. ROBUSTNESS vs THE PRE-REGISTERED BARS (criterion by criterion)
+ (a) paired effect > +1.7 SE on Train AND Val (P1) — **FAIL, all four raised T.** T=1.0: Train t +1.53 / Val t +1.92.
+     T=1.5: Train t +1.85 / Val t +1.60. T=0.75 and T=1.25: fail both. No T passes both windows.
+ (b) per-year sign consistency y1–y4 — **PASS for T=1.0, T=1.25, T=1.5 under P1** (all four years positive);
+     **FAIL for T=0.75** (y2 −0.0155). Logged as a pass where it is one — but see §1: the magnitude is carried almost
+     entirely by y3, so sign-consistency here is a weak form of consistency, not a strong one.
+ (c) plateau, winner's ±1 grid neighbours within ~15% on Val — **FAIL, decisively, for every candidate.** T=1.0
+     (+0.1236) has neighbours +0.0046 (T=0.75, **−96%**) and +0.1071 (T=1.25, −13%): one neighbour collapses to zero.
+     T=1.5 (+0.1510) has lower neighbour +0.1071 (−29%, outside 15%) and NO upper neighbour — 1.75 is outside the
+     pre-registered bound and untested by design, so its plateau cannot even be established. The Train curve is
+     non-monotone (+0.039 / +0.062 / +0.053 / +0.103), dipping at 1.25 and jumping at 1.5. This is a jagged field of
+     noise, exactly the shape rule 5 exists to reject.
+ (d) portfolio non-degradation (veto-only) — **PASS / no veto** for T=1.0 (see §3). Cannot carry the candidate.
+ (e) sample >=100 affected(0.5) per window — **PASS**: P1 162/152/149/154, P2 124/116/116/124.
+ (f) P2 sign robustness — **PASS on sign, weak in substance**: pooled P2 effects are positive at every T on both
+     Train and Val (T=1.0: +0.061 Train / +0.083 Val), so the sign survives restriction to news-adjacent hours, but
+     every t-statistic falls (max +1.32) and y2 flips negative at T=1.0/1.25/1.5. Nothing here rescues (a).
+ (g) tail — **FAIL by the pre-registered wording.** A(0.5) has a hard arithmetic floor (worst affected trade
+     +0.26R..+0.33R, ZERO negative outcomes by construction). Every raised T destroys that floor: negatives per window
+     go 0 → 15–25 (T=0.75) → 30–42 (T=1.0) → 44–54 (T=1.25) → 46–60 (T=1.5) out of ~150, i.e. **19–28% of these
+     trades end in the red at T=1.0**, worst single trade −1.11R to −1.84R. Counter-evidence recorded for fairness:
+     portfolio max DD did NOT worsen at T=1.0 (§3), and the affected-subset PF stays high (4.45 on y4/P1), so the tail
+     is a genuine redistribution rather than a hidden blow-up. But the pre-registered test was "a T that buys its mean
+     with a materially fatter left tail is rejected on this criterion alone", the mean gain is not established, and
+     the tail cost is certain — so it fails as written.
+ Walk-forward: the 4 windows served as the rolling confirmation (criterion (b)); no separate tooling exists.
+ Multiple testing: 10 configs this experiment (5 T × 2 proxies), 10 cumulative for this family, 20 more in EXP-023's
+ sibling family on the same data and the same subsets.
+ **DISCLOSURE — the pre-registered bar is NOT what killed the candidate, and the record must say so.** At the nominal
+ 1.6 SE (the level a fresh N=10 family would have earned) T=1.5 would have passed criterion (a) by a hair on both
+ windows (Train t +1.85, Val t **+1.602** vs a 1.600 bar). It was pre-registered at 1.7 BEFORE any number was read,
+ precisely so this call could not be made after the fact. And it changes nothing: T=1.5 fails the plateau check (c)
+ independently and by a wide margin, is the EDGE of the pre-registered range with an untestable upper neighbour, and
+ sits statistically on top of the out-of-scope mode-C bound. A candidate that only exists at t=1.602 on one window, at
+ the edge of its own grid, with a neighbour 29% away and no interior optimum, is the textbook false peak.
+
+### 5. VERDICT
+**REJECT every raised T. `config/base.yaml` UNCHANGED — `watchman.news_profit_threshold_r` stays 0.5** (and
+`news_window_minutes` 30, `news_close_mode` half). `src/` UNCHANGED. No promotion/demotion gate, Auditor threshold or
+circuit-breaker limit was touched or proposed for change. **Test year 2025-07-22 → 2026-07-21 NOT touched**; this
+family's one-touch budget is UNSPENT, because nothing earned a Test confirmation.
+The honest one-line summary: *the trigger LEVEL is not the problem.* Every value from 0.5 to 1.5 produces the same
+weak, insignificant, y3-concentrated drift in the same direction, the reference bound at "no protection at all" sits
+in the same band, and no level restores the 2R upside the exercise was meant to recover. EXP-023 §6(iii) proposed this
+as "the surgical lever"; measured, it turns out not to be a lever with a setting — it is the same single question
+(does min-lot news protection pay for itself?) reappearing at every grid point.
+
+### 6. WHAT THIS CHANGES FOR THE ROADMAP (escalated, not decided here)
+ (i) EXP-023 §6(iii)'s recommended order is now partly SPENT: item (2) "then test the threshold/window" is half done
+     and came back negative for the threshold. `news_window_minutes` (the other half) is NOT worth a separate
+     experiment on the current evidence: with no historical calendar it is unobservable by construction — both proxies
+     here are hour-masks, and the window width only matters once real event times exist.
+ (ii) The remaining live question is unchanged and is now better bracketed by two independent experiments: the
+     pooled C − A(0.5) gap re-measured here (+0.066R Train / +0.132R Val per affected trade under P1, +0.071R /
+     +0.166R under P2) reproduces EXP-023 §6(i) EXACTLY, and the T-sweep adds that no intermediate setting recovers
+     it. Whether news protection at min-lot is worth its cost still requires the REAL trigger rate, i.e. EXP-024 on
+     `data/db/news_calendar_history.csv` once enough weeks have accumulated (started 2026-08-03). Nothing in this
+     experiment is a licence to disable the control: mode C remains a reference bound, never a candidate.
+ (iii) A genuinely different mechanism NOT tested by EXP-023 or EXP-025, recorded for whoever designs next: make the
+     protection CONDITIONAL ON THE POSITION SIZE rather than on the profit level — i.e. at min-lot, where "close
+     half" is impossible, choose SKIP over CLOSE_ALL (`watchman/loop.py`'s comment says that direction was chosen on
+     instinct, not evidence). That is a change to the fallback ACTION's fail-direction, which is distinct from
+     EXP-023's lock-SL question, and it would need its own pre-registration — and, more importantly, it is really the
+     same "does the control pay for itself" question again, so it should wait for EXP-024 too rather than becoming a
+     third grid search on the same 4 windows.
+
+HONEST CAVEAT ON EXIT COSTS (unchanged from EXP-023, applies to every arm, does not change the verdict): the engine
+bakes spread/slippage into the ENTRY fill only; exits fill nominally. Mode A's market close at +T·R is therefore
+modelled ~1 spread too favourably (~$0.35, ≈0.01–0.03R) at EVERY T, so the bias is near-identical across arms and an
+order of magnitude below the paired differences discussed above. It is the one place this simulation is optimistic for
+all arms relative to live.
+

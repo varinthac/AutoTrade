@@ -549,7 +549,7 @@ def mode_anchor(df, cfg, args) -> int:
     finally:
         uninstall_fast_path()
     got = cell(trades, args.equity)
-    ok = (
+    ok = bool(
         got["trades"] == ANCHOR["trades"]
         and abs(got["PF"] - ANCHOR["PF"]) < 5e-4
         and abs(got["net$"] - ANCHOR["net$"]) < 0.01
