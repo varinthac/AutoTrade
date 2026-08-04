@@ -6488,3 +6488,144 @@ under the 15% ceiling by 0.43pp, and news protection's Test-year cost is −$271
 otherwise have retraced — firing MORE was net-positive here, unlike the Train-side picture. Gate thresholds untouched
 (rule 8). Driver got a one-line compat fix (`risk_voice_news_modeled=False` in its envelope call — the flag postdates
 the driver; both Task-1 arms are defined as protection-only).
+
+---
+
+## EXP-028 2026-08-04 — `trend_alignment` PARTIAL tier as a direct entry VETO (ABLATION; NEW family "council-entry-tier"; menu item #4 of the 2026-08-04 entry diagnostic)
+Status: PRE-REGISTERED (results pending). Everything from this line down to `### EXP-028 RESULTS` was written and
+COMMITTED, together with a results-free `experiments/exp028_partial_tier_veto_harness.py`, **before any V-cell,
+removed-population or overlay number existed**; only the RESULTS section and this Status line are added afterwards.
+
+### 0. WHAT IS BEING TESTED, AND WHY IT IS NOT EXP-016 RE-RUN
+`council/scoring.py` awards `trend_alignment` = **30** for full EMA alignment (EMA20>EMA50>EMA200 for Bull, reversed
+for Bear), **15** for PARTIAL alignment (EMA20>EMA50 only, EMA200 not yet crossed) and 0 otherwise. The candidate is a
+**direct entry VETO of the partial tier**: no entry may be taken when the admitted direction's own voice scored 15 on
+`trend_alignment`, regardless of that voice's total score.
+EXP-016 (REJECTED, 2026-07-23) changed the partial tier's **WEIGHT** (15 -> 0 / 7). That only removes partial bars whose
+total then falls below 70; a partial bar that also has RSI + MACD + structure + confluence scores 85 and still fires at
+70 after the cut. A veto at the accept step removes **all** partial-trend entries. That is a materially different and
+strictly larger treatment set, never measured. **EXP-016 constrains this candidate but does not close it** — and its
+rejection is also the single strongest prior AGAINST it: cutting the tier's weight made Train worse (y1 flipped
+negative, y3 roughly halved, DD rose), through re-sequencing that an unconditional read cannot see. A broader veto
+removes more, so the same mechanism can bite harder. This is stated before the run, not after.
+
+### 1. HYPOTHESIS / MECHANISM (mechanism-first, like EXP-008's be/trail cut — a REMOVAL of a measured-negative population)
+Partial EMA alignment is the "trend is turning but not established" state. The 2026-08-04 entry diagnostic §6 — whose
+census scores EVERY bar and forward-walks it, so it carries **no fired-set selection confound**, unlike the 2026-07-23
+scoring NOTE's read — measures the partial tier as **PF < 1.0 in all four years** (0.925 / 0.775 / 0.587 / 0.888),
+Train avgR **−0.148 ± 0.030 (t = −4.9)**, Val −0.071 ± 0.051 (t = −1.4, same sign), on ~1,871 (Train) / 647 (Val)
+unconditional signal bars ≈ 24% of clean supply. It is the most per-year-consistent negative in that document.
+If that read survives as an actual trade-set change, removing the population should raise portfolio PF and net$.
+**Pre-registered failure mode** (the one EXP-015/EXP-016 both hit on this exact component): with
+`max_positions_per_symbol: 1`, removing entries frees the slot and lets DIFFERENT, later signals in, so the arms are
+not the same book — the removal can be net-harmful even when the removed population is genuinely negative. That is a
+real outcome, not an excuse, and it decides the verdict against the candidate if it happens.
+**The diagnostic is EXPLORATORY and multiple-comparisons-unsafe**; it is treated here as a hypothesis to be measured,
+never as a result to be confirmed.
+
+### 2. THE ABLATION SEAM — DECLARED EXACTLY, BEFORE ANY RESULT
+There is **no config knob**: the 30/15/0 tiering is hard-coded in `council/scoring.py`. The veto is installed as a
+**signal-level seam** — a wrapper passed through `BacktestConfig.signal_fn` (a public, injectable field). Nothing under
+`src/` or `config/` is modified by this experiment.
+```
+plan = engine._council_signal_fn(df, i, ...)        # the REAL Council + the REAL Risk Voice
+if plan is not None and veto:
+    tier = score_<leading>_voice(df, i, ...).trend_alignment   # bull for a BUY plan, bear for a SELL plan
+    if tier == 15:  return None                     # <-- the ablation
+```
+Properties of this seam, and why it is the honest one:
+ (a) The veto fires **before** Shield's cooldown check, **before** CFO sizing and **before** `_PendingOrder` creation,
+     so a vetoed signal never occupies the single position slot — **the sequence is replayed honestly and the slot is
+     freed for later signals**, exactly as EXP-027's blackout seam behaves. No row is deleted from a finished trade
+     list. Slot-refill accounting is measurement (c).
+ (b) `<leading>` is the voice whose direction the Decision Matrix admitted — precisely the population the diagnostic
+     section 6 measured ("winning voice's own component only, clean signals").
+ (c) No clock convention is involved (unlike EXP-027's blackout): `trend_alignment` is a pure function of closed bars
+     up to the signal bar `i`.
+ (d) The wrapper with `veto=False` must be a strict no-op — proven trade-for-trade by fidelity gate G3 **and** by every
+     C0 anchor below, all of which are produced THROUGH the wrapper.
+
+### 3. CELLS, WINDOWS, ACCOUNT CONTEXT, COST MODEL
+| id | veto | blackout | protection | role |
+|----|----|----|----|----|
+| **C0** | OFF | OFF | OFF | REFERENCE = every historical row in this log. Must reproduce the anchors exactly. |
+| **V** | **ON** | OFF | OFF | **THE CANDIDATE** (news mechanisms OFF = the C0 convention, and the PRIMARY comparison) |
+| P | OFF | OFF | ON | post-defect-fix protection-only anchor — **gate only**, y4 |
+| EP | OFF | ON | ON | full news parity, y4 only — **INFORMATIONAL overlay** |
+| EPV | **ON** | ON | ON | full news parity + veto, y4 only — **INFORMATIONAL overlay** |
+
+Train y1 2021-07-22->2022-07-21, y2 2022-07-22->2023-07-21, y3 2023-07-22->2024-07-21; Val y4 2024-07-22->2025-07-21.
+$3,000 per-year anchored equity, `min_lot_risk_cap_pct` 1.5, `risk_per_trade_pct` 1.0, all-24h session, be/trail OFF,
+`tp_r_multiple` 2.0, `swing_pivot_bars` 3, complete cost model (slippage = min-1-spread, swap EXP-018 long −53.2 /
+short +36.8 3x Wed, commission $0.00 IC Markets Standard). Production path only: the real
+`backtest.engine.run_backtest`, the real `council.decision_matrix.evaluate_council`, the real `check_risk_voice`, the
+real `Shield`. EXP-022's validated fast-path memoisation shim for speed (re-proven against the new seam, gate G1).
+Harness `experiments/exp028_partial_tier_veto_harness.py`; raw output `experiments/exp028_*.txt`.
+**SCOPE: Train + Val ONLY. The Test year 2025-07-22 -> 2026-07-21 is NOT touched by this experiment under ANY
+outcome** — this family has no authorised Test budget, `load_window` refuses `y5*` unconditionally, and the harness has
+no `--allow-test` escape hatch, deliberately. **A RECOMMEND verdict ENDS AT THE RECOMMENDATION**: there is no knob to
+change, so adoption would require a `src/` change to `council/` plus a spec conversation (rule 10), which is a user
+decision and not this experiment's to take.
+
+### 4. MEASUREMENTS (pre-registered; each is reported whatever it says)
+ (a) **PORTFOLIO, C0 vs V**, per window and pooled Train / Val: records, positions, PF, net$, maxDD%, avgR, PF-ex-top-5,
+     win rate, exit mix. Deltas V − C0.
+ (b) **THE REMOVED POPULATION, per year**, sequence held FIXED on the C0 trade list (EXP-023 D3 / EXP-024 section 6(2) /
+     EXP-027 (a) method): which of C0's own entries came from a partial-tier signal bar, and what those trades actually
+     did — n, avgR ± SE, median, PF, win%, worst, exit mix, net$ — against the KEPT complement, with the
+     difference-of-means and its SE. The tier-30 and tier-0 subsets are reported alongside, free, so nothing is
+     selectively omitted.
+ (c) **SLOT-REFILL ACCOUNTING** (EXP-027 (d)'s method): gross vetoed signals in the V run, C0 entries absent from V,
+     V entries absent from C0, shared entries, net position delta, replacement rate, with the arithmetic identity
+     `|C0| − |C0\V| + |V\C0| == |V|` asserted in code every window.
+ (d) **TRADE-COUNT HONESTY**: post-veto trade counts per window, and the **Gate-1 200-trade floor** implication stated
+     explicitly. A candidate that guts the sample fails even if PF rises.
+ (e) **ONE INFORMATIONAL OVERLAY ROW ON VAL ONLY**: EPV − EP under the post-defect-fix engine, to sanity-check that the
+     conclusion survives full news parity. Informational, descriptive, never deciding.
+
+### 5. ACCEPTANCE CRITERIA — ALL of (a)-(e) must hold, or the verdict is REJECT
+This is a REMOVAL of a measured-negative population, mechanism-first like EXP-008's be/trail cut, so the deciding
+evidence is **the removal's consistency**, not a fitted peak — there is no grid, no plateau to defend and nothing to
+tune (rule 5's neighbourhood check is n.a. by construction, and is recorded as n.a. rather than silently skipped).
+ (a) **Portfolio improvement on Train AND Val** vs C0, in **both** PF and net$. Either split failing = REJECT.
+ (b) **Per-year:** no year flips from profitable to losing, AND the removed population's negativity holds per-year
+     (each year's removed-subset avgR/PF reported; a year where the removed subset is clearly POSITIVE is evidence
+     against the mechanism and must be reported as such).
+ (c) **Trade-count honesty:** ~24% of supply is removed. Post-veto counts are reported per window against the Gate-1
+     200-trade floor. A candidate that pushes any window below the floor **fails on that ground alone**, whatever PF
+     does; a candidate whose Val count falls below rule 6's 100-trade floor cannot support a conclusion at all.
+ (d) **Slot-refill accounting** must be published, and the identity must hold 4/4 windows. If the V arm's book differs
+     from C0 by a large add/remove churn (EXP-027 y4: 54 removed / 41 added), the portfolio delta is
+     reshuffling-dominated and is **not** evidence of causation — this is stated now so a favourable number cannot be
+     read as one later.
+ (e) The informational EP overlay must not CONTRADICT the primary conclusion. It cannot rescue a failing candidate.
+
+**Rule 7 (multiple testing).** Family "council-entry-tier" is NEW. Configs evaluated: **2 primary** (C0 baseline + V
+candidate) **/ 2 cumulative**. There is exactly one candidate, no grid, and no value is chosen by any result, so no
+edge inflation applies and no correction is warranted. The three overlay/anchor cells (P, EP, EPV) are DESCRIPTIVE and
+are counted separately as such — they are not candidates and nothing is selected among them. Adjacent-but-separate
+families whose counts are NOT merged into this one: "scoring-formula" (EXP-015/016, 7 configs, closed) and
+"news-entry-blackout parity" (EXP-027, 4).
+**Rule 6.** ~180 (Train) / ~60 (Val) executed removals are expected per the diagnostic. **The Val removed subset is
+expected to be BELOW the 100-trade floor**, so per the standing convention every pooled figure under 100 is reported in
+the pre-registered words **"MEASUREMENT WITH WIDE ERROR BARS"** with SE and 95% interval printed and no significance
+claim made in either direction. Deciding statements pool Train (y1+y2+y3) and, separately, Val (y4); no statement rests
+on a single window.
+
+### 6. FIDELITY GATES — all run and reported BEFORE any deciding number is read; any failure STOPS the experiment
+ G1 **Fast-path identity** for cells C0 and V on a 4,000-bar slice, trade-for-trade / field-for-field (the shim has
+    never been proven against this seam).
+ G2 **C0 anchors, all four windows**: **266 / 254 / 233 / 254** trades, PF **1.0159 / 0.9949 / 1.2020 / 1.0961**, maxDD
+    **14.4879 / 26.12 / 12.2659 / 9.9895%**, y4 net **+$352.60** — this log's universal baseline (EXP-022 cap-1.5,
+    re-confirmed EXP-023/024/025/026 section 4 and EXP-027 G2, and re-verified bit-for-bit after the 2026-08-04 engine
+    defect fixes). Because C0 is produced THROUGH the veto wrapper (veto=False), G2 doubles as a full-window no-op proof.
+ G3 **Seam no-op**: the wrapper with `veto=False` must equal the engine's own default `signal_fn` trade-for-trade.
+ G4 **POST-FIX P anchor, y4 only, and only if the informational overlay is run**: **369 records / PF 1.0830 /
+    +$329.94** (2026-08-04 defect-fix NOTE — this SUPERSEDES EXP-027's pre-fix P column 350 / 1.0667 / +$259.67).
+
+### 7. WHAT CANNOT FOLLOW FROM THIS EXPERIMENT (rule 8, binding)
+No promotion/demotion gate, Auditor threshold or circuit-breaker limit is touched, and none will be proposed for change
+as a way to make any number pass — **including** the Gate-1 200-trade floor and the PF 1.30 floor the honest Test
+baseline already showed the deployed config failing. If the veto cuts the sample below the floor, the candidate fails;
+the floor does not move. No `config/base.yaml` change can follow from this experiment because no config key is
+involved; no `src/` change is made here under any outcome. The Test year is not touched.
