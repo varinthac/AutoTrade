@@ -6026,7 +6026,7 @@ not an expectancy question, and the risk-averse side of that preference is the o
      experiment may turn.
 
 ## EXP-027 2026-08-04 — Risk Voice's news ENTRY BLACKOUT measured against the REAL calendar, and the first FULL news-parity 2×2 (NEW family "news-entry-blackout parity"; sibling of EXP-024's "news-protection backtest/live parity")
-Status: PRE-REGISTERED (results pending). Everything from this line down to `### EXP-027 RESULTS` was written and
+Status: MEASURED -- veto rate 13.3% (Train) / 14.2% (Val) of entries; vetoed-population counterfactual +0.055R +- 0.131 (Train, n=100) / -0.367R +- 0.188 (Val, n=36), sign flips per year; EP-P portfolio effect +$5/-$132/+$19/+$8. Found and root-caused an engine fidelity defect in the PROTECTION path (see RESULTS §5). NO config change, NO src/ change, Test year NOT touched. See `### EXP-027 RESULTS` below. Originally: PRE-REGISTERED (results pending). Everything from this line down to `### EXP-027 RESULTS` was written and
 COMMITTED, together with a results-free `experiments/exp027_entry_blackout_harness.py`, **before any E, EP or vetoed-
 population number existed**; only the RESULTS section and this Status line are added afterwards.
 **This is a MEASUREMENT experiment, not a selection experiment** — EXP-024's framing, deliberately reused. There is no
@@ -6196,3 +6196,253 @@ EP looks better than P, that is a MEASUREMENT of a control's incidental effect, 
 any actual tuning of `news_blackout_before_min`/`after_min` would need its own pre-registration with a > 1.7 SE bar on
 Train AND Val plus per-year sign consistency — which §6's sample sizes are very unlikely to be able to deliver, and
 that is said here, before the numbers, rather than discovered afterwards.
+
+### EXP-027 RESULTS (run 2026-08-04) — OUTCOME: MEASURED. The entry blackout vetoes **13.3% of Train / 14.2% of Val entries** (vs Watchman protection's 25.9% / 28.0%), and the vetoed population is **NOT reliably net-negative**: pooled Train **+0.055R ± 0.131** (n=100) vs kept +0.035R, pooled Val **−0.367R ± 0.188** (n=36, below floor) vs kept +0.119R, with the per-year sign **flipping** (−0.21 / −0.13 / **+0.44** / −0.37). Portfolio-wise the blackout is **noise-dominated**: E−C0 net **+$199 / −$154 / −$204 / +$138**, EP−P net **+$5 / −$132 / +$19 / +$8**. Overlap with protection's population is **only 30% (Train) / 22% (Val)** of the vetoed set — the two controls hit largely DIFFERENT trades. NO config change, NO `src/` change, **Test year NOT touched**.
+Raw output: `experiments/exp027_fidelity_out.txt` (G1–G4), `experiments/exp027_port_out.txt` (the 2×2 grid),
+`experiments/exp027_veto_out.txt` (per-position rows + measurement (a)/(c)), `experiments/exp027_pool_out.txt` (pooled),
+`experiments/exp027_recon_out.txt` (measurement (d)), `experiments/exp027_g5diag_out.txt` (the G5 root-cause
+decomposition). Harness `experiments/exp027_entry_blackout_harness.py`; G5 diagnostic
+`experiments/exp027_g5_diagnostic.py`. Dev PC, `.venv` (Python 3.12.10).
+
+FIDELITY GATES — all run and reported BEFORE any E/EP number was read:
+ G1 **PASS in all four cells.** Fast-path shim identical to the unshimmed engine trade-for-trade, field-for-field on a
+    4,000-bar slice: C0 176 trades, E 165, P 242, EP 232, `identical: true` throughout. (C0's 176 and P's 242 also
+    match the honest-Test-baseline measurement's own fast-path fidelity rows.) This is the first time the shim has been
+    proven against `model_risk_voice_news=True`.
+ G2 **C0 anchors PASS exactly, all four windows**: 266 / 254 / 233 / 254 trades, PF 1.0159 / 0.9949 / 1.2020 / 1.0961,
+    maxDD 14.4879 / 26.12 / 12.2659 / 9.9895%, y4 net **+$352.60** — this log's universal baseline, to the cent.
+ G3 **P anchors PASS exactly, all four windows**: 391 / 399 / 358 / 350 records, PF 1.0256 / 0.8974 / 1.1328 / 1.0667,
+    maxDD 13.8664 / 29.1098 / 15.8294 / 11.4154%, y4 net **+$259.67** — EXP-026 §4's `A_live` row / the engine NOTE's
+    A@real, to the cent.
+ G4 **Conditional-replay self-check PASS on all four windows**: replaying each C0 position one-by-one reproduces the
+    full-sequence C0 trade list field-for-field (266/254/233/254 == 266/254/233/254, `identical: true`).
+ INFORMATIONAL, cell E's y4 row: **241 / PF 1.1432 / +$490.82 / maxDD 8.8235%** — commit `3ec55ee`'s published
+    informational figure reproduced to the cent through this harness.
+ G5 **INFORMATIONAL cross-check — MISMATCH, and it was worth chasing.** Protection-affected on the C0 sequence measured
+    here is **63 / 70 / 62 / 71** against EXP-024 §1's **64 / 62 / 67 / 71**. Root-caused, not glossed — see §5. It does
+    not touch (a), (b)'s C0/E cells or (d); it slightly under-states protection's reach in the P/EP cells.
+
+### 1. MEASUREMENT (b) — THE 2×2 GRID (the first full news-parity numbers this project has had)
+$3,000/window, complete cost model, commission $0. `records` = `ClosedTrade` rows (a genuine partial close emits a
+second one, so P/EP records > positions); `positions` = unique entries.
+```
+window          cell  records  positions     PF      net$    maxDD%   avgR    pf_ex5  winRate  news_exits
+y1 2021-22      C0        266        266   1.0159    +64.07  14.4879  0.0153  0.9408  0.3722       0
+                E         259        259   1.0680   +263.07  12.9481  0.0428  0.9898  0.3784       0
+                P         391        307   1.0256   +103.51  13.8664  0.1680  0.9516  0.5269     116
+                EP        366        290   1.0289   +108.53  15.6417  0.1656  0.9495  0.5137     104
+y2 2022-23      C0        254        254   0.9949    -22.38  26.1200 -0.0254  0.9166  0.3386       0
+                E         235        235   0.9555   -176.75  24.9050 -0.0347  0.8704  0.3362       0
+                P         399        299   0.8974   -413.32  29.1098  0.1413  0.8215  0.5138     136
+                EP        353        276   0.8467   -544.82  27.0516  0.0984  0.7638  0.4901     115
+y3 2023-24      C0        233        233   1.2020   +773.25  12.2659  0.1305  1.1030  0.4077       0
+                E         231        231   1.1585   +569.75  12.5290  0.1068  1.0648  0.3983       0
+                P         358        279   1.1328   +533.73  15.8294  0.2408  1.0484  0.5391     103
+                EP        345        273   1.1451   +552.69  13.8067  0.2330  1.0574  0.5304      94
+y4 VAL 2024-25  C0        254        254   1.0961   +352.60   9.9895  0.0505  0.9873  0.3740       0
+                E         241        241   1.1432   +490.82   8.8235  0.0776  1.0272  0.3900       0
+                P         350        310   1.0667   +259.67  11.4154  0.1347  0.9728  0.4971     105
+                EP        335        298   1.0692   +268.00  10.8867  0.1354  0.9749  0.4925      96
+POOLED TRAIN    C0        753        753          +814.94 |  E  725 pos  +656.07 |  P  885 pos  +223.92 |  EP 839 pos  +116.40
+POOLED VAL      C0        254        254          +352.60 |  E  241 pos  +490.82 |  P  310 pos  +259.67 |  EP 298 pos  +268.00
+```
+The two pre-registered deltas:
+```
+E − C0  (blackout alone)          y1 PF +0.0521 net +199.00 DD -1.54 | y2 PF -0.0394 net -154.37 DD -1.22
+                                  y3 PF -0.0435 net -203.50 DD +0.26 | y4 PF +0.0471 net +138.22 DD -1.17
+                                  TRAIN net -158.87   VAL net +138.22
+EP − P  (blackout given protection) y1 PF +0.0033 net   +5.02 DD +1.78 | y2 PF -0.0507 net -131.50 DD -2.06
+                                  y3 PF +0.0123 net  +18.96 DD -2.02 | y4 PF +0.0025 net   +8.33 DD -0.53
+                                  TRAIN net -107.52   VAL net   +8.33
+(free, reported so nothing is selectively omitted)
+P − C0  (protection alone)        y1 +39.44 | y2 -390.94 | y3 -239.52 | y4 -92.93   TRAIN -591.02  VAL -92.93
+EP − E                            y1 -154.54 | y2 -368.07 | y3 -17.06 | y4 -222.82  TRAIN -539.67  VAL -222.82
+```
+**Read honestly, in both directions.** (1) The blackout's per-window sign FLIPS in both deltas (E−C0: +/−/−/+; EP−P:
++/−/+/+), and the three windows where it "helps" and the two where it hurts are the same size. (2) Its Val row looks
+favourable in isolation — E lifts y4 PF 1.0961 → 1.1432 and pushes `pf_ex5` across 1.0 (0.9873 → 1.0272) — and this is
+exactly the kind of single-window number this log has repeatedly shown to be reshuffling, not causation (EXP-017/020/
+021; EXP-024 §3; EXP-026 §4): the E arm differs from C0 by **54 removed and 41 added entries on y4** (§4), so the two
+arms are not the same book. (3) With protection already on, the blackout's incremental portfolio effect is
+**essentially nil on three of four windows** (+$5 / +$19 / +$8) and clearly negative on one (−$132, y2). (4) Max DD
+improves under the blackout in 3 of 4 windows in both deltas — the one genuinely coherent directional read here, and
+still on four observations.
+
+### 2. MEASUREMENT (a) — THE VETO RATE AND THE VETOED POPULATION'S COUNTERFACTUAL (the deciding descriptive)
+Sequence held FIXED on the C0 trade population, engine clock convention (signal bar's open):
+```
+window          bars  blackout-bars  %    | C0 trades  vetoed  rate%  | vetoed avgR ± SE   medR    PF    win%  worstR
+y1 2021-22      5926        482     8.13  |    266        26    9.77  | -0.2066 ± 0.2316 -1.0071 0.6634 30.8  -1.1103
+y2 2022-23      5917        464     7.84  |    254        38   14.96  | -0.1297 ± 0.2083 -0.9675 0.7987 31.6  -1.1302
+y3 2023-24      5894        458     7.77  |    233        36   15.45  | +0.4394 ± 0.2276 +0.1461 2.0925 55.6  -1.0553
+y4 VAL 2024-25  5913        447     7.56  |    254        36   14.17  | -0.3667 ± 0.1879 -0.9889 0.4858 25.0  -1.1337
+POOLED TRAIN                                753       100   13.28  | +0.0552 ± 0.1309, t +0.42, 95% CI [-0.201, +0.312]
+POOLED VAL                                  254        36   14.17  | -0.3667 ± 0.1879, t -1.95, 95% CI [-0.735, +0.002]
+   the KEPT complement, same windows:
+POOLED TRAIN  n=653  avgR +0.0345 ± 0.0523   |  vetoed − kept = **+0.0207 ± 0.1410 (t +0.15)**, CI [-0.256, +0.297]
+POOLED VAL    n=218  avgR +0.1194 ± 0.0900   |  vetoed − kept = **-0.4861 ± 0.2083 (t -2.33)**, CI [-0.895, -0.078]
+```
+Exit mix, vetoed vs kept: y4 vetoed **25 stop_loss / 6 take_profit / 5 time_stop** (69% stop-outs) against kept
+107/71/31/8/1 (49% stop-outs); y3 vetoed **15 take_profit / 14 stop_loss / 7 time_stop** — the mirror image.
+**What this does and does not support.** The entry diagnostic §5.2's claim was that pre-event entries are net-negative
+(unconditional PF 0.867 Train / 0.828 Val). On the EXECUTED population, with both blackout halves counted as live
+counts them: **Val reproduces the claim strongly (−0.367R, PF 0.486, 69% stop-outs) and Train does not reproduce it at
+all (+0.055R, PF ~1.0 on the pooled subset)** — because y3's vetoed subset is a +0.44R, PF 2.09 population. The sign
+alternates −/−/+/− across the four years. Both pooled figures are dominated by the same y3 vs y4 disagreement the
+diagnostic itself flagged ("negative in 3 of 4 years, y3 flips positive"), and the Val subset (n=36) is far below
+rule 6's floor. **This is a MEASUREMENT WITH WIDE ERROR BARS in both directions, and it does not establish that the
+blackout removes a net-negative population.**
+CONVENTION SENSITIVITY (pre-registered §3(b); it matters, and it cuts against the strongest-looking number):
+```
+convention                       vetoed n (y1/y2/y3/y4)   pooled TRAIN avgR ± SE      pooled VAL avgR ± SE
+signal-open (engine, deciding)      26 / 38 / 36 / 36      +0.0552 ± 0.1309 (n=100)   -0.3667 ± 0.1879 (n=36)
+fill-time   (live's instant)        25 / 38 / 29 / 29      -0.0540 ± 0.1377 (n= 92)   -0.1400 ± 0.2367 (n=29)
+set overlap (both / sig-only / fill-only):  y1 16/10/9   y2 27/11/11   y3 15/21/14   y4 17/19/12
+```
+The two conventions agree on the *rate* (12–14%) but disagree on *which trades* — only **42–71% of each veto set is
+shared** — and the Val point estimate moves from −0.37R to −0.14R depending on which one is used. **A subset whose
+measured mean moves by 0.23R under a one-bar timing convention is not a stable effect.**
+
+### 3. MEASUREMENT (c) — OVERLAP WITH WATCHMAN'S NEWS PROTECTION (the interaction-honesty check)
+```
+window          C0 trades  vetoed  protection-affected  BOTH  | both as % of vetoed  as % of affected
+y1 2021-22          266       26           63             9   |       34.6%              14.3%
+y2 2022-23          254       38           70            12   |       31.6%              17.1%
+y3 2023-24          233       36           62             9   |       25.0%              14.5%
+y4 VAL 2024-25      254       36           71             8   |       22.2%              11.3%
+POOLED TRAIN        753      100          195            30   |       30.0%              15.4%
+POOLED VAL          254       36           71             8   |       22.2%              11.3%
+```
+**Answer: NO — the blackout does not mostly remove trades protection would have truncated anyway.** 70% of the vetoed
+population on Train (78% on Val) is never touched by protection, and 85–89% of the protection-affected population is
+never vetoed. The mechanism is visible in the exit mixes: protection can only reach a trade that gets to +0.5R (a
+better-than-average population, EXP-024 §4), while the blackout's population is stop-out-heavy. On the small
+intersection, `R(P) − R(C0)` over the vetoed subset is +0.176 ± 0.134 (y1) / −0.006 ± 0.106 (y2) / −0.123 ± 0.100 (y3)
+/ +0.061 ± 0.097 (y4) — i.e. the two controls are close to independent, and the 2×2's near-additivity in §1 is a
+consequence of that, not a coincidence.
+
+### 4. MEASUREMENT (d) — RECONCILING "10–13%" WITH "~5.1%" (quantified, not asserted)
+```
+window          C0 pos  E pos  net change   gross vetoed  C0 entries   E entries     shared
+                                (pct)       (engine conv)  absent in E  absent in C0  entries
+y1 2021-22        266    259   -7  (-2.63%)      26            34           27          232
+y2 2022-23        254    235  -19  (-7.48%)      38            54           35          200
+y3 2023-24        233    231   -2  (-0.86%)      36            45           43          188
+y4 VAL 2024-25    254    241  -13  (-5.12%)      36            54           41          200
+(identity asserted in code every window: |C0| − |C0\E| + |E\C0| = |E|, true 4/4)
+```
+The "10–13% vs 5%" gap decomposes into **three separate things, none of which is a discrepancy once named:**
+ **(i) The two numbers measure different quantities. This is the dominant term.** The engine's ~5.1% is a NET
+ portfolio position-count change; the diagnostic's 10–13% was a GROSS blocked-entry count. The gross veto rate measured
+ here is **9.8 / 15.0 / 15.5 / 14.2%** — i.e. the diagnostic's magnitude was broadly RIGHT as a gross rate, and it was
+ quoted as a trade-count cost, which is the net figure. On y4: **36 entries vetoed, 13 net positions lost.**
+ **(ii) Slot dynamics, quantified.** With `max_positions_per_symbol: 1` a vetoed entry frees the slot, so the E arm
+ takes signals C0 never had room for. On y4 the E sequence is missing **54** of C0's entries (the 36 direct vetoes plus
+ 18 downstream re-sequencing casualties) and contains **41** entries C0 never took — a **76% replacement rate** — for a
+ net of −13. Pooled Train: 133 removed, 105 added, net −28 (−3.7%). **Roughly three quarters of every blocked entry is
+ refilled by a later signal**, which is why a 14% veto rate shows up as a 1–7% trade-count change.
+ **(iii) Arm/denominator and the missing half of the window.** The diagnostic's 36/42/37/51 blocked entries were
+ **pre-event (≤45 min) only** — its own §5.2 splits pre- and post-event and the pooled Train pre-event mode-A n is 115
+ = 36+42+37 — and were divided by mode-A@real **records** (391/399/358/350), which include partial-close rows. Live's
+ blackout blocks BOTH halves. Counting both halves on C0 positions at live's own instant gives 25/38/29/29, of which
+ the pre-event half is the diagnostic's 16/20/22/17. So the diagnostic understated the blocked SET (one half omitted)
+ while overstating the RATE (records denominator); the two errors partly cancelled, which is why its 10–13% happened to
+ land near the true 12–14% gross rate.
+ Residual, stated plainly: after (i)–(iii) there is nothing left to explain. The engine's y4 E cell (241) is exactly
+ what a 36-entry gross veto plus 76% slot refill produces.
+
+### 5. THE G5 ROOT CAUSE — AN ENGINE FIDELITY DEFECT IN THE PROTECTION PATH, FOUND BY THIS EXPERIMENT (escalated, NOT fixed here)
+G5's mismatch (63/70/62/71 vs EXP-024's 64/62/67/71) decomposes EXACTLY into two independent effects, both measured
+(`experiments/exp027_g5diag_out.txt`, `exp027_g5_diagnostic.py`):
+```
+window          EXP-024 harness rule   engine eligibility rule   lost to profit-gate   engine ACTUAL
+                (t < e < t+90, strict)  (t <= e <= t+90)          float round-trip      (= this log's P cell)
+y1 2021-22              64                     78                      -15                   63
+y2 2022-23              62                     76                       -6                   70
+y3 2023-24              67                     74                      -12                   62
+y4 VAL 2024-25          71                     76                       -5                   71
+```
+ (i) **Boundary inclusivity (+14 / +14 / +7 / +5).** `check_news_protection`'s window is inclusive at both ends, so the
+     engine counts an event landing exactly on the bar's open (very common: 267 in-range events at 17:00, 99 at 20:00)
+     or exactly at `t+90`; EXP-024's harness used strict inequalities. The engine's rule is the one that matches
+     `MQL5CalendarProvider.get_high_impact_events`; the harness's was a deliberate positive-duration approximation
+     (EXP-024 §4(e)). The engine is right here.
+ (ii) **A FLOAT ROUND-TRIP IN THE PROFIT GATE silently drops intrabar first-touch triggers (−15 / −6 / −12 / −5
+     positions; 86 bar-level rejections across the four windows, ALL of them the same boundary case).**
+     `engine._news_trigger_candidate_price` returns the exact `entry ± profit_threshold_r × initial_stop_distance`
+     level when the bar touches it intrabar, and `check_news_protection` then RE-DERIVES
+     `profit_r = (price − entry) / initial_stop_distance`. In IEEE-754 that round-trip is not exact: it lands on
+     0.49999999999999994 in a large minority of cases, and the gate's `profit_r < threshold` test then rejects the
+     trigger with the literal reason **"profit 0.50R below protection threshold 0.5R"**. Worked example, y1 entry
+     2021-08-02 05:00 SELL: entry 1810.91, stop distance 9.45775508394141, candidate 1806.1811224580294, window
+     16:00→17:30 containing three high-impact USD events — and the decision is NO_ACTION.
+     Direction and size: the engine **under-fires** news protection relative to both its own rule and live (live reads
+     a real tick price and never performs this round-trip), by **5–15 positions per year ≈ 7–19% of the affected
+     population**. Every engine-path protection number in this log inherits it: the P/EP cells above, EXP-026's
+     `A_live` rows, the 2026-08-04 engine NOTE, and the honest Test baseline's A@real arm (whose measured
+     news-protection cost is therefore, by this channel, a slight UNDER-estimate — the same direction as its other
+     declared limitations).
+     **NOT fixed here (a measurement experiment changes no `src/`), and deliberately not worked around in the harness**
+     — the P cell must remain the same instrument EXP-026 and the Test baseline used, or the anchors G2/G3 stop
+     meaning anything. **Escalated to the main session as a one-line-fix candidate** (compare with a tolerance, or have
+     the candidate-price path hand `check_news_protection` the profit_r it already computed). Anyone who fixes it must
+     expect every engine-path A@real/P/EP row in this log to move slightly, and should re-anchor deliberately.
+
+### 6. SAMPLE HONESTY (rule 6) AND MULTIPLE TESTING (rule 7) — as pre-registered in §6, applied as written
+Vetoed subsets are **26 / 38 / 36 / 36**: every individual window is far below rule 6's 100-trade floor and no
+statement above rests on one window. Pooled **Train n=100 just clears the floor**; pooled **Val n=36 does not**, so, in
+the pre-registered words, **the Val figure is a MEASUREMENT WITH WIDE ERROR BARS** — −0.367R with SE 0.188 and a 95%
+interval of **[−0.735, +0.002]** that touches zero; the vetoed-minus-kept contrast is −0.486 ± 0.208, and it is
+reported as a description, not a significance claim, because its subset is below the floor, its sign disagrees with
+Train, and it moves to −0.14R under the fill-time convention. Train's own contrast (+0.021 ± 0.141, t = 0.15) is
+indistinguishable from zero. **Neither pooled estimate supports a claim that the blackout removes a net-negative
+population, and this section will not pretend otherwise.** Rule 7: nothing was selected, no threshold could be chosen
+by any result, both anchor cells were pinned to published numbers before the run — no correction is warranted and none
+is applied. Configs evaluated: **4 / 4** for this new family.
+
+### 7. LIMITATIONS, RE-STATED AGAINST THE ACTUAL RESULT (all six were pre-declared in §7; two now have measured sizes)
+ (i) Current-classification look-ahead; (ii) reschedules erased (~1%) — direction unknown, unchanged.
+ (iii) **Live fail-safe episodes are NOT modelled — the biggest one on the entry side.** `HistoricalNewsCalendarProvider`
+     cannot return `None`, so the "calendar unavailable → veto every entry" channel is structurally absent, while the
+     paper journal recorded 17 such vetoes in 13 days including a 14-hour outage. **The 13.3% / 14.2% veto rate is a
+     LOWER BOUND on live's**, and by a wider margin than EXP-024's protection-side bound (protection's fail-safe only
+     reaches positions already at +0.5R; the entry fail-safe reaches EVERY signal).
+ (iv) **One-bar clock skew — now measured, and material** (§2's convention table): the two conventions share only
+     42–71% of their veto sets and disagree by 0.23R on the Val subset mean. **"EP = closest to live" is true of the
+     MECHANISM SET, not of the blackout's exact timing.**
+ (v) Single check per signal vs live's two — same direction as (iii).
+ (vi) H1 bar resolution — unchanged.
+ (vii) **NEW, discovered by this experiment:** the profit-gate float round-trip of §5, which makes the P and EP cells
+     under-fire protection by 7–19% of the affected population.
+
+### 8. WHAT THIS ESTABLISHES, AND WHAT MAY NOT FOLLOW (rule 8 restated)
+ (1) **The last unmodeled news mechanism now has a price, and the price is "roughly nothing, with wide error bars".**
+ The blackout vetoes ~13–14% of entries, ~76% of which are refilled by later signals; its incremental portfolio effect
+ given protection (EP−P) is +$5 / −$132 / +$19 / +$8 across four $3,000 years; its vetoed population's counterfactual
+ mean is +0.055R on Train and −0.367R on Val with the sign flipping per year and moving 0.23R under a timing
+ convention. That is a control that is close to free in expectancy terms, not a cost like protection's (EXP-024:
+ −0.157R per affected trade, ~44% of per-trade expectancy on the honest Test baseline) and not a rescue either.
+ (2) **The strategic conclusion from today's honest Test baseline does NOT change.** Val's full-parity cell EP is
+ PF 1.0692 / +$268 / DD 10.89% against P's 1.0667 / +$259.67 / 11.42% — a difference of $8 on a $3,000 account. Nothing
+ here moves a PF-1.08 Test-year strategy toward the 1.30 Gate-1 floor, and nothing here is a licence to disable a
+ deliberate risk control (C0 is the reference arm, never a candidate — EXP-024 §11's precedent).
+ (3) **NOT earned, and explicitly not proposed:** any tuning of `news_blackout_before_min` / `news_blackout_after_min`.
+ The pre-registration (§8) required > 1.7 SE on Train AND Val plus per-year sign consistency for any such follow-up;
+ the measured Train contrast is +0.15 SE, the signs alternate −/−/+/−, and the subsets are 26–38 per window. The
+ diagnostic's own §7 item 2 (`news_blackout_after_min` 30 → 0/15) is therefore **NOT unblocked by this measurement** —
+ it is blocked by the same sample sizes, and that should be recorded before someone reads §2's Val row alone. The
+ 30–45 min sub-band remains explicitly forbidden (§6).
+ (4) **Escalated to the user / main session, in priority order:**
+   **(a)** the §5 profit-gate float round-trip — a genuine `src/` fidelity defect this experiment found, cheap to fix,
+   but it moves every engine-path protection row in this log, so fix + deliberate re-anchor, not fix alone;
+   **(b)** the §3(b)/(iv) one-bar clock skew — the engine evaluates Risk Voice at the signal bar's OPEN while live
+   evaluates at its CLOSE (= the fill instant). It affects news, session and Friday-close conditions alike, so it is
+   older and wider than this experiment; deciding whether the engine should evaluate at `t + bar_span` is a
+   production-code question, and every session-window experiment in this log (EXP-001/003/004) was measured under the
+   current convention;
+   **(c)** the deferred **full-parity (EP) Test re-measurement** — the Test year now has a modeled-protection-only
+   baseline (PF 1.0845) but no full-parity one. Whether to spend a second measurement touch on it is a **user
+   decision**, and this experiment does not make it. On this evidence the expected difference is small (EP−P on Val was
+   +$8), which is itself an argument for NOT spending the touch yet.
+ `config/base.yaml` UNCHANGED; `src/` UNCHANGED; no promotion/demotion gate, Auditor threshold or circuit-breaker limit
+ touched or proposed for change. **Test year 2025-07-22 → 2026-07-21 NOT touched by any run in this experiment.**
