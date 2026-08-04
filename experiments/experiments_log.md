@@ -6024,3 +6024,175 @@ not an expectancy question, and the risk-averse side of that preference is the o
      ~44% of per-trade expectancy on a min-lot account, or change the thing that makes min-lot the norm (EXP-022 §7's
      escalation (ii): $3,000 equity against XAUUSD's 0.01-lot contract at gold >$4,000). Neither is a knob this
      experiment may turn.
+
+## EXP-027 2026-08-04 — Risk Voice's news ENTRY BLACKOUT measured against the REAL calendar, and the first FULL news-parity 2×2 (NEW family "news-entry-blackout parity"; sibling of EXP-024's "news-protection backtest/live parity")
+Status: PRE-REGISTERED (results pending). Everything from this line down to `### EXP-027 RESULTS` was written and
+COMMITTED, together with a results-free `experiments/exp027_entry_blackout_harness.py`, **before any E, EP or vetoed-
+population number existed**; only the RESULTS section and this Status line are added afterwards.
+**This is a MEASUREMENT experiment, not a selection experiment** — EXP-024's framing, deliberately reused. There is no
+grid over any parameter, no candidate, no winner, and no `config/base.yaml` or `src/` change can follow from it
+directly. Its whole job is to price the LAST unmodeled news mechanism in this project: Risk Voice's entry blackout
+(`news_blackout_before_min: 45` / `news_blackout_after_min: 30`, condition 2 of 6), which live enforces on every bar and
+which — until commit `3ec55ee` this session — no backtest in this log had ever applied. `risk_voice.news_blackout_*`
+is NOT swept, proposed for sweeping, or implicitly chosen by anything here.
+Scope: **Train (y1/y2/y3) + Val (y4) ONLY. The Test year 2025-07-22 → 2026-07-21 is NOT touched under any outcome** —
+`load_window` refuses `y5*` unconditionally and this harness has no `--allow-test` escape hatch, deliberately. The Test
+year's ONE authorised measurement touch was spent this session on the honest Test baseline (MEASUREMENT 2026-08-04),
+which modeled protection but NOT the entry blackout. **A full-parity (EP) Test re-measurement is therefore explicitly
+DEFERRED to a future user decision** — it is the obvious next question, it is a user-level call about how to spend a
+second measurement touch on the held-out year, and this experiment may not make it. Recorded here so it cannot later
+look like an oversight.
+
+### 0. WHY THIS IS ANSWERABLE TODAY AND WAS NOT YESTERDAY
+`backtest/engine.py` passed `backtest/news_stub.NoHistoricalNewsDataProvider` (always `[]` = "no event") to
+`check_risk_voice`, so Risk Voice condition 2 never fired in ANY backtest this project has run — while the live journal
+proves it fires (3 blocked signals for "1 high-impact USD news event(s) within -45/+30 min of now" plus 17
+calendar-unavailable fail-safe vetoes in 13 days of paper trading). Commit `3ec55ee` added
+`BacktestConfig.model_risk_voice_news` (default `False` = bit-for-bit prior behaviour), routing the SAME
+`HistoricalNewsCalendarProvider` Watchman's protection already uses into `check_risk_voice`. That commit published one
+informational y4 row (241 / PF 1.1432 / +$490.82 / DD 8.82%) and explicitly disclaimed measuring it: "measurement of
+the delta is EXP-027's job, not this commit's claim". This is that job.
+Motivating evidence: `experiments/entry_diagnostic_2026-08-04.md` §5 (EXPLORATORY, multiple-comparisons-unsafe, and
+treated here as a hypothesis to be measured, never as a result to be confirmed) — pre-event ≤45 min clean signals
+PF 0.867 Train / 0.828 Val vs 1.053 / 1.125 outside; negative in 3 of 4 years; y3 flips positive; every executed
+subset below rule 6's floor. Its §5.4 also states the constraint this design obeys: the entry blackout and the exit
+protection are defined against the SAME event list 30–45 min apart, so **they cannot be measured one at a time** —
+hence a 2×2, not a single before/after.
+
+### 1. THE FOUR CELLS (two independent, separately-wired mechanisms; nothing else varies)
+| id | blackout (`model_risk_voice_news`) | protection (`news_protection_cfg`) | role |
+|----|----|----|----|
+| **C0** | OFF | OFF | REFERENCE = what EVERY historical row in this log measured. Must reproduce them exactly. |
+| **E** | **ON** | OFF | the entry mechanism ALONE |
+| **P** | OFF | **ON** | = EXP-024/026's engine "A@real"/"A_live". Must reproduce EXP-026 §4 exactly. |
+| **EP** | **ON** | **ON** | **the first FULL news-parity numbers this project has ever had** — closest to live |
+
+Configs evaluated (this exp / cumulative for this NEW family): **4 / 4**. Zero free parameters, zero selection
+decisions, and both anchor cells are pinned to previously published numbers, so no multiple-testing correction is
+warranted (rule 7) and none is applied — stated so it cannot later look like an omission.
+
+### 2. ACCOUNT CONTEXT, WINDOWS, COST MODEL (identical to EXP-022/023/024/025/026 and to the honest Test baseline)
+Train y1 2021-07-22→2022-07-21, y2 2022-07-22→2023-07-21, y3 2023-07-22→2024-07-21; Val y4 2024-07-22→2025-07-21.
+$3,000 starting equity per-year anchored, `min_lot_risk_cap_pct` 1.5, `risk_per_trade_pct` 1.0, all-24h session,
+be/trail OFF, `tp_r_multiple` 2.0, `swing_pivot_bars` 3. COST MODEL COMPLETE: slippage = min-1-spread
+(`slippage_points=None`), swap modelled (EXP-018 long −53.2 / short +36.8, 3× Wed), commission $0.00 (IC Markets
+Standard, the real account). News data: `data/historical/news_calendar_backtest.csv` as built this session by
+`scripts/build_backtest_calendar.py`; `news_profit_threshold_r` 0.5, `news_window_minutes` 30, `news_close_mode` half;
+`news_blackout_before_min` 45, `news_blackout_after_min` 30 — i.e. `config/base.yaml` exactly as adopted, nothing
+overridden. Production path only: the real `backtest.engine.run_backtest`; the sequence-fixed replay calls the engine's
+own `check_exit`/`_step_news_protection`/`evaluate_watchman`/`_close_trade` (EXP-026's fidelity-proven `replay_one`,
+imported, not re-written). Harness `experiments/exp027_entry_blackout_harness.py`; raw output `experiments/exp027_*.txt`.
+
+### 3. THE BLACKOUT'S EXACT SEMANTICS, AND THE CLOCK-CONVENTION DISCLOSURE (read from code BEFORE any run)
+(a) **Window.** `check_risk_voice` condition 2 builds `window_start = now − news_blackout_after_min` and `window_end =
+now + news_blackout_before_min` and vetoes iff any high-impact event for a symbol currency falls inside — i.e. the
+blackout is active at instant `now` iff some high-impact **USD** (`_SYMBOL_CURRENCIES["XAUUSD"] = ("USD",)`) event `e`
+satisfies **`now − 30min ≤ e ≤ now + 45min`**. Two-sided, unlike Watchman's protection window, which is forward-only
+(`now ≤ e ≤ now + 30min`, EXP-024 §4(c)).
+(b) **DECLARED DEVIATION — the one-bar clock skew, disclosed before any number because it is a real methodological
+choice and it is NOT mine to fix here.** `run_backtest` sets its `SimulatedClock` to the SIGNAL bar's OPEN time `t`,
+so the modeled veto condition on a signal is `t − 30min ≤ e ≤ t + 45min`. Live (`orchestrator/shadow_loop.py`)
+evaluates `check_risk_voice` when the H1 bar CLOSES, i.e. at `≈ t + 60min` — which is also the instant the backtest
+fills at (the next bar's open) — so live's condition on the same signal is `t + 30min ≤ e ≤ t + 105min`. The two
+conventions select overlapping-but-different bars (for an event at 15:30 the engine vetoes the 15:00 and 16:00 bars;
+live vetoes the 14:00 and 15:00 bars). This affects only time-of-day-sensitive conditions and is a PRE-EXISTING engine
+convention (it applies equally to Risk Voice's session and Friday-close conditions), not something `3ec55ee`
+introduced. **Handling, fixed now:** the four portfolio cells use the engine's own convention unchanged — they are the
+production path and must stay comparable to every anchor in this log — and the vetoed-population measurement (a)
+reports the veto set under **BOTH** conventions ("signal-open" = the engine's, deciding; "fill-time" = live's,
+sensitivity), including its overlap and its counterfactual outcomes. A full live-convention portfolio arm is NOT run:
+it would need a src-level or seam-level change to the production path and is a code-fidelity question for the main
+session, not a tuning question this experiment may settle. EXP-027 will therefore state plainly, in RESULTS, that
+"EP = closest to live" is true of the MECHANISM SET but carries a one-bar timing skew in the blackout.
+(c) `blackout_active()` in the harness mirrors `risk_voice.py`'s four lines verbatim (same `get_symbol_currencies`,
+same window arithmetic, same provider) rather than re-deriving them.
+
+### 4. THE MEASUREMENTS (each is a number to be REPORTED, not a test to be passed)
+ (a) **ENTRY-BLACKOUT HIT RATE + the vetoed population's COUNTERFACTUAL — the DECIDING DESCRIPTIVE.** On the C0 trade
+     population (sequence FIXED, EXP-023 D3 / EXP-024 §6(2) methodology): how many of C0's actual entries the blackout
+     would veto (count, % of C0 trades), under both clock conventions; plus the calendar-side bar density (% of all
+     bar-hours in blackout, the analogue of EXP-024's 5.2% "elig%"). Then **what the vetoed entries actually did under
+     C0** — avgR ± SE, median, PF, win rate, worst, exit mix — against the KEPT complement, with the difference of
+     means and its SE. The diagnostic claims the blocked population is net-negative; this is where that claim is
+     confirmed or refuted on the executed population.
+ (b) **PORTFOLIO DELTAS.** All four cells per window: records, positions (unique entry times — a genuine partial close
+     emits a second record, so records ≠ positions in P/EP), PF, net$, maxDD%, avgR, PF-ex-top-5, win rate, news
+     exits. Deltas **E − C0** (the blackout's incremental effect WITHOUT protection) and **EP − P** (WITH it) — the
+     pre-registered pair — plus P − C0 and EP − E, which are free and prevent selective reporting.
+ (c) **INTERACTION HONESTY / OVERLAP.** Does the blackout mostly remove trades that protection would have truncated
+     anyway? Each C0 position is replayed with protection ON, sequence held FIXED, and flagged "affected" iff ≥1
+     protection action fires. Reported: |vetoed ∩ affected| as a % of vetoed and as a % of affected, per window and
+     pooled. Also `R(P) − R(C0)` on the vetoed subset — what the blackout removes that protection was already
+     modifying.
+ (d) **RECONCILIATION of the diagnostic's 10–13% predicted trade-count reduction vs the engine's ~5.1%** (y4:
+     254 → 241). Pre-registered decomposition, to be quantified rather than asserted: (i) ARM/DENOMINATOR — the
+     diagnostic's 10–13% is blocked entries as a fraction of **mode-A@real trade RECORDS** (36/42/37/51 against
+     391/399/358/350), while its own mode-C count is 16/20/22/17 (6.0/7.9/9.4/6.7%); (ii) CLOCK CONVENTION — the
+     diagnostic classified trades by their **entry (fill) time**, i.e. live's convention, while the engine vetoes on
+     the signal bar's open (§3(b)); (iii) SLOT DYNAMICS — with `max_positions_per_symbol: 1`, a vetoed entry FREES the
+     slot, so a later signal that C0 never had room for is taken instead: net change = −(gross vetoes) + (new entries
+     E takes that C0 never took). Measured by set-differencing C0's and E's entry timestamps, with the arithmetic
+     identity asserted in code.
+
+### 5. FIDELITY GATES — all run and reported BEFORE any E/EP number is read; any failure STOPS the experiment
+ G1 **Fast-path identity.** EXP-022's memoisation shim must be trade-for-trade, field-for-field identical to the
+    unshimmed engine on a 4,000-bar slice **in all four cells** (the shim has never been proven against
+    `model_risk_voice_news=True`).
+ G2 **C0 anchors, all four windows** (this log's universal baseline — EXP-022 cap-1.5, re-confirmed by
+    EXP-023/024/025/026 §4): **266 / 254 / 233 / 254** trades, PF **1.0159 / 0.9949 / 1.2020 / 1.0961**, maxDD
+    **14.49 / 26.12 / 12.27 / 9.9895%**; y4 net **+$352.60**.
+ G3 **P anchors, all four windows** (EXP-026 §4's `A_live` = the 2026-08-04 engine NOTE's A@real): **391 / 399 / 358 /
+    350** records, PF **1.0256 / 0.8974 / 1.1328 / 1.0667**, maxDD **13.87 / 29.11 / 15.83 / 11.4154%**; y4 net
+    **+$259.67**.
+ G4 **Conditional-replay self-check** (inherited, asserted in code): replaying each C0 position one-by-one must
+    reproduce the full-sequence C0 trade list field-for-field — without it the (c) overlap replay is untrustworthy.
+ G5 **INFORMATIONAL cross-check, not a stop:** the protection-affected count computed by (c)'s replay on the C0
+    sequence should equal EXP-024 §1's affected@real **64 / 62 / 67 / 71**, because the first-trigger logic and the
+    sequence are identical. A mismatch does not invalidate (a)/(b) — it would mean the engine's partial-close branch
+    changes which positions trigger at all — but it must be explained in RESULTS, not glossed.
+ Cell E's y4 row (241 / 1.1432 / +$490.82 / 8.82%) from `3ec55ee`'s commit message is likewise INFORMATIONAL: it is
+ this experiment's own subject matter, so reproducing it is expected, and a mismatch would mean the harness differs
+ from the CLI path and must be explained.
+
+### 6. SAMPLE-SIZE HONESTY (rule 6) AND WHAT MAY NOT BE CONCLUDED
+The vetoed population is expected to be SMALL — the diagnostic's mode-C counts imply roughly 16–22 per window, i.e.
+**every window far below rule 6's 100-trade floor, and pooled Val almost certainly below it too**. Pre-registered
+handling, identical to EXP-024 §9 and EXP-026 §6(e): per-window numbers are REPORTED but **no statement rests on a
+single window**; deciding statements pool Train (y1+y2+y3) and, separately, Val (y4); any pooled figure under 100 is
+reported in the pre-registered words **"MEASUREMENT WITH WIDE ERROR BARS"** with the SE and the 95% interval printed
+and **no significance claim made in either direction**. A Train+Val pooled figure may be printed as DESCRIPTION only.
+Explicitly forbidden here, before results exist: sub-band shopping inside the blackout window (the diagnostic §5.3's
+30–45 min cell, PF 0.558/0.031 on n=50/16, is a warning, not a lead), any statement of the form "the blackout should
+be widened/narrowed to X", and any use of a favourable EP row to argue that a control is free.
+
+### 7. DECLARED LIMITATIONS (the four inherited from EXP-024 §10/§6, plus two specific to the entry side)
+ (i) **Current-classification look-ahead.** The dump's `importance`/`event_name` are MetaQuotes' CURRENT judgement
+     applied to 2021–2025 history; an event reclassified since then is treated as high (or not) for its whole history.
+     Direction unknown, unremovable from this source.
+ (ii) **Reschedules erased** (~1% divergence measured against the live archive). Direction unknown.
+ (iii) **Live fail-safe episodes are NOT modelled, and on the ENTRY side this is bigger than on the exit side.**
+     `HistoricalNewsCalendarProvider` never returns `None`, so `check_risk_voice`'s fail-safe branch ("economic
+     calendar unavailable for USD — fail-safe veto") is structurally unreachable in this backtest, while live vetoes
+     **every** entry during such an outage — the paper journal shows 17 such vetoes in 13 days including one unbroken
+     14-hour outage. **The modeled veto rate is therefore a LOWER BOUND on live's, and by a larger margin than
+     EXP-024's protection-side lower bound.**
+ (iv) **One-bar clock skew** (§3(b)): the engine evaluates the blackout at the signal bar's open, live at that bar's
+     close. Measured, both conventions reported, not fixed here.
+ (v) **The engine checks once per signal; live checks twice** (signal-time + immediately-before-send). Per
+     `backtest/engine.py`'s own docstring both live calls read the SAME already-closed bar, so conditions 1/3/4/5 are
+     structurally near-identical between them — but condition 2 (news) IS re-queried fresh and can flip pass→veto
+     between the two calls, which the single modeled check cannot reproduce. Direction: live vetoes at least as often
+     as modeled. Same direction as (iii).
+ (vi) **H1 bar resolution.** Blackout eligibility is evaluated at one instant per bar; live polls every ~5 s. Both
+     directions.
+
+### 8. WHAT CANNOT FOLLOW FROM THIS EXPERIMENT (rule 8, restated and binding)
+Nothing here may change `config/base.yaml` or `src/`. C0 is a REFERENCE ARM describing what the backtest has always
+measured, never a candidate: "the blackout costs trades" is not a licence to disable a deliberate risk control, exactly
+as EXP-024 §11 established for mode C. No promotion/demotion gate, Auditor threshold or circuit-breaker limit is
+touched, and none will be proposed for change as a way to make any number look better — **including** the Gate-1 floors
+the honest Test baseline already showed the deployed config failing (PF 1.0845 vs 1.30, PF-ex-top-5 0.9866 vs 1.0). If
+EP looks better than P, that is a MEASUREMENT of a control's incidental effect, not evidence for a parameter change;
+any actual tuning of `news_blackout_before_min`/`after_min` would need its own pre-registration with a > 1.7 SE bar on
+Train AND Val plus per-year sign consistency — which §6's sample sizes are very unlikely to be able to deliver, and
+that is said here, before the numbers, rather than discovered afterwards.
