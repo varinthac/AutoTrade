@@ -667,7 +667,12 @@ def test_dashboard_command_spawn_launch_failure_reports_failure_without_waiting(
     assert sleep_calls == []  # never waits for a launch that never happened
 
 
-def test_dashboard_command_spawn_succeeds_but_pid_never_confirmed(monkeypatch):
+def test_dashboard_command_slow_first_start_replies_launching_not_error(monkeypatch):
+    """PID not confirmable within the short wait is the NORMAL first-start
+    path on the 1-core VPS (~20-30s pandas import -- found live 2026-08-04:
+    the old 'could not confirm ... check the console/logs' wording read as a
+    failure while the dashboard was in fact coming up fine). The reply must
+    read as in-progress guidance, never as an error."""
     monkeypatch.setattr(telegram_control.pid_file, "read", lambda pid_path=None: None)
     monkeypatch.setattr(telegram_control, "spawn_detached", lambda *a, **k: True)
     monkeypatch.setattr(telegram_control.time, "sleep", lambda sec: None)
@@ -675,7 +680,11 @@ def test_dashboard_command_spawn_succeeds_but_pid_never_confirmed(monkeypatch):
 
     reply = handle_update(_update(12345, "/dashboard"), "12345", pending, FixedClock(NOW))
 
-    assert "could not confirm" in reply.text.lower()
+    assert "launching" in reply.text.lower()
+    assert "~30s" in reply.text
+    assert "/dashboard" in reply.text  # tells the operator how to confirm
+    assert "could not confirm" not in reply.text.lower()
+    assert "error" not in reply.text.lower() and "failed" not in reply.text.lower()
 
 
 def test_unauthorized_sender_cannot_reach_dashboard_command(monkeypatch):

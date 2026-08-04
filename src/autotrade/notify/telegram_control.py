@@ -391,7 +391,16 @@ def _handle_dashboard(webapp_url: str | None, sleep_fn=None) -> str:
             f"Dashboard started (PID {new_pid}). {_dashboard_url_note(webapp_url)} "
             f"Auto-stops after {_DASHBOARD_IDLE_TTL_MINUTES} min idle."
         )
-    return "Dashboard launch requested but could not confirm it started yet -- check the console/logs."
+    # Not confirmable within the short wait -- on the 1-core VPS the
+    # pandas/Flask import alone takes ~20-30s (docs/vps_lean_plan.md P1's
+    # own risk note), so this is the NORMAL first-start path, not an error.
+    # Waiting the full 30s here would block the poll loop for every other
+    # command; instead reply honestly and let the operator re-issue
+    # /dashboard for a real confirmation (the already-running branch above).
+    return (
+        f"Dashboard launching -- first start takes ~30s on the VPS. {_dashboard_url_note(webapp_url)} "
+        f"Send /dashboard again to confirm it's up. Auto-stops after {_DASHBOARD_IDLE_TTL_MINUTES} min idle."
+    )
 
 
 def _handle_daily() -> ControlReply:
