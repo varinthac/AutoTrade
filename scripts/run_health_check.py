@@ -1,9 +1,21 @@
 #!/usr/bin/env python3
 """One-shot liveness check + auto-restart for every detached background
-service (shadow loop, dashboard, Telegram control listener, the cloudflared
-tunnel) plus the calendar-export self-heal check, meant to be invoked on a
-short repeating interval by Task Scheduler ("AutoTrade Heartbeat",
+service (shadow loop, Telegram control listener, the cloudflared tunnel)
+plus the calendar-export self-heal check, meant to be invoked on a short
+repeating interval by Task Scheduler ("AutoTrade Heartbeat",
 ops/heartbeat.ps1) rather than run as its own long-lived process.
+
+**2026-08-04 (lean-plan P1, docs/vps_lean_plan.md): the dashboard is
+deliberately NOT checked here anymore, and must never be added back.** The
+dashboard used to be always-on and auto-restarted like every other service
+below; it is now on-demand (launched via Telegram's `/dashboard` command,
+see `notify/telegram_control.py`, and self-terminating after an idle TTL,
+see `scripts/run_dashboard.py`). If a `check_and_restart("Dashboard", ...)`
+call is ever restored here, this repeating heartbeat will resurrect the
+dashboard within one cycle (as fast as every few minutes) and silently
+undo the entire point of making it on-demand -- the exact same trap the
+`manual_halt_flag` work already hit once (see finding D-3/P1 in
+docs/vps_lean_plan.md).
 
 **2026-07-28: two silent-failure incidents in one day**, followed by a
 broader audit, prompted every addition below the original three checks.
@@ -65,10 +77,6 @@ from autotrade.common.manual_halt_reminder import check_and_remind as check_manu
 from autotrade.common.scheduled_task_watchdog import check_all as check_scheduled_tasks
 from autotrade.common.service_watchdog import check_and_restart
 
-_DASHBOARD_SCRIPT = REPO_ROOT / "scripts" / "run_dashboard.py"
-_DASHBOARD_PID_PATH = REPO_ROOT / "data" / "db" / "dashboard.pid"
-_DASHBOARD_STATE_PATH = REPO_ROOT / "data" / "db" / "dashboard_watchdog_state.json"
-
 _TELEGRAM_CONTROL_SCRIPT = REPO_ROOT / "scripts" / "run_telegram_control.py"
 _TELEGRAM_CONTROL_PID_PATH = REPO_ROOT / "data" / "db" / "telegram_control.pid"
 _TELEGRAM_CONTROL_STATE_PATH = REPO_ROOT / "data" / "db" / "telegram_control_watchdog_state.json"
@@ -85,9 +93,6 @@ def main() -> int:
     running = check_loop_alive(auto_restart=True)
     pid = pid_file.read() if running else None
 
-    check_and_restart(
-        "Dashboard", _DASHBOARD_PID_PATH, _DASHBOARD_STATE_PATH, _DASHBOARD_SCRIPT, REPO_ROOT,
-    )
     check_and_restart(
         "Telegram control listener", _TELEGRAM_CONTROL_PID_PATH, _TELEGRAM_CONTROL_STATE_PATH,
         _TELEGRAM_CONTROL_SCRIPT, REPO_ROOT,

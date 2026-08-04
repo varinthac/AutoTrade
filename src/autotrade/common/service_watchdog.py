@@ -14,6 +14,15 @@ back without it on OSError), same reasoning as
 `scripts/autotrade_control.py do_start()` -- a restart triggered from
 Task Scheduler must survive regardless of what job the caller happens to
 be in.
+
+`spawn_detached()` below is that same breakaway/fallback Popen logic
+pulled out to a public function so `check_and_restart()`'s own restart
+path and `notify/telegram_control.py`'s `/dashboard` command (2026-08-04,
+lean-plan P1 -- the dashboard became on-demand instead of always-on) share
+one implementation instead of a second copy that could drift: both need a
+detached process that outlives whatever job the spawning process (Task
+Scheduler for the former, the Telegram control listener for the latter)
+happens to be running inside.
 """
 from __future__ import annotations
 
@@ -103,17 +112,30 @@ def _attempt_restart(name: str, script_path: Path, cwd: Path, extra_args: list[s
     launched process (Flask app.run() / a `while True` poll loop) runs
     forever by design, so this must never block waiting for it to exit
     (subprocess.run() would hang until the NEXT restart-triggering crash)."""
-    args = [sys.executable, str(script_path), *extra_args]
+    spawn_detached(name, script_path, cwd, extra_args)
+
+
+def spawn_detached(name: str, script_path: Path, cwd: Path, extra_args: list[str] | None = None) -> bool:
+    """Fire-and-forget `sys.executable script_path *extra_args` as a
+    detached process (see module docstring for why this is public -- shared
+    by `_attempt_restart()` above and `notify/telegram_control.py`'s
+    `/dashboard` command). Never blocks waiting for the child to exit.
+    Returns True once a Popen call succeeds (with or without the job
+    breakaway flag), False if both attempts raised."""
+    args = [sys.executable, str(script_path), *(extra_args or [])]
     try:
         subprocess.Popen(
             args, cwd=str(cwd),
             creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_BREAKAWAY_FROM_JOB,
         )
-        logger.warning("%s: auto-restart launched.", name)
+        logger.warning("%s: spawn launched.", name)
+        return True
     except OSError:
-        logger.warning("%s: restart with CREATE_BREAKAWAY_FROM_JOB failed -- retrying without it.", name)
+        logger.warning("%s: spawn with CREATE_BREAKAWAY_FROM_JOB failed -- retrying without it.", name)
         try:
             subprocess.Popen(args, cwd=str(cwd), creationflags=subprocess.CREATE_NEW_CONSOLE)
-            logger.warning("%s: auto-restart launched (without job breakaway).", name)
+            logger.warning("%s: spawn launched (without job breakaway).", name)
+            return True
         except Exception:
-            logger.exception("%s: auto-restart attempt raised an exception.", name)
+            logger.exception("%s: spawn attempt raised an exception.", name)
+            return False

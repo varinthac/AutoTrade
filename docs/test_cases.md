@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1545 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1573 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1557 (including all parametrized variants)
+- **Total Test Count**: 1585 (including all parametrized variants)
 - **Test Files**: ~59 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -39,10 +39,10 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 | | test_scoring.py | 25 |
 | | test_trivial_signal.py | 6 |
 | **Council Subtotal** | | **174** |
-| Dashboard | test_app.py | 53 |
+| Dashboard | test_app.py | 56 |
 | | test_positions.py | 6 |
 | | test_webapp_auth.py | 20 |
-| **Dashboard Subtotal** | | **79** |
+| **Dashboard Subtotal** | | **82** |
 | Execution | test_demo_adapter.py | 92 |
 | | test_noop_adapter.py | 8 |
 | **Execution Subtotal** | | **100** |
@@ -56,8 +56,8 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 | Notify | test_charts.py | 10 |
 | | test_gate_state.py | 16 |
 | | test_telegram.py | 45 |
-| | test_telegram_control.py | 82 |
-| **Notify Subtotal** | | **153** |
+| | test_telegram_control.py | 91 |
+| **Notify Subtotal** | | **162** |
 | Orchestrator | test_shadow_loop.py | 63 |
 | **Orchestrator Subtotal** | | **63** |
 | Risk | test_circuit_breaker.py | 32 |
@@ -100,18 +100,18 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 | | test_poller.py | 10 |
 | | test_run_auditor.py | 42 |
 | | test_run_backtest.py | 33 |
-| | test_run_dashboard.py | 4 |
-| | test_run_health_check.py | 5 |
+| | test_run_dashboard.py | 17 |
+| | test_run_health_check.py | 6 |
 | | test_run_scheduled_daily_report.py | 3 |
 | | test_run_shadow_loop.py | 42 |
 | | test_run_telegram_control.py | 26 |
 | | test_scheduled_task_watchdog.py | 9 |
-| | test_service_watchdog.py | 9 |
+| | test_service_watchdog.py | 11 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **443** |
+| **Scripts & CLI Subtotal** | | **467** |
 | | | |
-| **GRAND TOTAL** | | **1557** |
+| **GRAND TOTAL** | | **1585** |
 
 ---
 
@@ -603,6 +603,9 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 - test_init_data_for_a_non_operator_user_is_rejected
 - test_expired_init_data_is_rejected
 - test_established_session_grants_access_to_every_route
+- test_on_request_hook_called_once_per_request
+- test_on_request_hook_not_called_when_omitted
+- test_on_request_hook_fires_even_on_a_401_when_webapp_auth_configured
 
 ### tests/unit/dashboard/test_positions.py
 
@@ -977,6 +980,15 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 - test_positions_command_lists_multiple_positions
 - test_positions_command_returns_graceful_reply_not_exception_when_display_raises
 - test_unauthorized_sender_cannot_reach_positions_command
+- test_parse_command_dashboard
+- test_dashboard_command_already_running_reports_pid_and_url
+- test_dashboard_command_already_running_reports_no_url_when_webapp_not_configured
+- test_dashboard_command_spawns_via_the_shared_service_watchdog_helper_when_not_running
+- test_dashboard_command_spawn_launch_failure_reports_failure_without_waiting
+- test_dashboard_command_spawn_succeeds_but_pid_never_confirmed
+- test_unauthorized_sender_cannot_reach_dashboard_command
+- test_dashboard_command_never_offered_as_inline_button
+- test_help_command_lists_dashboard_command
 - test_daily_command_empty_db_returns_no_trades_message
 - test_daily_command_attaches_equity_and_daily_pnl_charts
 - test_daily_command_charts_built_from_full_trade_history_not_just_the_day
@@ -1801,10 +1813,24 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 - test_main_writes_and_removes_pid_file_around_a_clean_run
 - test_main_overwrites_stale_pid_file_from_a_no_longer_running_process
 - test_main_removes_pid_file_even_if_app_run_raises
+- test_should_shut_down_false_before_ttl_elapsed
+- test_should_shut_down_true_at_or_past_ttl
+- test_should_shut_down_zero_ttl_never_triggers
+- test_should_shut_down_negative_ttl_never_triggers
+- test_activity_tracker_touch_resets_idle_seconds_to_near_zero
+- test_activity_tracker_idle_seconds_grows_without_a_touch
+- test_idle_watchdog_exits_process_once_idle_threshold_reached
+- test_idle_watchdog_keeps_polling_without_exiting_while_active
+- test_idle_watchdog_stops_immediately_when_stop_event_already_set
+- test_main_default_idle_ttl_minutes_is_30_and_starts_a_daemon_watchdog_thread
+- test_main_idle_ttl_zero_disables_the_watchdog_thread
+- test_main_idle_ttl_negative_also_disables_the_watchdog_thread
+- test_main_passes_the_activity_tracker_touch_hook_to_create_app
 
 ### tests/unit/test_run_health_check.py
 
-- test_main_checks_shadow_loop_dashboard_and_telegram_control
+- test_main_checks_shadow_loop_and_telegram_control
+- test_main_never_checks_or_restarts_the_dashboard
 - test_main_prints_not_running_when_loop_is_down
 - test_main_passes_auto_restart_true_to_loop_check
 - test_main_checks_calendar_export_before_loop_alive_and_cloudflared
@@ -1912,6 +1938,8 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 - test_restart_falls_back_without_breakaway_flag_if_caller_job_disallows_it
 - test_restart_exception_is_logged_not_raised
 - test_unexpected_exception_in_check_is_swallowed_not_raised
+- test_spawn_detached_returns_true_on_success
+- test_spawn_detached_returns_false_when_both_attempts_raise
 - test_corrupt_state_file_is_treated_as_no_prior_state_not_a_crash
 
 ### tests/unit/test_stop_request_flag.py

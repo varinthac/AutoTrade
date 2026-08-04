@@ -22,25 +22,47 @@ other command already uses (with an empty `photos` list).
 `ControlReply` additionally carries an optional `reply_markup` -- Telegram's
 inline-keyboard structure -- for /status and /help, offering one-tap buttons
 for the read-only, always-safe commands (/positions, /trades, /daily) only.
-/start, /stop, and /emergency_stop are deliberately NEVER offered as
-buttons: those are consequential actions and must stay explicit-typed-command
--only, matching this project's "no bypassing manual safety gates" caution
-elsewhere in the codebase. `handle_callback_query()` handles a tapped
-button's resulting `callback_query` update -- `parse_callback_data()` maps
-its stable `"cmd:..."` callback data back to the same command tokens
-`parse_command()` already produces, and dispatch reuses the exact same
-`_handle_positions`/`_handle_trades`/`_handle_daily` functions `handle_update()`
-uses, so a tapped button produces an identical reply to typing the command.
+/start, /stop, /emergency_stop, and /dashboard are deliberately NEVER
+offered as buttons: /start /stop /emergency_stop are consequential actions
+that must stay explicit-typed-command-only, matching this project's "no
+bypassing manual safety gates" caution elsewhere in the codebase; /dashboard
+is grouped with them not for safety but because it spawns a background
+process the same way /start does, so it gets the same "must be typed, never
+one-tap" treatment rather than its own special case. `handle_callback_query()`
+handles a tapped button's resulting `callback_query` update --
+`parse_callback_data()` maps its stable `"cmd:..."` callback data back to
+the same command tokens `parse_command()` already produces, and dispatch
+reuses the exact same `_handle_positions`/`_handle_trades`/`_handle_daily`
+functions `handle_update()` uses, so a tapped button produces an identical
+reply to typing the command.
+
+/dashboard (2026-08-04, lean-plan P1, docs/vps_lean_plan.md) is this
+module's second accepted MT5-adjacent-package exception, alongside
+/positions: it launches `scripts/run_dashboard.py` directly via
+`common/service_watchdog.py`'s `spawn_detached()` -- the SAME
+`CREATE_BREAKAWAY_FROM_JOB` detached-spawn helper `run_health_check.py`'s
+own restart path uses -- rather than going through `gui_control`/
+`autotrade_control.py` like /start does, because the dashboard is a Flask
+process, not the shadow loop `autotrade_control.py` knows how to manage.
+Reuses `common/pid_file.py` directly (same as `scripts/run_dashboard.py`
+itself) to check whether it's already running before spawning a second,
+redundant instance. **`run_health_check.py` deliberately no longer
+auto-restarts the dashboard** (see that script's own module docstring) --
+/dashboard here is now the ONLY way to bring it back up.
 """
 from __future__ import annotations
 
 import logging
 import secrets
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from autotrade.auditor.daily_report import build_daily_report, format_daily_report
+from autotrade.common import pid_file
 from autotrade.common.clock import Clock
+from autotrade.common.config import REPO_ROOT
+from autotrade.common.service_watchdog import spawn_detached
 from autotrade.dashboard import views
 from autotrade.dashboard.positions import get_open_positions_display
 from autotrade.gui import control as gui_control
@@ -60,7 +82,9 @@ _STDERR_TRUNCATE_CHARS = 300
 # own pagination, just a smaller fixed count instead of a page param.
 _TRADES_REPLY_LIMIT = 10
 
-_COMMANDS = {"/start", "/stop", "/status", "/emergency_stop", "/trades", "/positions", "/daily", "/help"}
+_COMMANDS = {
+    "/start", "/stop", "/status", "/emergency_stop", "/trades", "/positions", "/daily", "/dashboard", "/help",
+}
 
 _USAGE_TEXT = (
     "AutoTrade control commands:\n"
@@ -70,8 +94,28 @@ _USAGE_TEXT = (
     "/emergency_stop - halt trading AND close every open position at market (requires confirmation)\n"
     "/trades - most recent 10 trades (paper mode)\n"
     "/positions - currently open positions\n"
-    "/daily - daily trade-autopsy report for the most recent recorded day"
+    "/daily - daily trade-autopsy report for the most recent recorded day\n"
+    "/dashboard - start the on-demand web dashboard (or report it's already running)"
 )
+
+# scripts/ has no __init__.py, so run_dashboard.py is a path, not an import
+# -- same convention common/service_watchdog.py's own script_path arguments
+# already use. PID path matches scripts/run_dashboard.py's own PID_PATH
+# exactly (both must agree on where the running instance records itself).
+_DASHBOARD_SCRIPT = REPO_ROOT / "scripts" / "run_dashboard.py"
+_DASHBOARD_PID_PATH = REPO_ROOT / "data" / "db" / "dashboard.pid"
+
+# How long to wait after spawning before checking whether it actually came
+# up -- run_dashboard.py's own PID-file write happens early in main(), well
+# before Flask's (slower, pandas/MetaTrader5-importing) app.run(), so this
+# only needs to cover process-launch latency, not a full server-ready wait.
+_DASHBOARD_SPAWN_CONFIRM_WAIT_SEC = 3
+
+# Duplicated from scripts/run_dashboard.py's own _DEFAULT_IDLE_TTL_MINUTES
+# (scripts/ has no __init__.py to import it from) -- same "kept in sync by
+# hand, no shared source of truth" convention scripts/run_telegram_control.py's
+# own _BOT_COMMANDS comment already documents for the same reason.
+_DASHBOARD_IDLE_TTL_MINUTES = 30
 
 
 @dataclass(frozen=True)
@@ -304,6 +348,52 @@ def _handle_positions() -> str:
     return "\n".join(lines)
 
 
+def _dashboard_url_note(webapp_url: str | None) -> str:
+    # Same "unconfigured == omit, never crash" pattern as
+    # _quick_access_keyboard()'s own webapp_url handling -- WEBAPP_URL is
+    # loaded once at scripts/run_telegram_control.py's own startup
+    # (common/config.py's load_webapp_url()) and threaded through here as
+    # the same `webapp_url` param /status and /help already receive, rather
+    # than this module re-reading .env or hardcoding trade.kylerlink.com.
+    return f"URL: {webapp_url}" if webapp_url else "No WEBAPP_URL configured in .env -- no clickable link available."
+
+
+def _handle_dashboard(webapp_url: str | None, sleep_fn=None) -> str:
+    # `sleep_fn or time.sleep`, not a `time.sleep` default argument value --
+    # a default is bound once at function-definition time, so it would
+    # capture the ORIGINAL time.sleep and stay unaffected by a test's own
+    # `monkeypatch.setattr(telegram_control.time, "sleep", ...)` (a common
+    # gotcha with mutable/callable default arguments).
+    sleep_fn = sleep_fn or time.sleep
+
+    # Mirrors scripts/run_dashboard.py's own double-launch guard (same
+    # pid_file.read() + is_pid_running() pair) rather than blindly spawning
+    # -- a second Flask instance would just fail to bind the port anyway,
+    # but checking first lets this reply usefully report "already running"
+    # instead of a spurious launch attempt.
+    existing_pid = pid_file.read(_DASHBOARD_PID_PATH)
+    if existing_pid is not None and pid_file.is_pid_running(existing_pid):
+        return f"Dashboard already running (PID {existing_pid}). {_dashboard_url_note(webapp_url)}"
+
+    if not spawn_detached("Dashboard", _DASHBOARD_SCRIPT, REPO_ROOT):
+        return "Failed to launch the dashboard -- check the console/logs."
+
+    # A brief wait for run_dashboard.py's own PID-file write (early in its
+    # main(), well before Flask's app.run()) so this reply can confirm a
+    # real PID rather than always claiming success the instant Popen()
+    # returns (which only proves the OS accepted the launch request, not
+    # that the script itself came up).
+    sleep_fn(_DASHBOARD_SPAWN_CONFIRM_WAIT_SEC)
+
+    new_pid = pid_file.read(_DASHBOARD_PID_PATH)
+    if new_pid is not None and pid_file.is_pid_running(new_pid):
+        return (
+            f"Dashboard started (PID {new_pid}). {_dashboard_url_note(webapp_url)} "
+            f"Auto-stops after {_DASHBOARD_IDLE_TTL_MINUTES} min idle."
+        )
+    return "Dashboard launch requested but could not confirm it started yet -- check the console/logs."
+
+
 def _handle_daily() -> ControlReply:
     # Same failure-reply guarantee as _handle_trades, and for the same
     # reason (run_poll_loop's offset advancement means an uncaught exception
@@ -375,6 +465,8 @@ def handle_update(
         return ControlReply(text=_handle_positions())
     if command == "/daily":
         return _handle_daily()
+    if command == "/dashboard":
+        return ControlReply(text=_handle_dashboard(webapp_url))
     if command == "/help":
         return ControlReply(text=_USAGE_TEXT, reply_markup=_quick_access_keyboard(webapp_url))
 

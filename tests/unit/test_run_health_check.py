@@ -6,6 +6,12 @@ auto-restart enabled and prints the same status line autotrade_control.py
 status already does. scripts/ has no __init__.py, so the script is loaded
 directly via importlib, same pattern as tests/unit/test_run_shadow_loop.py.
 
+2026-08-04 (lean-plan P1, docs/vps_lean_plan.md): the dashboard was removed
+from this script's check_and_restart cycle -- it is on-demand now, not
+always-on, and this heartbeat must never resurrect it (see the script's own
+module docstring). `test_main_never_checks_or_restarts_the_dashboard` below
+is a standing regression guard for exactly that trap.
+
 Every check other than the one under direct test is stubbed out in every
 test here, not just the ones a given test cares about -- `check_calendar_export`,
 `check_cloudflared`, `check_kill_switch_reminder`, `check_manual_halt_reminder`,
@@ -37,7 +43,7 @@ def _stub_common(monkeypatch, loop_running: bool = True, pid: int | None = 4242)
     monkeypatch.setattr(run_health_check.pid_file, "read", lambda: pid)
 
 
-def test_main_checks_shadow_loop_dashboard_and_telegram_control(monkeypatch, capsys):
+def test_main_checks_shadow_loop_and_telegram_control(monkeypatch, capsys):
     _stub_common(monkeypatch, loop_running=True, pid=4242)
     service_calls = []
     monkeypatch.setattr(
@@ -48,8 +54,28 @@ def test_main_checks_shadow_loop_dashboard_and_telegram_control(monkeypatch, cap
     exit_code = run_health_check.main()
 
     assert exit_code == 0
-    assert service_calls == ["Dashboard", "Telegram control listener"]
+    assert service_calls == ["Telegram control listener"]
     assert "RUNNING (PID 4242)" in capsys.readouterr().out
+
+
+def test_main_never_checks_or_restarts_the_dashboard(monkeypatch, capsys):
+    # 2026-08-04 (lean-plan P1): standing regression guard -- the dashboard
+    # is on-demand now, and this heartbeat resurrecting it within one cycle
+    # would silently undo the whole point (see this script's own module
+    # docstring, and docs/vps_lean_plan.md's P1 section).
+    _stub_common(monkeypatch, loop_running=True, pid=4242)
+    service_calls = []
+    monkeypatch.setattr(
+        run_health_check, "check_and_restart",
+        lambda name, pid_path, state_path, script, cwd: service_calls.append(name) or True,
+    )
+
+    run_health_check.main()
+
+    assert "Dashboard" not in service_calls
+    assert not hasattr(run_health_check, "_DASHBOARD_SCRIPT")
+    assert not hasattr(run_health_check, "_DASHBOARD_PID_PATH")
+    assert not hasattr(run_health_check, "_DASHBOARD_STATE_PATH")
 
 
 def test_main_prints_not_running_when_loop_is_down(monkeypatch, capsys):

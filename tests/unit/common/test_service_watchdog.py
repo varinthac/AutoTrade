@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from autotrade.common import pid_file as pid_file_module
 from autotrade.common import service_watchdog as service_watchdog_module
-from autotrade.common.service_watchdog import check_and_restart
+from autotrade.common.service_watchdog import check_and_restart, spawn_detached
 
 
 def _stub_running(monkeypatch, value: bool):
@@ -167,6 +167,27 @@ def test_unexpected_exception_in_check_is_swallowed_not_raised(monkeypatch, tmp_
     result = check_and_restart(
         "Dashboard", tmp_path / "d.pid", tmp_path / "state.json", tmp_path / "run_dashboard.py", tmp_path,
     )
+
+    assert result is False
+
+
+def test_spawn_detached_returns_true_on_success(monkeypatch, tmp_path):
+    popen_calls = _capture_popen(monkeypatch)
+    script = tmp_path / "run_dashboard.py"
+
+    result = spawn_detached("Dashboard", script, tmp_path)
+
+    assert result is True
+    assert len(popen_calls) == 1
+    args, kwargs = popen_calls[0]
+    assert str(script) in args
+    assert kwargs["cwd"] == str(tmp_path)
+
+
+def test_spawn_detached_returns_false_when_both_attempts_raise(monkeypatch, tmp_path):
+    monkeypatch.setattr(service_watchdog_module.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError()))
+
+    result = spawn_detached("Dashboard", tmp_path / "run_dashboard.py", tmp_path)
 
     assert result is False
 

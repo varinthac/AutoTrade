@@ -226,7 +226,16 @@ situation (the same one retail forex VPS hosts use for MT4/MT5):
        after every reboot with no human needing to RDP in. Use Sysinternals
        Autologon.exe (safer than hand-editing the registry -- it encrypts
        the stored password via LSA secrets rather than plaintext registry).
-2. [ ] Create three Task Scheduler tasks, each:
+2. [ ] Create two Task Scheduler tasks (shadow loop, Telegram control) --
+       **do NOT create a third "AutoTrade Dashboard" logon task.** 2026-08-04
+       (lean-plan P1, docs/vps_lean_plan.md): the dashboard is on-demand now,
+       started via Telegram's `/dashboard` command and self-terminating
+       after an idle TTL (`scripts/run_dashboard.py --idle-ttl-minutes`); an
+       "At log on" task for it would defeat the entire point by starting it
+       unconditionally on every boot/logon again. If this task already
+       exists from before 2026-08-04, disable/delete it (`schtasks /Change
+       /TN "AutoTrade Dashboard" /DISABLE` or `/Delete`). Each surviving
+       task:
        - Trigger: "At log on", specific user = the dedicated account,
          with a 1-2 minute delay ("Delay task for" under trigger settings)
          so networking is up before MT5 tries to connect.
@@ -242,7 +251,6 @@ situation (the same one retail forex VPS hosts use for MT4/MT5):
            (this itself launches run_shadow_loop.py --adapter demo detached
            in its own console and returns immediately, per
            scripts/autotrade_control.py's do_start()).
-         - Dashboard: `"C:\AutoTrade\.venv\Scripts\python.exe" "C:\AutoTrade\scripts\run_dashboard.py"`
          - Telegram control: `"C:\AutoTrade\.venv\Scripts\python.exe" "C:\AutoTrade\scripts\run_telegram_control.py"`
 3. [ ] Never click "Sign out"/"Log off" on the VPS. Always disconnect the
        RDP session (the X button, or Start > Disconnect) instead --

@@ -592,6 +592,125 @@ def test_unauthorized_sender_cannot_reach_positions_command(monkeypatch):
     assert reply is None
 
 
+# --- /dashboard ---------------------------------------------------------
+
+
+def test_parse_command_dashboard():
+    assert parse_command("/dashboard") == "/dashboard"
+
+
+def test_dashboard_command_already_running_reports_pid_and_url(monkeypatch):
+    monkeypatch.setattr(telegram_control.pid_file, "read", lambda pid_path=None: 555)
+    monkeypatch.setattr(telegram_control.pid_file, "is_pid_running", lambda pid: True)
+    spawn_calls = []
+    monkeypatch.setattr(telegram_control, "spawn_detached", lambda *a, **k: spawn_calls.append(1) or True)
+    pending = PendingConfirmation()
+
+    reply = handle_update(
+        _update(12345, "/dashboard"), "12345", pending, FixedClock(NOW), webapp_url="https://trade.kylerlink.com",
+    )
+
+    assert "555" in reply.text
+    assert "already running" in reply.text.lower()
+    assert "https://trade.kylerlink.com" in reply.text
+    assert spawn_calls == []  # already up -- must never spawn a second instance
+
+
+def test_dashboard_command_already_running_reports_no_url_when_webapp_not_configured(monkeypatch):
+    monkeypatch.setattr(telegram_control.pid_file, "read", lambda pid_path=None: 555)
+    monkeypatch.setattr(telegram_control.pid_file, "is_pid_running", lambda pid: True)
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/dashboard"), "12345", pending, FixedClock(NOW))
+
+    assert "555" in reply.text
+    assert "WEBAPP_URL" in reply.text
+
+
+def test_dashboard_command_spawns_via_the_shared_service_watchdog_helper_when_not_running(monkeypatch):
+    pids = iter([None, 777])
+    monkeypatch.setattr(telegram_control.pid_file, "read", lambda pid_path=None: next(pids))
+    monkeypatch.setattr(telegram_control.pid_file, "is_pid_running", lambda pid: True)
+    spawn_calls = []
+    monkeypatch.setattr(
+        telegram_control, "spawn_detached",
+        lambda name, script, cwd: spawn_calls.append((name, script, cwd)) or True,
+    )
+    sleep_calls = []
+    monkeypatch.setattr(telegram_control.time, "sleep", lambda sec: sleep_calls.append(sec))
+    pending = PendingConfirmation()
+
+    reply = handle_update(
+        _update(12345, "/dashboard"), "12345", pending, FixedClock(NOW), webapp_url="https://trade.kylerlink.com",
+    )
+
+    assert len(spawn_calls) == 1
+    assert spawn_calls[0][0] == "Dashboard"
+    assert str(spawn_calls[0][1]).endswith("run_dashboard.py")
+    assert sleep_calls == [telegram_control._DASHBOARD_SPAWN_CONFIRM_WAIT_SEC]
+    assert "started" in reply.text.lower()
+    assert "777" in reply.text
+    assert "https://trade.kylerlink.com" in reply.text
+    assert "idle" in reply.text.lower()
+
+
+def test_dashboard_command_spawn_launch_failure_reports_failure_without_waiting(monkeypatch):
+    monkeypatch.setattr(telegram_control.pid_file, "read", lambda pid_path=None: None)
+    monkeypatch.setattr(telegram_control, "spawn_detached", lambda *a, **k: False)
+    sleep_calls = []
+    monkeypatch.setattr(telegram_control.time, "sleep", lambda sec: sleep_calls.append(sec))
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/dashboard"), "12345", pending, FixedClock(NOW))
+
+    assert "failed" in reply.text.lower()
+    assert sleep_calls == []  # never waits for a launch that never happened
+
+
+def test_dashboard_command_spawn_succeeds_but_pid_never_confirmed(monkeypatch):
+    monkeypatch.setattr(telegram_control.pid_file, "read", lambda pid_path=None: None)
+    monkeypatch.setattr(telegram_control, "spawn_detached", lambda *a, **k: True)
+    monkeypatch.setattr(telegram_control.time, "sleep", lambda sec: None)
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/dashboard"), "12345", pending, FixedClock(NOW))
+
+    assert "could not confirm" in reply.text.lower()
+
+
+def test_unauthorized_sender_cannot_reach_dashboard_command(monkeypatch):
+    monkeypatch.setattr(telegram_control.pid_file, "read", lambda pid_path=None: 555)
+    monkeypatch.setattr(telegram_control.pid_file, "is_pid_running", lambda pid: True)
+    spawn_calls = []
+    monkeypatch.setattr(telegram_control, "spawn_detached", lambda *a, **k: spawn_calls.append(1) or True)
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(99999, "/dashboard"), "12345", pending, FixedClock(NOW))
+
+    assert reply is None
+    assert spawn_calls == []
+
+
+def test_dashboard_command_never_offered_as_inline_button():
+    # Grouped with /start/stop/emergency_stop, not the read-only quick-access
+    # trio -- see module docstring for why (spawns a process, same as /start).
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/status"), "12345", pending, FixedClock(NOW))
+
+    buttons = reply.reply_markup["inline_keyboard"][0]
+    callback_data = {button["callback_data"] for button in buttons}
+    assert "cmd:dashboard" not in callback_data
+
+
+def test_help_command_lists_dashboard_command():
+    pending = PendingConfirmation()
+
+    reply = handle_update(_update(12345, "/help"), "12345", pending, FixedClock(NOW))
+
+    assert "/dashboard" in reply.text
+
+
 def test_daily_command_empty_db_returns_no_trades_message(db_path):
     pending = PendingConfirmation()
 

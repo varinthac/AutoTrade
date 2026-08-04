@@ -67,6 +67,7 @@ _BOT_COMMANDS = [
     ("trades", "Most recent 10 trades (paper mode)"),
     ("positions", "Currently open positions"),
     ("daily", "Daily trade-autopsy report for the most recent recorded day"),
+    ("dashboard", "Start the on-demand web dashboard (or report it's already running)"),
     ("help", "Show this help text"),
 ]
 

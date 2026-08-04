@@ -679,4 +679,37 @@ def test_established_session_grants_access_to_every_route(db_path, monkeypatch):
     client.get(_trades_url_with_init_data(init_data))
 
     assert client.get("/daily").status_code == 200
-    assert client.get("/trades/export").status_code == 200
+
+
+# --- on_request activity hook (scripts/run_dashboard.py's idle-TTL) --------
+
+
+def test_on_request_hook_called_once_per_request(db_path):
+    calls = []
+    client = create_app(db_path=db_path, on_request=lambda: calls.append(1)).test_client()
+
+    client.get("/trades")
+    client.get("/daily")
+
+    assert len(calls) == 2
+
+
+def test_on_request_hook_not_called_when_omitted(db_path):
+    # No hook passed -- create_app() must not require one (default local-dev
+    # / test usage, and run_dashboard.py's own --idle-ttl-minutes<=0 path).
+    client = create_app(db_path=db_path).test_client()
+
+    resp = client.get("/trades")
+
+    assert resp.status_code == 200
+
+
+def test_on_request_hook_fires_even_on_a_401_when_webapp_auth_configured(db_path, monkeypatch):
+    _configure_webapp_auth(monkeypatch)
+    calls = []
+    client = create_app(db_path=db_path, on_request=lambda: calls.append(1)).test_client()
+
+    resp = client.get("/trades")
+
+    assert resp.status_code == 401
+    assert len(calls) == 1

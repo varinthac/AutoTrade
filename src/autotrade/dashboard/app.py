@@ -21,6 +21,7 @@ import io
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Callable
 
 import MetaTrader5 as mt5
 import pandas as pd
@@ -90,9 +91,19 @@ def get_current_server_time() -> datetime | None:
         return None
 
 
-def create_app(db_path: Path | None = None) -> Flask:
+def create_app(db_path: Path | None = None, on_request: Callable[[], None] | None = None) -> Flask:
     app = Flask(__name__)
     resolved_db_path = db_path if db_path is not None else DEFAULT_PAPER_DB_PATH
+
+    if on_request is not None:
+        # `scripts/run_dashboard.py`'s idle-TTL auto-shutdown watchdog hooks
+        # in here -- every inbound request, authorized or not, counts as
+        # activity, matching "any HTTP hit keeps it alive" rather than only
+        # successfully-authenticated ones. Registered before the auth hook
+        # below so it still fires on a request that `abort(401)`s.
+        @app.before_request
+        def _touch_activity():
+            on_request()
 
     telegram_creds = load_telegram_credentials()
     if telegram_creds is not None:
