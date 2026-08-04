@@ -169,6 +169,29 @@ def evaluate_backtest_to_paper_gate(
                 "by default) before this gate can be evaluated."
             ),
         ))
+    if not report_envelope.news_protection_modeled:
+        hard_fail_criteria.append(CriterionResult(
+            name="news_protection_modeled", passed=False, actual=False, threshold="True",
+            note=(
+                "Backtest without Watchman's news protection modeled never exercised live's mode A "
+                "close/reduce-around-high-impact-news behavior -- EXP-024 "
+                "(experiments/experiments_log.md's 2026-08-04 NOTE + RESULTS) measured the real "
+                "trigger rate at ~26-28% of trades, not negligible. Re-run scripts/run_backtest.py "
+                "(news protection is now modeled by default) before this gate can be evaluated."
+            ),
+        ))
+    if not report_envelope.risk_voice_news_modeled:
+        hard_fail_criteria.append(CriterionResult(
+            name="risk_voice_news_modeled", passed=False, actual=False, threshold="True",
+            note=(
+                "Backtest without Risk Voice's OWN news-entry blackout modeled (a separate "
+                "mechanism from news_protection_modeled -- different Council persona/window, not "
+                "implied by risk_voice_modeled) never exercised that veto -- EXP-027 "
+                "(experiments/experiments_log.md's 2026-08-04 NOTE + RESULTS) measured it vetoing "
+                "~13-14% of entries. Re-run scripts/run_backtest.py (risk_voice_news is now modeled "
+                "by default) before this gate can be evaluated."
+            ),
+        ))
     if hard_fail_criteria:
         return GateResult(
             passed=False, criteria=hard_fail_criteria,

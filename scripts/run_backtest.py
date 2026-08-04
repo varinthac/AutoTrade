@@ -23,12 +23,15 @@ Risk Voice (`council/risk_voice.py`) is always modeled, using
 `config/base.yaml`'s `risk_voice:` thresholds -- see `backtest/engine.py`'s
 module docstring for exactly which of its 6 conditions are faithfully
 replayed here by default. Risk Voice's OWN news-entry blackout (condition 2)
-is OPT-IN via `--model-risk-voice-news` (shares `--news-calendar-path` with
-`--model-news-protection` below, an independent flag): builds
-`BacktestConfig.model_risk_voice_news=True` plus a
-`HistoricalNewsCalendarProvider` over that path. Omit the flag to leave it
-unmodeled (envelope `risk_voice_news_modeled=false`), this CLI's prior
-default behavior.
+is modeled BY DEFAULT, as of 2026-08-04 (Gate-1's 6th modeling-honesty
+hard-fail, `auditor/promotion.py`'s `risk_voice_news_modeled` criterion):
+builds `BacktestConfig.model_risk_voice_news=True` plus a
+`HistoricalNewsCalendarProvider` over `--news-calendar-path` (default:
+`scripts/build_backtest_calendar.py`'s canonical output, shared with
+`--model-news-protection` below, an independent mechanism). Pass
+`--no-model-risk-voice-news` to leave it unmodeled (envelope
+`risk_voice_news_modeled=false`) for tooling/experiments -- Gate-1 will then
+refuse the resulting envelope, by design.
 
 Watchman's exit management (breakeven/trail/structure-invalidation/time-stop)
 is likewise always modeled, using `config/base.yaml`'s `watchman:` block --
@@ -41,15 +44,19 @@ docstring for exactly which of Shield's 6 rules have real effect in this
 single-position engine (only the cooldown does; the other 5 are structurally
 inert here).
 
-Watchman's news protection is OPT-IN via `--model-news-protection` (unlike
-the three above, since it needs a real calendar file this CLI cannot assume
-exists everywhere -- see `backtest/historical_news_calendar.py`'s module
-docstring): builds `config/base.yaml`'s `watchman:` `news_*` thresholds into
-a `NewsProtectionConfig` plus a `HistoricalNewsCalendarProvider` over
-`--news-calendar-path` (default: `scripts/build_backtest_calendar.py`'s
-canonical output). Omit the flag to leave it unmodeled
-(`news_protection_modeled=false` in the envelope), this CLI's prior default
-behavior.
+Watchman's news protection is likewise modeled BY DEFAULT, as of 2026-08-04
+(Gate-1's 6th modeling-honesty hard-fail, `auditor/promotion.py`'s
+`news_protection_modeled` criterion): builds `config/base.yaml`'s
+`watchman:` `news_*` thresholds into a `NewsProtectionConfig` plus a
+`HistoricalNewsCalendarProvider` over `--news-calendar-path` (default:
+`scripts/build_backtest_calendar.py`'s canonical output). If that file does
+not exist, this CLI EXITS with an actionable error naming
+`scripts/build_backtest_calendar.py` -- it never silently falls back to
+running unmodeled (the exact "mode C reverts silently" bug class this
+default-on change exists to kill). Pass `--no-model-news-protection` to
+leave it unmodeled (envelope `news_protection_modeled=false`) for
+tooling/experiments -- Gate-1 will then refuse the resulting envelope, by
+design.
 """
 from __future__ import annotations
 
@@ -299,23 +306,27 @@ def main() -> int:
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
-        "--model-news-protection", action="store_true",
+        "--model-news-protection", action=argparse.BooleanOptionalAction, default=True,
         help="Model Watchman's news protection (`watchman/news_protection.py`, live 'mode A') against the "
-             "real historical calendar built by scripts/build_backtest_calendar.py. Omit to leave it "
-             "unmodeled (envelope news_protection_modeled=false), the prior default behavior.",
+             "real historical calendar built by scripts/build_backtest_calendar.py. Modeled by DEFAULT "
+             "(honesty-first, as of 2026-08-04) -- pass --no-model-news-protection to leave it unmodeled "
+             "(envelope news_protection_modeled=false) for tooling/experiments; Gate-1 will then refuse "
+             "the resulting envelope, by design.",
     )
     parser.add_argument(
-        "--model-risk-voice-news", action="store_true",
+        "--model-risk-voice-news", action=argparse.BooleanOptionalAction, default=True,
         help="Model Risk Voice's OWN news-entry blackout (`council/risk_voice.py` condition 2, "
              "news_blackout_before_min/news_blackout_after_min) against the real historical calendar built "
              "by scripts/build_backtest_calendar.py. Independent of --model-news-protection (a separate "
-             "mechanism); may be given alone or combined. Omit to leave it unmodeled (envelope "
-             "risk_voice_news_modeled=false), the prior default behavior.",
+             "mechanism); modeled by DEFAULT (honesty-first, as of 2026-08-04) -- pass "
+             "--no-model-risk-voice-news to leave it unmodeled (envelope risk_voice_news_modeled=false) "
+             "for tooling/experiments; Gate-1 will then refuse the resulting envelope, by design.",
     )
     parser.add_argument(
         "--news-calendar-path", type=Path, default=DEFAULT_NEWS_CALENDAR,
-        help="Canonical historical calendar CSV (scripts/build_backtest_calendar.py's output). Only read "
-             "when --model-news-protection and/or --model-risk-voice-news is given.",
+        help="Canonical historical calendar CSV (scripts/build_backtest_calendar.py's output). Read "
+             "whenever --model-news-protection and/or --model-risk-voice-news is in effect (true by "
+             "default -- see above).",
     )
     args = parser.parse_args()
 
@@ -376,19 +387,25 @@ def main() -> int:
         duplicate_signal_cooldown_hours=cfg["shield"]["duplicate_signal_cooldown_hours"],
     )
 
-    # Opt-in (unlike risk_voice_cfg/watchman_cfg/shield_cfg above): both news
+    # Modeled by DEFAULT (honesty-first, as of 2026-08-04): both news
     # mechanisms need a real calendar file built by
     # scripts/build_backtest_calendar.py, which is not guaranteed to exist on
-    # every machine that runs this CLI (see backtest/historical_news_calendar.py).
-    # The two flags are independent but share one HistoricalNewsCalendarProvider
-    # instance when both are given.
+    # every machine that runs this CLI (see backtest/historical_news_calendar.py)
+    # -- a missing file is a hard EXIT here, never a silent fall-back to
+    # unmodeled (that silent fallback is the exact bug class this default-on
+    # behavior exists to kill). Pass --no-model-news-protection AND
+    # --no-model-risk-voice-news to explicitly opt out instead (Gate-1 will
+    # then refuse the resulting envelope). The two flags are independent but
+    # share one HistoricalNewsCalendarProvider instance when both are in effect.
     news_protection_cfg = None
     news_calendar = None
     if args.model_news_protection or args.model_risk_voice_news:
         if not args.news_calendar_path.exists():
             logger.error(
-                "--model-news-protection/--model-risk-voice-news given but no calendar at %s -- run "
-                "scripts/build_backtest_calendar.py first.", args.news_calendar_path,
+                "News modeling is on by default (--model-news-protection/--model-risk-voice-news) but "
+                "no calendar exists at %s -- run scripts/build_backtest_calendar.py first, or pass "
+                "--no-model-news-protection --no-model-risk-voice-news to explicitly opt out (Gate-1 "
+                "will then refuse the resulting envelope).", args.news_calendar_path,
             )
             return 1
         news_calendar = HistoricalNewsCalendarProvider(args.news_calendar_path)

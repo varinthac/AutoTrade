@@ -386,6 +386,7 @@ _FAKE_MAIN_CFG = {
         "breakeven_at_r": 1.5, "trail_start_r": 2.0, "trail_distance_atr": 1.2,
         "time_stop_hours": 36.0, "dead_trade_r_band": 0.25,
         "breakeven_enabled": False, "trail_enabled": False,
+        "news_window_minutes": 45, "news_profit_threshold_r": 0.75, "news_close_mode": "half",
     },
     "shield": {
         "min_rr": 1.8, "max_correlation": 0.6, "max_positions_per_symbol": 2,
@@ -419,7 +420,10 @@ def test_main_requires_commission_per_lot_argument(monkeypatch, tmp_path):
 
 def test_main_constructs_risk_voice_cfg_from_config_with_every_field_mapped_correctly(monkeypatch, tmp_path):
     _patch_main_wiring(monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}]))
-    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0"])
+    monkeypatch.setattr(sys, "argv", [
+        "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0",
+        "--no-model-news-protection", "--no-model-risk-voice-news",
+    ])
 
     captured = {}
 
@@ -450,7 +454,10 @@ def test_main_constructs_risk_voice_cfg_from_config_with_every_field_mapped_corr
 
 def test_main_constructs_watchman_cfg_from_config_with_every_field_mapped_correctly(monkeypatch, tmp_path):
     _patch_main_wiring(monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}]))
-    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0"])
+    monkeypatch.setattr(sys, "argv", [
+        "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0",
+        "--no-model-news-protection", "--no-model-risk-voice-news",
+    ])
 
     captured = {}
 
@@ -479,7 +486,10 @@ def test_main_constructs_watchman_cfg_from_config_with_every_field_mapped_correc
 
 def test_main_constructs_shield_cfg_from_config_with_every_field_mapped_correctly(monkeypatch, tmp_path):
     _patch_main_wiring(monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}]))
-    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0"])
+    monkeypatch.setattr(sys, "argv", [
+        "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0",
+        "--no-model-news-protection", "--no-model-risk-voice-news",
+    ])
 
     captured = {}
 
@@ -511,7 +521,10 @@ def test_main_threads_pivot_bars_from_config_into_run_and_persist(monkeypatch, t
     # all fail this -- _FAKE_MAIN_CFG's global.swing_pivot_bars=7 is a
     # distinct value from that default specifically to catch that.
     _patch_main_wiring(monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}]))
-    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0"])
+    monkeypatch.setattr(sys, "argv", [
+        "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0",
+        "--no-model-news-protection", "--no-model-risk-voice-news",
+    ])
 
     captured = {}
 
@@ -533,7 +546,10 @@ def test_main_threads_min_lot_risk_cap_pct_from_config_into_run_and_persist(monk
     # config) would all fail this -- _FAKE_MAIN_CFG's cfo.min_lot_risk_cap_pct
     # =1.25 is a distinct value from that default specifically to catch that.
     _patch_main_wiring(monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}]))
-    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0"])
+    monkeypatch.setattr(sys, "argv", [
+        "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0",
+        "--no-model-news-protection", "--no-model-risk-voice-news",
+    ])
 
     captured = {}
 
@@ -553,6 +569,7 @@ def test_main_min_lot_risk_cap_pct_cli_override_takes_precedence_over_config(mon
     _patch_main_wiring(monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}]))
     monkeypatch.setattr(sys, "argv", [
         "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0", "--min-lot-risk-cap-pct", "2.0",
+        "--no-model-news-protection", "--no-model-risk-voice-news",
     ])
 
     captured = {}
@@ -576,6 +593,7 @@ def test_main_writes_an_envelope_with_risk_voice_modeled_true(monkeypatch, tmp_p
     output_dir = tmp_path / "backtest_reports"
     monkeypatch.setattr(sys, "argv", [
         "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0", "--output-dir", str(output_dir),
+        "--no-model-news-protection", "--no-model-risk-voice-news",
     ])
 
     exit_code = run_backtest_script.main()
@@ -586,6 +604,8 @@ def test_main_writes_an_envelope_with_risk_voice_modeled_true(monkeypatch, tmp_p
     assert envelope.risk_voice_modeled is True
     assert envelope.watchman_exits_modeled is True
     assert envelope.shield_modeled is True
+    assert envelope.news_protection_modeled is False  # --no-model-news-protection given
+    assert envelope.risk_voice_news_modeled is False  # --no-model-risk-voice-news given
     assert envelope.min_lot_risk_cap_pct == 1.25  # _FAKE_MAIN_CFG's cfo.min_lot_risk_cap_pct
 
 
@@ -604,6 +624,7 @@ def test_main_with_commission_zero_writes_envelope_with_cost_model_complete_true
     monkeypatch.setattr(sys, "argv", [
         "run_backtest.py", "XAUUSD", "--commission-per-lot", "0.0", "--output-dir", str(output_dir),
         "--swap-long-per-lot", "-53.2", "--swap-short-per-lot", "36.8",
+        "--no-model-news-protection", "--no-model-risk-voice-news",
     ])
 
     exit_code = run_backtest_script.main()
@@ -637,7 +658,7 @@ def test_main_threads_model_risk_voice_news_flag_into_run_and_persist(monkeypatc
     calendar_path = _write_news_calendar_csv(tmp_path, ["2026-01-06 00:30:00,USD,high,Event,,,"])
     monkeypatch.setattr(sys, "argv", [
         "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0",
-        "--model-risk-voice-news", "--news-calendar-path", str(calendar_path),
+        "--model-risk-voice-news", "--no-model-news-protection", "--news-calendar-path", str(calendar_path),
     ])
 
     captured = {}
@@ -660,10 +681,17 @@ def test_main_threads_model_risk_voice_news_flag_into_run_and_persist(monkeypatc
     assert captured["news_protection_cfg"] is None
 
 
-def test_main_model_risk_voice_news_defaults_to_false_and_builds_no_calendar(monkeypatch, tmp_path):
+def test_main_defaults_to_modeling_both_news_mechanisms_against_the_default_calendar_path(monkeypatch, tmp_path):
+    # 2026-08-04: honesty-first default -- neither --model-news-protection nor
+    # --model-risk-voice-news is given at all here, yet both must come out
+    # True, reading DEFAULT_NEWS_CALENDAR (patched below to a controlled tmp
+    # file so this test doesn't depend on the real, gitignored
+    # data/historical/news_calendar_backtest.csv).
     _patch_main_wiring(
         monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}])
     )
+    calendar_path = _write_news_calendar_csv(tmp_path, ["2000-01-01 00:00:00,USD,high,Event,,,"])
+    monkeypatch.setattr(run_backtest_script, "DEFAULT_NEWS_CALENDAR", calendar_path)
     monkeypatch.setattr(sys, "argv", ["run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0"])
 
     captured = {}
@@ -671,6 +699,62 @@ def test_main_model_risk_voice_news_defaults_to_false_and_builds_no_calendar(mon
     def _fake_run_and_persist(*args, **kwargs):
         captured["model_risk_voice_news"] = kwargs.get("model_risk_voice_news")
         captured["news_calendar"] = kwargs.get("news_calendar")
+        captured["news_protection_cfg"] = kwargs.get("news_protection_cfg")
+        return tmp_path / "envelope.json"
+
+    monkeypatch.setattr(run_backtest_script, "run_and_persist", _fake_run_and_persist)
+
+    exit_code = run_backtest_script.main()
+
+    assert exit_code == 0
+    assert captured["model_risk_voice_news"] is True
+    assert captured["news_calendar"] is not None
+    npc = captured["news_protection_cfg"]
+    assert npc is not None
+    # Field-by-field against _FAKE_MAIN_CFG's distinct watchman news_* values
+    # -- catches a KeyError/swapped-field/silently-skipped mapping.
+    assert npc.news_window_minutes == 45
+    assert npc.profit_threshold_r == 0.75
+    assert npc.close_mode == "half"
+
+
+def test_main_no_model_flags_given_missing_default_calendar_exits_with_actionable_error(monkeypatch, tmp_path, caplog):
+    # The silent-fallback bug class this whole change exists to kill: no
+    # --model-*/--no-model-* flags given at all, and DEFAULT_NEWS_CALENDAR
+    # (patched here to a non-existent tmp path) is missing -- must EXIT, never
+    # silently proceed unmodeled.
+    _patch_main_wiring(
+        monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}])
+    )
+    monkeypatch.setattr(run_backtest_script, "DEFAULT_NEWS_CALENDAR", tmp_path / "missing.csv")
+    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0"])
+
+    with caplog.at_level("ERROR"):
+        exit_code = run_backtest_script.main()
+
+    assert exit_code == 1
+    assert "build_backtest_calendar.py" in caplog.text
+
+
+def test_main_both_no_model_news_flags_given_skips_the_calendar_check_entirely(monkeypatch, tmp_path):
+    # Explicit opt-out of BOTH mechanisms must not even require the calendar
+    # file to exist -- DEFAULT_NEWS_CALENDAR is patched to a missing path to
+    # prove this.
+    _patch_main_wiring(
+        monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}])
+    )
+    monkeypatch.setattr(run_backtest_script, "DEFAULT_NEWS_CALENDAR", tmp_path / "missing.csv")
+    monkeypatch.setattr(sys, "argv", [
+        "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0",
+        "--no-model-news-protection", "--no-model-risk-voice-news",
+    ])
+
+    captured = {}
+
+    def _fake_run_and_persist(*args, **kwargs):
+        captured["model_risk_voice_news"] = kwargs.get("model_risk_voice_news")
+        captured["news_calendar"] = kwargs.get("news_calendar")
+        captured["news_protection_cfg"] = kwargs.get("news_protection_cfg")
         return tmp_path / "envelope.json"
 
     monkeypatch.setattr(run_backtest_script, "run_and_persist", _fake_run_and_persist)
@@ -680,6 +764,7 @@ def test_main_model_risk_voice_news_defaults_to_false_and_builds_no_calendar(mon
     assert exit_code == 0
     assert captured["model_risk_voice_news"] is False
     assert captured["news_calendar"] is None
+    assert captured["news_protection_cfg"] is None
 
 
 def test_main_model_risk_voice_news_missing_calendar_file_returns_error(monkeypatch, tmp_path):
@@ -688,7 +773,8 @@ def test_main_model_risk_voice_news_missing_calendar_file_returns_error(monkeypa
     )
     monkeypatch.setattr(sys, "argv", [
         "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0",
-        "--model-risk-voice-news", "--news-calendar-path", str(tmp_path / "missing.csv"),
+        "--model-risk-voice-news", "--no-model-news-protection",
+        "--news-calendar-path", str(tmp_path / "missing.csv"),
     ])
 
     exit_code = run_backtest_script.main()
@@ -707,7 +793,7 @@ def test_main_writes_an_envelope_with_risk_voice_news_modeled_true(monkeypatch, 
     calendar_path = _write_news_calendar_csv(tmp_path, ["2000-01-01 00:00:00,USD,high,Event,,,"])
     monkeypatch.setattr(sys, "argv", [
         "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0", "--output-dir", str(output_dir),
-        "--model-risk-voice-news", "--news-calendar-path", str(calendar_path),
+        "--model-risk-voice-news", "--no-model-news-protection", "--news-calendar-path", str(calendar_path),
     ])
 
     exit_code = run_backtest_script.main()

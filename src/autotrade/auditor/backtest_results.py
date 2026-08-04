@@ -61,6 +61,38 @@ class BacktestReportEnvelope:
     `experiments/experiments_log.md`'s 2026-07-22 Shield NOTE) -- same "don't
     silently count an incomplete simulation" philosophy as
     `cost_model_complete`/`risk_voice_modeled`/`watchman_exits_modeled`."""
+    news_protection_modeled: bool
+    """True iff this run's `BacktestConfig.news_protection_cfg` was set (not
+    `None`) -- see `backtest/engine.py`'s module docstring and
+    `scripts/run_backtest.py`'s `--model-news-protection`/
+    `--no-model-news-protection` flags (default: modeled, against the real
+    historical calendar built by `scripts/build_backtest_calendar.py`). A run
+    without Watchman's news protection modeled never exercised live's mode A
+    close/reduce-around-high-impact-news behavior -- EXP-024
+    (`experiments/experiments_log.md`'s 2026-08-04 NOTE + RESULTS) measured
+    the real trigger rate at ~26-28% of trades, not negligible -- so its
+    trade count/profit factor are not representative of live -- same "don't
+    silently count an incomplete simulation" philosophy as
+    `cost_model_complete`/`risk_voice_modeled`/`watchman_exits_modeled`/
+    `shield_modeled`. **REQUIRED as of 2026-08-04** (Gate-1's 6th
+    modeling-honesty hard-fail): same one-way-break precedent as
+    `risk_voice_modeled` (commit 03a236b) and `watchman_exits_modeled`
+    (commit 67df406) -- every envelope JSON written before this change is
+    missing this key and will fail to load until regenerated."""
+    risk_voice_news_modeled: bool
+    """True iff this run's `BacktestConfig.model_risk_voice_news` was `True`
+    -- see `backtest/engine.py`'s module docstring and
+    `scripts/run_backtest.py`'s `--model-risk-voice-news`/
+    `--no-model-risk-voice-news` flags (default: modeled). A SEPARATE
+    mechanism from `news_protection_modeled` -- Risk Voice's OWN
+    news-entry blackout (condition 2), a different Council persona and
+    window, and NOT implied by `risk_voice_modeled` (which only covers Risk
+    Voice's other 5 conditions) -- see EXP-027
+    (`experiments/experiments_log.md`'s 2026-08-04 NOTE + RESULTS: the entry
+    blackout vetoes ~13-14% of entries). Same "don't silently count an
+    incomplete simulation" philosophy as the other modeled-flags above.
+    **REQUIRED as of 2026-08-04**, same one-way-break precedent as
+    `news_protection_modeled` above."""
     min_lot_risk_cap_pct: float | None
     """This run's `BacktestConfig.min_lot_risk_cap_pct`, recorded for
     auditability -- `None` means `risk/sizing.py::compute_lot_size`'s
@@ -81,7 +113,7 @@ _REPORT_FIELDS = (
 _TOP_LEVEL_FIELDS = (
     "symbol", "bar_range", "starting_equity", "cost_model", "cost_model_complete",
     "is_out_of_sample", "risk_voice_modeled", "watchman_exits_modeled", "shield_modeled",
-    "min_lot_risk_cap_pct", "report",
+    "news_protection_modeled", "risk_voice_news_modeled", "min_lot_risk_cap_pct", "report",
 )
 
 
@@ -122,6 +154,8 @@ def load_backtest_report_envelope(path: Path) -> BacktestReportEnvelope:
             risk_voice_modeled=data["risk_voice_modeled"],
             watchman_exits_modeled=data["watchman_exits_modeled"],
             shield_modeled=data["shield_modeled"],
+            news_protection_modeled=data["news_protection_modeled"],
+            risk_voice_news_modeled=data["risk_voice_news_modeled"],
             min_lot_risk_cap_pct=data["min_lot_risk_cap_pct"],
             report=BacktestReport(**{k: data["report"][k] for k in _REPORT_FIELDS}),
         )

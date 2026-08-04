@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1545 (including all parametrized variants)
+- **Total Test Count**: 1551 (including all parametrized variants)
 - **Test Files**: ~59 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -14,13 +14,13 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 
 | Subsystem | Test File | Test Count |
 |-----------|-----------|-----------|
-| Auditor | test_backtest_results.py | 11 |
+| Auditor | test_backtest_results.py | 13 |
 | | test_borderline.py | 15 |
 | | test_daily_report.py | 5 |
 | | test_demotion.py | 12 |
 | | test_metrics.py | 6 |
-| | test_promotion.py | 31 |
-| **Auditor Subtotal** | | **80** |
+| | test_promotion.py | 33 |
+| **Auditor Subtotal** | | **84** |
 | Backtest | test_clock.py | 3 |
 | | test_cost_model.py | 7 |
 | | test_engine.py | 60 |
@@ -98,7 +98,7 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 | | test_pid_file.py | 19 |
 | | test_poller.py | 10 |
 | | test_run_auditor.py | 42 |
-| | test_run_backtest.py | 31 |
+| | test_run_backtest.py | 33 |
 | | test_run_dashboard.py | 4 |
 | | test_run_health_check.py | 5 |
 | | test_run_scheduled_daily_report.py | 3 |
@@ -108,9 +108,9 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 | | test_service_watchdog.py | 9 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **435** |
+| **Scripts & CLI Subtotal** | | **437** |
 | | | |
-| **GRAND TOTAL** | | **1545** |
+| **GRAND TOTAL** | | **1551** |
 
 ---
 
@@ -123,6 +123,8 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 - test_missing_risk_voice_modeled_field_raises
 - test_missing_watchman_exits_modeled_field_raises
 - test_missing_shield_modeled_field_raises
+- test_missing_news_protection_modeled_field_raises
+- test_missing_risk_voice_news_modeled_field_raises
 - test_missing_min_lot_risk_cap_pct_field_raises
 - test_min_lot_risk_cap_pct_none_is_a_valid_value_not_a_missing_field
 - test_missing_report_field_raises
@@ -189,7 +191,9 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 - test_gate1_fails_outright_when_risk_voice_not_modeled_regardless_of_otherwise_passing_numbers
 - test_gate1_fails_outright_when_watchman_exits_not_modeled_regardless_of_otherwise_passing_numbers
 - test_gate1_fails_outright_when_shield_not_modeled_regardless_of_otherwise_passing_numbers
-- test_gate1_fails_outright_reporting_all_five_hard_fail_criteria_when_all_missing
+- test_gate1_fails_outright_when_news_protection_not_modeled_regardless_of_otherwise_passing_numbers
+- test_gate1_fails_outright_when_risk_voice_news_not_modeled_regardless_of_otherwise_passing_numbers
+- test_gate1_fails_outright_reporting_all_seven_hard_fail_criteria_when_all_missing
 - test_gate1_profit_factor_boundary_1_30_passes_1_29_fails
 - test_gate1_profit_factor_exact_boundary_1_3_passes_1_2999_fails
 - test_gate1_max_drawdown_boundary_15_00_passes_15_01_fails
@@ -1775,7 +1779,9 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 - test_main_writes_an_envelope_with_risk_voice_modeled_true
 - test_main_with_commission_zero_writes_envelope_with_cost_model_complete_true
 - test_main_threads_model_risk_voice_news_flag_into_run_and_persist
-- test_main_model_risk_voice_news_defaults_to_false_and_builds_no_calendar
+- test_main_defaults_to_modeling_both_news_mechanisms_against_the_default_calendar_path
+- test_main_no_model_flags_given_missing_default_calendar_exits_with_actionable_error
+- test_main_both_no_model_news_flags_given_skips_the_calendar_check_entirely
 - test_main_model_risk_voice_news_missing_calendar_file_returns_error
 - test_main_writes_an_envelope_with_risk_voice_news_modeled_true
 

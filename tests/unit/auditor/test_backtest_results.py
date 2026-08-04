@@ -30,6 +30,8 @@ def _valid_envelope() -> dict:
         "risk_voice_modeled": True,
         "watchman_exits_modeled": True,
         "shield_modeled": True,
+        "news_protection_modeled": True,
+        "risk_voice_news_modeled": True,
         "min_lot_risk_cap_pct": 1.5,
         "report": _VALID_REPORT,
     }
@@ -52,6 +54,8 @@ def test_load_valid_envelope_round_trips_every_field(tmp_path):
     assert envelope.risk_voice_modeled is True
     assert envelope.watchman_exits_modeled is True
     assert envelope.shield_modeled is True
+    assert envelope.news_protection_modeled is True
+    assert envelope.risk_voice_news_modeled is True
     assert envelope.min_lot_risk_cap_pct == 1.5
     assert envelope.report.trade_count == 200
     assert envelope.report.profit_factor_excluding_top_5 == 1.2
@@ -94,6 +98,26 @@ def test_missing_shield_modeled_field_raises(tmp_path):
     path.write_text(json.dumps(data), encoding="utf-8")
 
     with pytest.raises(BacktestReportEnvelopeError, match="shield_modeled"):
+        load_backtest_report_envelope(path)
+
+
+def test_missing_news_protection_modeled_field_raises(tmp_path):
+    data = _valid_envelope()
+    del data["news_protection_modeled"]
+    path = tmp_path / "envelope.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(BacktestReportEnvelopeError, match="news_protection_modeled"):
+        load_backtest_report_envelope(path)
+
+
+def test_missing_risk_voice_news_modeled_field_raises(tmp_path):
+    data = _valid_envelope()
+    del data["risk_voice_news_modeled"]
+    path = tmp_path / "envelope.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(BacktestReportEnvelopeError, match="risk_voice_news_modeled"):
         load_backtest_report_envelope(path)
 
 
