@@ -6446,3 +6446,28 @@ is applied. Configs evaluated: **4 / 4** for this new family.
    +$8), which is itself an argument for NOT spending the touch yet.
  `config/base.yaml` UNCHANGED; `src/` UNCHANGED; no promotion/demotion gate, Auditor threshold or circuit-breaker limit
  touched or proposed for change. **Test year 2025-07-22 → 2026-07-21 NOT touched by any run in this experiment.**
+
+## NOTE (not an EXP) 2026-08-04 — EXP-027's two escalated engine defects FIXED; which logged anchors are superseded and which numbers carry a small known bias
+Fixes (engine-only; `watchman/`/`council/` untouched; C0 re-verified bit-for-bit 266/254/233/254, y4 1.0961/+$352.60/9.9895 after both):
+1. **Float round-trip at the +0.5R gate**: the intrabar news-trigger candidate price is now nudged one symbol point past
+   the threshold in the profit direction (clamped to the bar's own high/low) so `check_news_protection`'s recomputed
+   profit_r cannot land at 0.4999...9 and skip a fire live would have taken (live triggers off ticks moving PAST the
+   level). Regression test pins the exact EXP-027 worked example.
+2. **Entry-blackout clock**: with `model_risk_voice_news=True` the risk-voice check now receives the signal bar's CLOSE
+   time (live's decision/order-send moment), not its open. Strict no-op for every `model_risk_voice_news=False` run.
+   Known, documented side effect: `check_risk_voice` computes one shared `now` for conditions 4 (session — inert at
+   all-24h) and 5 (Friday-close), so Friday-close also evaluates at close time in E/EP cells — which is in fact the
+   live-faithful timing as well; impact limited to Friday 19:00-23:00 signals, not separately quantified.
+
+ANCHOR STATUS after the fix (post-fix rows, `exp027` harness conventions):
+- P (protection-only): y1-y4 = 421/416/382/369 records, PF 1.0414/0.8856/1.1335/1.0830, net +166/−471/+512/+330 —
+  **supersedes** the 2026-08-04 engine NOTE's y4 A@real row (350/1.0667/+259.67/11.4154) and EXP-027's P column.
+  news_exits rose 116→146 / 136→145 / 103→124 / 105→118 (the 7-19% under-fire, recovered).
+- EP (full parity): y1-y4 = 380/371/360/324, PF 0.9830/0.8905/1.1315/1.0724, net −60/−392/+476/+253.
+- E (blackout-only): y1-y4 = 246/240/222/243, PF 1.0361/0.9093/1.1975/1.1473 — EXP-027's E column superseded.
+- EXP-027's MEASUREMENT conclusions survive the fix qualitatively (blackout ≈ expectancy-free; EP−P still small; the
+  vetoed-population sign-flip finding unchanged in kind), but its exact E/P/EP figures are the PRE-fix engine's.
+- KNOWN SMALL BIAS, not re-run here: EXP-026's arms and the 2026-08-04 HONEST TEST BASELINE were measured with defect 1
+  present (protection under-fires ~7-19% of affected trades), so the honest Test PF 1.0845 modestly UNDER-charges mode
+  A's true cost. Re-measuring the Test baseline with the fixed engine is a USER decision (it would be a correction of
+  the same authorised measurement touch, not a new one) — deliberately not taken unilaterally.

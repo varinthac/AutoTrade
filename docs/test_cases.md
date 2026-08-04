@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1541 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1545 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1541 (including all parametrized variants)
+- **Total Test Count**: 1545 (including all parametrized variants)
 - **Test Files**: ~59 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -23,12 +23,12 @@ This document provides a comprehensive list of all 1541 test cases in the AutoTr
 | **Auditor Subtotal** | | **80** |
 | Backtest | test_clock.py | 3 |
 | | test_cost_model.py | 7 |
-| | test_engine.py | 56 |
+| | test_engine.py | 60 |
 | | test_forward_walk.py | 10 |
 | | test_historical_news_calendar.py | 10 |
 | | test_lookahead_validation.py | 3 |
 | | test_report.py | 15 |
-| **Backtest Subtotal** | | **104** |
+| **Backtest Subtotal** | | **108** |
 | Council | test_calendar_archive.py | 10 |
 | | test_decision_matrix.py | 50 |
 | | test_finnhub_news_calendar.py | 12 |
@@ -110,7 +110,7 @@ This document provides a comprehensive list of all 1541 test cases in the AutoTr
 | | test_symbols.py | 7 |
 | **Scripts & CLI Subtotal** | | **435** |
 | | | |
-| **GRAND TOTAL** | | **1541** |
+| **GRAND TOTAL** | | **1545** |
 
 ---
 
@@ -263,6 +263,8 @@ This document provides a comprehensive list of all 1541 test cases in the AutoTr
 - test_model_risk_voice_news_default_false_trades_through_a_bar_that_would_be_vetoed_if_modeled
 - test_model_risk_voice_news_true_vetoes_a_signal_bar_inside_the_blackout_window
 - test_model_risk_voice_news_true_lets_a_signal_outside_the_blackout_window_through
+- test_model_risk_voice_news_true_uses_the_signal_bars_close_time_not_its_open
+- test_model_risk_voice_news_true_event_just_past_the_old_open_time_window_now_vetoes
 - test_model_risk_voice_news_true_without_news_calendar_is_a_config_error
 - test_watchman_buy_trails_to_breakeven_then_stops_exactly_at_breakeven
 - test_watchman_cfg_none_never_trails_or_closes_even_when_price_would_trigger_breakeven
@@ -283,6 +285,8 @@ This document provides a comprehensive list of all 1541 test cases in the AutoTr
 - test_shield_cfg_none_never_gates_even_within_the_cooldown_window
 - test_shield_check_skipped_without_crashing_when_no_confirmed_swing_exists_at_signal_time
 - test_news_trigger_fires_at_the_exact_threshold_level_when_touched_intrabar
+- test_news_trigger_nudge_is_clamped_to_the_bars_own_high_when_there_is_no_headroom
+- test_news_protection_profit_gate_float_round_trip_boundary_case_now_fires
 - test_news_trigger_fires_at_the_bars_own_open_when_already_gapped_past_threshold
 - test_check_exit_priority_wins_over_a_same_bar_news_trigger
 - test_news_protection_no_action_when_no_news_incoming

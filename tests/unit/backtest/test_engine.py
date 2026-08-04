@@ -815,21 +815,25 @@ def test_model_risk_voice_news_default_false_trades_through_a_bar_that_would_be_
 
 
 def test_model_risk_voice_news_true_vetoes_a_signal_bar_inside_the_blackout_window(monkeypatch):
-    # A single high-impact USD event exactly at bar 13's own clock time
-    # (13:00:00) falls inside the default news_blackout window
-    # (news_blackout_after_min=30 before "now", news_blackout_before_min=45
-    # after "now" -- window [12:30, 13:45]), so bar 13's signal is vetoed on
-    # the news condition alone (every other condition permissive via
-    # _PERMISSIVE_RISK_VOICE_CFG). Exactly like a session/stop-distance veto
-    # (see the tests above), the engine simply re-evaluates on the next bar --
-    # bar 14 (14:00:00), whose window [13:30, 14:45] no longer contains the
-    # 13:00 event, so THAT signal passes. The trade therefore lands one bar
-    # later than the unmodeled-default test above: bar 14 signal -> bar 15
-    # fill (15:00:00), not bar 13 -> bar 14.
+    # A single high-impact USD event exactly at bar 13's own CLOSE time
+    # (14:00:00 -- EXP-027 §3(b)/§7(iv)'s one-bar clock skew fix,
+    # `experiments/experiments_log.md`: live decides at a bar's close, not
+    # its open, so that is the "now" this engine's news condition uses too
+    # when `model_risk_voice_news=True`) falls inside the default
+    # news_blackout window (news_blackout_after_min=30 before "now",
+    # news_blackout_before_min=45 after "now" -- window [13:30, 14:45]), so
+    # bar 13's signal is vetoed on the news condition alone (every other
+    # condition permissive via _PERMISSIVE_RISK_VOICE_CFG). Exactly like a
+    # session/stop-distance veto (see the tests above), the engine simply
+    # re-evaluates on the next bar -- bar 14 (close 15:00:00), whose window
+    # [14:30, 15:45] no longer contains the 14:00 event, so THAT signal
+    # passes. The trade therefore lands one bar later than the
+    # unmodeled-default test above: bar 14 signal -> bar 15 fill (15:00:00),
+    # not bar 13 -> bar 14.
     monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
     monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
     df = _council_signal_bars()
-    news_calendar = _SingleEventNewsCalendar(datetime(2026, 7, 6, 13, 0, 0))
+    news_calendar = _SingleEventNewsCalendar(datetime(2026, 7, 6, 14, 0, 0))
     config = BacktestConfig(
         starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
         cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
@@ -844,10 +848,11 @@ def test_model_risk_voice_news_true_vetoes_a_signal_bar_inside_the_blackout_wind
 
 
 def test_model_risk_voice_news_true_lets_a_signal_outside_the_blackout_window_through(monkeypatch):
-    # The event sits 5 hours before bar 13's own clock time -- far outside
-    # the [-30, +45] minute window around any bar this fixture ever reaches
-    # -- so the news condition never fires and bar 13's signal fills exactly
-    # like the unmodeled-default test above.
+    # The event sits 5+ hours before bar 13's own CLOSE time (14:00:00,
+    # the "now" the news condition uses -- see the test above) -- far
+    # outside the [-30, +45] minute window around any bar this fixture ever
+    # reaches -- so the news condition never fires and bar 13's signal fills
+    # exactly like the unmodeled-default test above.
     monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
     monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
     df = _council_signal_bars()
@@ -863,6 +868,56 @@ def test_model_risk_voice_news_true_lets_a_signal_outside_the_blackout_window_th
 
     assert len(trades) == 1
     assert trades[0].entry_time == pd.Timestamp("2026-07-06 14:00:00")
+
+
+def test_model_risk_voice_news_true_uses_the_signal_bars_close_time_not_its_open(monkeypatch):
+    # EXP-027 §3(b)/§7(iv) regression pin, `experiments/experiments_log.md`:
+    # an event exactly at bar 13's own OPEN time (13:00:00) -- the pre-fix
+    # convention's "now" -- must NO LONGER veto it, because the fixed engine
+    # evaluates the news condition at that bar's CLOSE (14:00:00), whose
+    # window [13:30, 14:45] does not contain a 13:00:00 event. Before this
+    # fix, this exact event landed inside the (wrong) open-time window
+    # [12:30, 13:45] and vetoed bar 13.
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    news_calendar = _SingleEventNewsCalendar(datetime(2026, 7, 6, 13, 0, 0))
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        risk_voice_cfg=_PERMISSIVE_RISK_VOICE_CFG,
+        model_risk_voice_news=True, news_calendar=news_calendar,
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].entry_time == pd.Timestamp("2026-07-06 14:00:00")  # bar 13 fires, unvetoed
+
+
+def test_model_risk_voice_news_true_event_just_past_the_old_open_time_window_now_vetoes(monkeypatch):
+    # EXP-027 §3(b)/§7(iv) regression pin, the mirror of the test above: an
+    # event at 13:50:00 sits OUTSIDE the pre-fix open-time window
+    # ([12:30, 13:45]), so the old (buggy) engine would NOT have vetoed bar
+    # 13 with this event -- but it sits INSIDE the fixed close-time window
+    # ([13:30, 14:45]), so the corrected engine DOES veto bar 13, pushing
+    # the trade to bar 14's signal -> bar 15 fill (15:00:00), same as the
+    # first test above.
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    news_calendar = _SingleEventNewsCalendar(datetime(2026, 7, 6, 13, 50, 0))
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        risk_voice_cfg=_PERMISSIVE_RISK_VOICE_CFG,
+        model_risk_voice_news=True, news_calendar=news_calendar,
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].entry_time == pd.Timestamp("2026-07-06 15:00:00")
 
 
 def test_model_risk_voice_news_true_without_news_calendar_is_a_config_error():
@@ -1633,7 +1688,14 @@ def _news_trigger_rows(bar8: dict) -> list[dict]:
 def test_news_trigger_fires_at_the_exact_threshold_level_when_touched_intrabar():
     # profit_threshold_r=0.5 * stop_distance(10) = 5 -> level = 105. Bar 8's
     # open (103) has not reached it yet, but its high (106) does -- the
-    # trigger price must be the exact level (105), not the bar's high.
+    # trigger price must be one SYMBOL.point (0.01) PAST the exact level
+    # (105.01, not 105.0 and not the bar's high) -- EXP-027 §5/§7(vii)'s
+    # profit-gate float round-trip fix, `experiments/experiments_log.md`:
+    # `check_news_protection` re-derives profit_r from this price, and the
+    # exact algebraic level does not always round-trip back to >= 0.5R in
+    # IEEE-754, so this engine now nudges one point past it (bounded by the
+    # bar's own high), matching a real tick that has already moved past the
+    # level rather than landing exactly on it.
     df = _bars(_news_trigger_rows({"open": 103, "high": 106, "low": 102, "close": 105, "spread": 0}))
     cfg = NewsProtectionConfig(news_window_minutes=30.0, profit_threshold_r=0.5, close_mode="all")
     config = _news_backtest_config(cfg, _AlwaysNewsProvider())
@@ -1642,8 +1704,56 @@ def test_news_trigger_fires_at_the_exact_threshold_level_when_touched_intrabar()
 
     assert len(trades) == 1
     assert trades[0].exit_reason == "news_protection"
-    assert trades[0].exit_price == pytest.approx(105.0)
+    assert trades[0].exit_price == pytest.approx(105.01)
     assert trades[0].exit_time == df["time"].iloc[8]
+
+
+def test_news_trigger_nudge_is_clamped_to_the_bars_own_high_when_there_is_no_headroom():
+    # Same geometry as the test above, but bar 8's high (105.0, exactly the
+    # level, zero headroom) means level + one point (105.01) would exceed
+    # what this bar actually traded -- the nudge must clamp to the bar's own
+    # high rather than fabricate a price outside its real range.
+    df = _bars(_news_trigger_rows({"open": 103, "high": 105.0, "low": 102, "close": 105.0, "spread": 0}))
+    cfg = NewsProtectionConfig(news_window_minutes=30.0, profit_threshold_r=0.5, close_mode="all")
+    config = _news_backtest_config(cfg, _AlwaysNewsProvider())
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "news_protection"
+    assert trades[0].exit_price == pytest.approx(105.0)
+
+
+def test_news_protection_profit_gate_float_round_trip_boundary_case_now_fires():
+    # EXP-027 §5/§7(vii)'s exact worked example (`experiments/
+    # experiments_log.md`, y1 entry 2021-08-02 05:00 SELL) reproduced at
+    # entry=100: stop distance 9.45775508394141 with profit_threshold_r=0.5
+    # re-derives to profit_r == 0.49999999999999983 (< 0.5) in IEEE-754, so
+    # before this fix `check_news_protection` returned NO_ACTION ("profit
+    # 0.50R below protection threshold 0.5R") on a position that genuinely
+    # reached the threshold intrabar. This regression test pins that it now
+    # fires, at one SYMBOL.point past the exact (buggy) level.
+    stop_distance = 9.45775508394141
+    plan = OrderPlan(
+        direction="SELL", entry=100.0, stop_loss=100.0 + stop_distance,
+        take_profit=-800.0, stop_distance=stop_distance,
+    )
+    unnudged_level = 100.0 - stop_distance * 0.5
+    df = _bars(_swing_setup_rows_sell() + [
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.0, "spread": 0},  # 7: fill bar
+        {  # 8: never gaps past the level, but its low reaches it intrabar
+            "open": 99.0, "high": 99.5,
+            "low": unnudged_level - 1.0, "close": unnudged_level - 0.5, "spread": 0,
+        },
+    ])
+    cfg = NewsProtectionConfig(news_window_minutes=30.0, profit_threshold_r=0.5, close_mode="all")
+    config = _news_backtest_config(cfg, _AlwaysNewsProvider(), plan=plan)
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "news_protection"
+    assert trades[0].exit_price == pytest.approx(unnudged_level - SYMBOL.point)
 
 
 def test_news_trigger_fires_at_the_bars_own_open_when_already_gapped_past_threshold():

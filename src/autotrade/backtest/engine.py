@@ -41,6 +41,32 @@ by construction. Unlike the live loop's twice-per-trade re-check (signal-time
 is no separate "order-send time" moment in a backtest replay, so a second
 check would be identical to the first.
 
+**Clock convention for this call, fixed 2026-08-04 (EXP-027 §3(b)/§7(iv),
+`experiments/experiments_log.md`: "the one-bar clock skew").** `run_backtest`'s
+main loop ticks its `SimulatedClock` to each bar's own OPEN time (MT5's `time`
+convention), but live (`orchestrator/shadow_loop.py`) only evaluates a signal
+once its H1 bar has actually CLOSED -- decision and order-send both happen at
+that instant, one bar duration later. Feeding `check_risk_voice` the bar-OPEN
+clock therefore evaluated its news window against the wrong instant (up to a
+full bar early), which EXP-027 measured shares only 42-71% of its veto set
+with live's own convention. When `model_risk_voice_news` is `True`, this
+engine now passes `_council_signal_fn` a SEPARATE clock ticked to the signal
+bar's CLOSE time (`bar open + _infer_bar_span_minutes(df)`, the same
+one-representative-duration approximation `_news_protection_decision_this_bar`
+already uses) instead of the loop's own bar-open clock -- see `run_backtest`'s
+`news_signal_clock`. Because `check_risk_voice` takes a single injected clock
+for conditions 2 (news), 4 (session) and 5 (Friday-close) alike, and
+`council/risk_voice.py` is not touched by this fix, this ALSO shifts what
+"now" conditions 4/5 see by the same one bar -- but only in runs where
+`model_risk_voice_news=True` (this project's session window is `[0, 24)`, so
+condition 4 is structurally inert regardless; condition 5's `friday_close_hour`
+boundary can move by up to one bar for a signal very close to Friday close).
+When `model_risk_voice_news` is `False` (still the default, and every C0/P-style
+run in `experiments/experiments_log.md`), the loop's ordinary bar-open clock is
+used unchanged, so this fix is a strict no-op for every run that doesn't model
+the news blackout -- conditions 1/3/6 never read the clock at all, in either
+mode.
+
 Watchman exits (`watchman/evaluate.evaluate_watchman`) ARE wired into this
 engine too, via an OPTIONAL `watchman_cfg: WatchmanConfig | None` on
 `BacktestConfig` (default `None` -- explicitly means "not modeled", same
@@ -271,7 +297,10 @@ def _council_signal_fn(
     genuinely modeled). When `model_risk_voice_news` is `True`, the real
     `news_calendar` provider is used instead (asserted not `None` below).
     `clock` must be given whenever `risk_voice_cfg` is (asserted below) --
-    `run_backtest`'s loop always passes its own ticking `SimulatedClock`."""
+    `run_backtest`'s loop always passes a ticking `SimulatedClock`: its own
+    bar-open clock when `model_risk_voice_news` is `False`, or a SEPARATE
+    bar-close clock when it is `True` (EXP-027's one-bar clock skew fix --
+    see module docstring's "Clock convention for this call" paragraph)."""
     decision, _borderline_case = evaluate_council(
         df, as_of_index, symbol, symbol_spec,
         bull_threshold=bull_threshold, bear_threshold=bear_threshold, conflict_threshold=conflict_threshold,
@@ -675,6 +704,8 @@ def _news_trigger_candidate_price(
     initial_stop_distance: float,
     profit_threshold_r: float,
     bar: "pd.Series",
+    *,
+    point: float = 0.0,
 ) -> float | None:
     """The price at which this position first reaches `profit_threshold_r`
     on THIS bar -- mirrors `check_news_protection`'s own profit_r formula
@@ -684,21 +715,40 @@ def _news_trigger_candidate_price(
     `exp025_news_threshold_harness.py`'s `_news_trigger_price` (see module
     docstring's news-protection paragraph). Returns the bar's own OPEN if
     the position is already at/above threshold there (gapped in favorably),
-    else the exact +threshold level if the bar's high/low reaches it
-    intrabar, else `None` if this bar never gets there."""
+    else the +threshold level (nudged, see below) if the bar's high/low
+    reaches it intrabar, else `None` if this bar never gets there.
+
+    `point` -- EXP-027 §5/§7(vii) (`experiments/experiments_log.md`, "the
+    profit-gate float round-trip"), fixed 2026-08-04. The exact algebraic
+    `level` (`entry +/- initial_stop_distance * profit_threshold_r`) does not
+    round-trip through `check_news_protection`'s own re-derivation of
+    `profit_r = (price - entry) / initial_stop_distance` in IEEE-754: it lands
+    on e.g. `0.49999999999999994 < 0.5` in a large minority of cases, silently
+    dropping a genuine intrabar first-touch trigger with the literal reason
+    "profit 0.50R below protection threshold 0.5R" (measured cost: 5-15
+    protection triggers per year, ~7-19% of the affected population). Live
+    never hits this, because it reads a real tick price that has already moved
+    PAST the level, never the exact algebraic boundary. Passing the symbol's
+    own `point` (one minimum price increment) here nudges the returned
+    candidate one point PAST the threshold in the profit direction -- the
+    smallest change that reproduces live's "already past, not exactly on, the
+    level" reality -- clamped to the bar's own high/low so the returned price
+    is never outside what this bar actually traded. `point=0.0` (the default)
+    preserves the exact pre-fix level, e.g. for callers measuring the original
+    defect itself (`experiments/exp027_g5_diagnostic.py`)."""
     threshold_distance = initial_stop_distance * profit_threshold_r
     if direction == "BUY":
         level = entry_price + threshold_distance
         if bar["open"] >= level:
             return float(bar["open"])
         if bar["high"] >= level:
-            return float(level)
+            return float(min(level + point, bar["high"]))
         return None
     level = entry_price - threshold_distance
     if bar["open"] <= level:
         return float(bar["open"])
     if bar["low"] <= level:
-        return float(level)
+        return float(max(level - point, bar["low"]))
     return None
 
 
@@ -709,6 +759,8 @@ def _news_protection_decision_this_bar(
     bar_span_minutes: float,
     news_calendar: NewsCalendarProvider,
     config: NewsProtectionConfig,
+    *,
+    point: float = 0.0,
 ) -> tuple[NewsProtectionDecision, float] | None:
     """`None` if this bar produces no profit-threshold-crossing candidate at
     all -- a cheap short-circuit, matching `check_news_protection`'s own
@@ -723,11 +775,15 @@ def _news_protection_decision_this_bar(
     whole duration, not only at its first instant, so this bounds the
     otherwise-unknowable exact intrabar instant a real event might have been
     seen at, per EXP-024's pre-registration §4(e)
-    (`experiments/experiments_log.md`)."""
+    (`experiments/experiments_log.md`).
+
+    `point` -- forwarded verbatim to `_news_trigger_candidate_price` (see its
+    docstring, EXP-027 §5/§7(vii) profit-gate float round-trip fix)."""
     assert position.metadata is not None
     candidate_price = _news_trigger_candidate_price(
         position.plan.direction, position.metadata.entry_price,
         position.metadata.initial_stop_distance, config.profit_threshold_r, bar,
+        point=point,
     )
     if candidate_price is None:
         return None
@@ -813,7 +869,12 @@ def _step_news_protection(
     position has no re-derivable metadata, this bar falls inside the
     re-trigger suppression window (`_OpenPosition.news_protected_until`), or
     this bar's `check_news_protection` decision is `NO_ACTION`. Otherwise
-    returns `_act_on_news_decision`'s `(closed-trade, still_open)`."""
+    returns `_act_on_news_decision`'s `(closed-trade, still_open)`.
+
+    Passes `symbol_spec.point` through to `_news_protection_decision_this_bar`
+    (EXP-027 §5/§7(vii) profit-gate float round-trip fix, `experiments/
+    experiments_log.md`) -- always the real symbol's own point/tick size here,
+    never `0.0`, since this IS the production path."""
     if config.news_protection_cfg is None or position.metadata is None:
         return None
     now = pd.Timestamp(bar["time"]).to_pydatetime()
@@ -821,6 +882,7 @@ def _step_news_protection(
         return None
     found = _news_protection_decision_this_bar(
         position, bar, now, bar_span_minutes, config.news_calendar, config.news_protection_cfg,
+        point=symbol_spec.point,
     )
     if found is None:
         return None
@@ -861,8 +923,26 @@ def run_backtest(
 
     point_value = symbol_spec.tick_value / symbol_spec.tick_size
     equity = config.starting_equity
-    bar_span_minutes = _infer_bar_span_minutes(df) if config.news_protection_cfg is not None else 0.0
+    bar_span_minutes = (
+        _infer_bar_span_minutes(df)
+        if config.news_protection_cfg is not None or config.model_risk_voice_news
+        else 0.0
+    )
     clock = SimulatedClock(pd.Timestamp(df["time"].iloc[0]).to_pydatetime())
+    # EXP-027 §3(b)/§7(iv) one-bar clock skew fix, `experiments/
+    # experiments_log.md` -- see module docstring's "Clock convention for
+    # this call" paragraph. `clock` above stays ticked to each bar's own OPEN
+    # time (used everywhere else in this loop, including Shield's cooldown
+    # clock, unchanged) -- `news_signal_clock`, ticked to that same bar's
+    # CLOSE time, is a SEPARATE clock passed to `config.signal_fn` (and thus
+    # to `check_risk_voice`) ONLY when `model_risk_voice_news` is True, so
+    # every `model_risk_voice_news=False` run (including every C0/P-style
+    # anchor in this log) is unaffected -- `None` here, exactly like before.
+    news_signal_clock = (
+        SimulatedClock(pd.Timestamp(df["time"].iloc[0]).to_pydatetime())
+        if config.model_risk_voice_news
+        else None
+    )
     shield = Shield(
         min_rr=config.shield_cfg.min_rr,
         max_correlation=config.shield_cfg.max_correlation,
@@ -878,7 +958,10 @@ def run_backtest(
 
     for i in range(len(df)):
         bar = df.iloc[i]
-        clock.set(pd.Timestamp(bar["time"]).to_pydatetime())
+        bar_open_time = pd.Timestamp(bar["time"]).to_pydatetime()
+        clock.set(bar_open_time)
+        if news_signal_clock is not None:
+            news_signal_clock.set(bar_open_time + timedelta(minutes=bar_span_minutes))
 
         if pending is not None:
             entry_price, spread_slippage_price_delta = _fill_entry_price(
@@ -960,7 +1043,8 @@ def run_backtest(
                 pivot_bars=config.pivot_bars, bull_threshold=config.bull_threshold,
                 bear_threshold=config.bear_threshold, conflict_threshold=config.conflict_threshold,
                 risk_voice_cfg=config.risk_voice_cfg, model_risk_voice_news=config.model_risk_voice_news,
-                news_calendar=config.news_calendar, clock=clock,
+                news_calendar=config.news_calendar,
+                clock=news_signal_clock if news_signal_clock is not None else clock,
             )
             swing_index = None
             if plan is not None and shield is not None:
