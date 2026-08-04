@@ -5572,3 +5572,86 @@ partial-close branch, not a bug. Read: EXP-024's measured parity cost is a mild 
 larger-than-min-lot subset; its conditional A−C treatment estimates and trigger-rate measurements are unaffected
 (trigger logic identical). Portfolio-level numbers remain reshuffling-dominated (veto-only evidence, per EXP-023 D3).
 The honest-Test-baseline question EXP-024 deferred to the user should be run with THIS engine path when taken up.
+
+## MEASUREMENT (not an EXP) 2026-08-04 — HONEST TEST BASELINE: the deployed config on the Test year WITH news protection modeled (user-authorised ONE touch, for measurement)
+Status: PRE-REGISTERED (results pending). Everything from this line down to `### TASK-1 RESULTS` was written and
+COMMITTED **before any Test-year number was produced**; only the RESULTS section and this Status line are added
+afterwards.
+
+### 0. WHAT THIS IS, AND WHAT IT IS NOT (framed exactly as EXP-006 §1 framed its own "where we stand" baseline)
+This is a **MEASUREMENT of the CURRENTLY DEPLOYED configuration**, not a parameter candidate. Nothing is swept, there
+is no grid, no arm can "win", and no `config/base.yaml` or `src/` change can follow from it. Its whole job is to answer
+the question EXP-024 §7 deliberately left open and escalated to the user: *what do the promotion-gate numbers look like
+on the held-out Test year once the strategy is charged for the news-protection cost it actually pays live?* Every
+Gate-1 figure this project has ever produced — including the arithmetic EXP-008 was adopted on and EXP-022's y5 cell —
+is a **mode C** run (news protection genuinely unmodeled, EXP-023 D1), while live runs **mode A**.
+**Therefore, and stated explicitly because it is the whole reason this is legitimate: this touch does NOT consume any
+tuning family's one-touch Test budget.** Same precedent and same wording as EXP-006 §1 ("a 'where we stand'
+measurement, NOT a parameter search, so it does NOT spend the family's one-touch Test budget"). In particular
+EXP-023's family ("news-protection min-lot fallback") keeps its UNSPENT one-touch budget for EXP-026 below, and
+EXP-025's and EXP-024's families are likewise untouched by this. The user explicitly authorised this measurement.
+
+### 1. EXACTLY TWO RUNS, PRE-REGISTERED (no third run, no re-run "with a tweak")
+| id | what | role |
+|----|------|------|
+| **C** | news protection NOT modeled (`news_protection_cfg=None`) | ANCHOR — must reproduce the recorded Test figures for this exact context |
+| **A@real** | news protection modeled from the built historical calendar, live semantics | **THE HONEST BASELINE** |
+
+Both via the REAL production path: `experiments/task1_test_baseline_driver.py`, a thin driver over
+`scripts/run_backtest.py`'s own `run_and_persist`/`build_envelope` -> `backtest.engine.run_backtest` ->
+`backtest/report.py` -> the JSON envelope `auditor/promotion.py` reads. **NOT the exp023/024/025 harness family**: per
+the 2026-08-04 engine NOTE, only the engine models the genuine `CLOSE_HALF_AND_BREAKEVEN` partial-close branch live
+executes whenever half-lot >= `volume_min`, so the engine path is the live-faithful one and is the only defensible
+basis for a promotion-gate number. Declared deviation from the CLI, the only one: `SymbolSpec` is the hardcoded IC
+Markets XAUUSD spec `experiments/exp022_minlot_harness.py` already uses (identical to what the CLI resolves from a
+live MT5 session), so no terminal is required.
+
+### 2. WINDOW, ACCOUNT CONTEXT, COST MODEL (the EXP-022+ context, unchanged, so the anchor is meaningful)
+Test year **2025-07-22 -> 2026-07-21** (`y5_TEST_2025-26`, the same window EXP-022 §2 used). $3,000 starting equity,
+per-year anchored; `cfo.min_lot_risk_cap_pct` 1.5; `cfo.risk_per_trade_pct` 1.0; all-24h session; `breakeven_enabled`/
+`trail_enabled` false; `order.tp_r_multiple` 2.0; `global.swing_pivot_bars` 3. COST MODEL COMPLETE: slippage =
+min-1-spread (`slippage_points=None`) AND swap modelled (EXP-018 rates long -53.2 / short +36.8, 3x Wed); commission
+$0.00 (IC Markets Standard, the real account). `watchman.news_profit_threshold_r` 0.5, `news_window_minutes` 30,
+`news_close_mode` half — i.e. `config/base.yaml` exactly as adopted, nothing overridden.
+
+### 3. THE ANCHOR NUMBER THIS MUST REPRODUCE, CITED BEFORE THE RUN (an anchor is only an anchor if it is named first)
+The only Test-year cell on record at this exact context is **EXP-022 §2's y5 cap-1.5 column**: **228 trades, PF 1.1903,
+PF_ex_top5 1.067, net +$845.3, maxDD 12.39%** (worst single loss 1.94% of then-equity). Mode C must reproduce it. Two
+further external anchors were run FIRST, on the already-consumed y4/VAL window (never on Test), and both reproduced
+exactly before this pre-registration was written — disclosed here in full, including the ordering:
+ * y4 mode C = **254 / PF 1.0961 / +$352.60 / maxDD 9.9895%** (EXP-022's cap-1.5 y4 cell, re-confirmed by EXP-023/024/025).
+ * y4 A@real via the ENGINE = **350 / PF 1.0667 / +$259.67 / maxDD 11.4154%** (the 2026-08-04 engine NOTE's own
+   published engine figure, which differs from EXP-024's harness 314/1.091/+$352/10.08% precisely because the engine
+   models the genuine partial close).
+ * FIDELITY: EXP-022's fast-path memoisation shim re-proved trade-for-trade identical to the unshimmed engine on a
+   4,000-bar window, with news OFF (176 trades) **and** with news ON (242 trades) — `--mode fidelity`, `identical: true`.
+
+### 4. WHAT IS REPORTED (fixed now, so nothing can be selected after the fact)
+For BOTH arms: trades / PF / net$ / maxDD% / avgR / pf_ex5 / win rate / count of `news_protection` exits; the delta;
+and the Gate-1 reading computed by the REAL `auditor/promotion.evaluate_backtest_to_paper_gate` against
+`config/base.yaml`'s own `auditor.promotion` block (`backtest_min_profit_factor` 1.3, `backtest_max_drawdown_pct` 15.0,
+`backtest_min_trade_count` **200** — note: 200, not 100; 100 is Gate 2's paper trade-count floor —
+`backtest_min_profit_factor_excluding_top_5` > 1.0, plus the hard-fail flags `is_out_of_sample`/`cost_model_complete`/
+`risk_voice_modeled`/`watchman_exits_modeled`/`shield_modeled`). The verdict sentence is stated plainly either way:
+**whether the deployed strategy passes or fails its own promotion floor once its real news-protection cost is charged.**
+**Rule 8, restated and binding: no gate, Auditor threshold or circuit-breaker limit is touched, and none will be
+proposed for change as a way to make either number pass.** A FAIL is a publishable result, not a problem to be fixed by
+moving the bar.
+
+### 5. DECLARED LIMITATIONS, ALL KNOWN BEFORE THE RUN (three inherited from EXP-024 §6, one NEW and specific to Test)
+ (i) **NEW, and in range for the first time: the one bad NFP normalisation is INSIDE this window.** EXP-024's G3
+     disclosed that across the full dump exactly one high-impact-USD `Nonfarm Payrolls` row does not normalise to
+     15:30 server: **2025-11-20 -> 14:30**, i.e. stamped 1h EARLY relative to the bar clock. That date sits inside the
+     Test year, so for THIS measurement it is in range. `scripts/build_backtest_calendar.py`'s self-check is
+     pre-registered over 2021-07-22..2025-07-22 (Train+Val) only and therefore reports it as non-fatal. Magnitude
+     bound, stated before the run: 1 event out of **303 unique high-impact-USD event timestamps inside the Test year**
+     (472 rows), affecting at most the ~1-2 H1 bars whose eligibility that single 30-minute window decides. Reported,
+     not silently accepted; it cannot plausibly move a year-level PF.
+ (ii) Fail-safe episodes are NOT modelled (EXP-024 §6(iii)): live fires protection whenever its calendar read fails,
+     so A@real is a **LOWER BOUND** on live's true trigger rate, and the measured cost is a lower bound in magnitude.
+ (iii) Current-classification look-ahead and erased reschedules (EXP-024 §6(i)/(ii)): importance/name are MetaQuotes'
+     CURRENT judgement applied to history; ~1% divergence observed against the live archive. Direction unknown.
+ (iv) H1 bar resolution: eligibility is bar-granular, live is 5-second granular; exits fill nominally (spread/slippage
+     is baked into the ENTRY only), which makes mode A's market close ~1 spread too favourable in BOTH arms.
+ (v) The live archive `data/db/news_calendar_history.csv` on this dev PC is a stale local copy (VPS-owned) and every
+     row it contributes is dated 2026-08, i.e. **outside the Test window entirely** — it cannot affect either number.
