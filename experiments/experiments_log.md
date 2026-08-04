@@ -6492,7 +6492,7 @@ the driver; both Task-1 arms are defined as protection-only).
 ---
 
 ## EXP-028 2026-08-04 — `trend_alignment` PARTIAL tier as a direct entry VETO (ABLATION; NEW family "council-entry-tier"; menu item #4 of the 2026-08-04 entry diagnostic)
-Status: PRE-REGISTERED (results pending). Everything from this line down to `### EXP-028 RESULTS` was written and
+Status: REJECTED -- Val flips +$352.60/PF 1.0961 -> -$24.45/PF 0.9914; y3 falls to 183 trades (< the Gate-1 200 floor); the removed population is positive in 2 of 4 years on the executed set (PF 1.115/0.689/0.810/1.088), so the diagnostic's census read does not survive as a trade-set read; Train's +$584 is reshuffling-dominated (40-56% refill). NO src/ change, NO config change, NO recommendation. Test year NOT touched. See `### EXP-028 RESULTS` below. Originally: PRE-REGISTERED (results pending). Everything from this line down to `### EXP-028 RESULTS` was written and
 COMMITTED, together with a results-free `experiments/exp028_partial_tier_veto_harness.py`, **before any V-cell,
 removed-population or overlay number existed**; only the RESULTS section and this Status line are added afterwards.
 
@@ -6630,10 +6630,166 @@ baseline already showed the deployed config failing. If the veto cuts the sample
 the floor does not move. No `config/base.yaml` change can follow from this experiment because no config key is
 involved; no `src/` change is made here under any outcome. The Test year is not touched.
 
+### EXP-028 RESULTS (run 2026-08-04) — VERDICT: **REJECT**. The veto FAILS four of the five pre-registered acceptance criteria: it flips Validation from **+$352.60 / PF 1.0961 to −$24.45 / PF 0.9914**, cuts y3 below the Gate-1 200-trade floor (183), and the removed population is **NOT** per-year negative on the executed set (PF 1.115 / 0.689 / 0.810 / 1.088 — positive in y1 AND y4, i.e. the diagnostic's "PF < 1.0 in all four years" does not survive as a trade-set read). The Train-side net gain (+$814.94 → +$1,398.62) is reshuffling-dominated (y4: 110 C0 entries removed, 58 new ones added on a 254-trade book) and is not evidence of causation, exactly as §5(d) pre-registered. NO `src/` change, NO `config/` change, NO recommendation to change `council/scoring.py`. **Test year NOT touched.**
+Raw output: `experiments/exp028_fidelity_out.txt` (G1–G4), `experiments/exp028_port_out.txt` (C0/V portfolio grid),
+`experiments/exp028_removed_out.txt` (per-position removed-population rows), `experiments/exp028_pool_out.txt`
+(pooled Train/Val), `experiments/exp028_refill_out.txt` (slot-refill accounting),
+`experiments/exp028_overlay_out.txt` (the informational Val EP/EPV overlay). Harness
+`experiments/exp028_partial_tier_veto_harness.py`. Dev PC, `.venv` (Python 3.12.10).
+
+FIDELITY GATES — all four run and reported BEFORE any V-cell number was read:
+ G1 **PASS.** Fast-path shim identical to the unshimmed engine trade-for-trade, field-for-field on a 4,000-bar slice in
+    BOTH cells: C0 176 trades `identical: true`, V 140 trades `identical: true`. (C0's 176 also matches EXP-027 G1's
+    own fast-path row on the same slice.) First proof of the shim against this seam.
+ G2 **PASS exactly, all four windows** — and, because every C0 cell is produced THROUGH the veto wrapper with
+    `veto=False`, this is simultaneously a full-window no-op proof of the seam: 266 / 254 / 233 / 254 trades,
+    PF 1.0159 / 0.9949 / 1.2020 / 1.0961, maxDD 14.4879 / 26.1200 / 12.2659 / 9.9895%, y4 net **+$352.60** — this log's
+    universal baseline, to the cent.
+ G3 **PASS.** Wrapper with `veto=False` == the engine's own default `signal_fn`, trade-for-trade / field-for-field
+    (176 == 176, `identical: true`) on the 4,000-bar slice.
+ G4 **PASS** (run before the informational overlay only): post-defect-fix P anchor on y4 = **369 records / PF 1.0830 /
+    +$329.94** / maxDD 10.9663% / 118 news exits — the 2026-08-04 fix NOTE's row, to the cent.
+
+### 1. MEASUREMENT (a) — PORTFOLIO, C0 vs V (the primary comparison, news mechanisms OFF = the C0 convention)
+$3,000 per window, complete cost model, commission $0. C0 emits one record per position (no protection), so
+records == positions in both cells.
+```
+window          cell  trades    PF      net$     maxDD%   avgR    pf_ex5  winRate  exit mix (SL/TP/time/struct/eod)
+y1 2021-22      C0      266   1.0159    +64.07  14.4879  0.0153  0.9408  0.3722   143/79/36/8/0
+                V       201   1.0068    +19.71  11.3079  0.0035  0.9042  0.3781   108/59/28/6/0
+y2 2022-23      C0      254   0.9949    -22.38  26.1200 -0.0254  0.9166  0.3386   141/74/28/10/1
+                V       210   1.0985   +346.80  13.3096  0.0497  1.0035  0.3667   113/66/26/5/0
+y3 2023-24      C0      233   1.2020   +773.25  12.2659  0.1305  1.1030  0.4077   118/77/36/2/0
+                V       183   1.3591  +1032.11   9.0168  0.2070  1.2291  0.4372   88/65/29/1/0
+y4 VAL 2024-25  C0      254   1.0961   +352.60   9.9895  0.0505  0.9873  0.3740   132/77/36/8/1
+                V       202   0.9914    -24.45  10.3094  0.0044  0.8668  0.3663   108/59/27/7/1
+POOLED TRAIN    C0      753 trades  +$814.94   |   V  594 trades  +$1,398.62
+POOLED VAL      C0      254 trades  +$352.60   |   V  202 trades     −$24.45
+V − C0:  y1 PF -0.0091 net  -44.36 DD -3.18 | y2 PF +0.1036 net +369.18 DD -12.81
+         y3 PF +0.1571 net +258.86 DD -3.25 | y4 PF -0.1047 net -377.05 DD +0.32
+         TRAIN net +583.68 (2 of 3 windows)  VAL net -377.05
+```
+**Read honestly, in both directions.** (1) The candidate is clearly WORSE on Validation on every headline metric —
+PF 0.9914 vs 1.0961, net −$24.45 vs +$352.60, avgR 0.0044 vs 0.0505, `pf_ex5` 0.8668 vs 0.9873 — i.e. **the year flips
+from profitable to losing**, which acceptance criterion (b) forbids outright. (2) On Train the candidate is better in
+aggregate (+$584) but **not per-year-consistently**: y1 is worse on both PF and net$, and the whole Train gain comes
+from y2 and y3. (3) The one directional read that is coherent across windows is drawdown: V's maxDD is lower in 3 of 4
+windows (dramatically so in y2, 26.12% → 13.31%) — expected from a 20–24% smaller book, and not enough to save a
+candidate that loses money out of sample. (4) Train's "improvement" has exactly the shape §5(d) pre-registered as
+non-evidence: see §3.
+
+### 2. MEASUREMENT (b) — THE REMOVED POPULATION, PER YEAR (sequence held FIXED on the C0 trade list)
+This is the deciding descriptive: what the partial-tier entries C0 actually took were worth.
+```
+window          C0 trades  removed  %of C0 | removed avgR ± SE   medR    PF     win%   net$    | kept avgR ± SE     PF
+y1 2021-22          266       86    32.3   | +0.0657 ± 0.1457  -0.9512  1.1149  38.4  +137.40  | -0.0088 ± 0.0981  0.9852
+y2 2022-23          254       73    28.7   | -0.2098 ± 0.1457  -0.9787  0.6889  28.8  -373.07  | +0.0490 ± 0.1005  1.0842
+y3 2023-24          233       67    28.8   | -0.1189 ± 0.1549  -0.9703  0.8101  31.3  -239.96  | +0.2312 ± 0.1060  1.4670
+y4 VAL 2024-25      254       76    29.9   | +0.0495 ± 0.1514  -0.9587  1.0881  38.2   +74.72  | +0.0509 ± 0.0983  1.0916
+POOLED TRAIN        753      226    30.0   | -0.0780 ± 0.0860 (t -0.91), CI [-0.247, +0.091], net -$475.63
+POOLED VAL          254       76    29.9   | +0.0495 ± 0.1514 (t +0.33), CI [-0.247, +0.346], net +$74.72
+removed − kept:  TRAIN -0.1647 ± 0.1041 (t -1.58), CI [-0.369, +0.039]  |  VAL -0.0014 ± 0.1805 (t -0.01), CI [-0.355, +0.352]
+```
+**The pre-registered per-year check FAILS.** The removed subset is negative in y2 and y3 and **positive in y1 (PF 1.115)
+and in y4, the Validation year (PF 1.088)**. Its exit mix is unremarkable in the positive years (y1: 45 SL / 27 TP /
+11 time / 3 struct). Pooled Train is −0.078R ± 0.086 (t = −0.91) — indistinguishable from zero at the 1.7-SE bar this
+project uses — and pooled **Val, n = 76, is below rule 6's 100-trade floor: MEASUREMENT WITH WIDE ERROR BARS**, +0.050R
+with a 95% interval of [−0.247, +0.346] that straddles zero, and its removed-minus-kept contrast is **−0.0014R**, i.e.
+the two populations are indistinguishable on Validation.
+**This is a genuine correction to the diagnostic's §6 read.** The census figure ("partial tier PF < 1.0 in all four
+years, Train avgR −0.148 ± 0.030, t −4.9") is an UNCONDITIONAL bar-level statistic over ~1,871/647 heavily-overlapping
+signal bars. On the population that actually trades it holds in **2 of 4 years**, the pooled Train effect shrinks from
+−0.148R (t −4.9) to −0.078R (t −0.91), and the Val effect changes sign. Same lesson as EXP-015 / EXP-016 / EXP-027 §2:
+a subset read taken off the census does not survive as an executed trade-set read. The removed share of EXECUTED trades
+is also **28.7–32.3%, not the ~24% supply share** the diagnostic quoted (which was a bar-level fraction).
+**Free, reported so nothing is selectively omitted — and flagged as a WARNING, not a lead.** The tier-0 subset (no EMA
+alignment at all) is the best-performing executed slice on Train (+0.328R, PF 2.38 in y1 / 2.12 in y2, n = 64 pooled)
+while tier-30 (FULL alignment) is only +0.053R. Both cells are below or near the floor, tier-0 reverses in y3
+(PF 0.664) and n = 12 on Val. Nobody should read this as "veto tier 30 instead" — it is exactly the kind of
+seven-cells-two-splits artifact the entry diagnostic's own preamble exists to warn about, and no such experiment is
+proposed here.
+
+### 3. MEASUREMENT (c) — SLOT-REFILL ACCOUNTING, and why Train's +$584 is NOT evidence
+```
+window        C0 pos  V pos  net change   gross vetoed  C0 entries   V entries    shared  replacement
+                                (pct)     signal BARS   absent in V  absent in C0          rate
+y1 2021-22      266    201  -65 (-24.4%)      703           108           43        158     39.8%
+y2 2022-23      254    210  -44 (-17.3%)      603            99           55        155     55.6%
+y3 2023-24      233    183  -50 (-21.5%)      416            90           40        143     44.4%
+y4 VAL          254    202  -52 (-20.5%)      579           110           58        144     52.7%
+(identity |C0| − |C0\V| + |V\C0| == |V| asserted in code every window: true 4/4)
+```
+"Gross vetoed signal BARS" is a bar count, not an episode count: the engine re-evaluates every bar while the slot is
+free, so a persistent partial-tier state is counted once per bar (and the V arm is free far more often than C0, which
+is why the number is large). The comparable figures are the set differences.
+**Only 54–60% of each arm's book is shared.** On y4, V drops 110 of C0's 254 entries and adds 58 entries C0 never took;
+40–56% of every removed entry is refilled by a later signal. So the two arms are not the same book — and per the
+pre-registration, a portfolio delta of this shape is **reshuffling-dominated and cannot be read as causation in either
+direction**. That cuts against the candidate's Train gain and equally against reading its Val loss as proof the removed
+trades were good. What decides the verdict is that the candidate must IMPROVE both splits to be adopted, and it does
+not improve Validation.
+
+### 4. MEASUREMENT (d) — TRADE-COUNT HONESTY AND THE GATE-1 FLOOR (rule 8)
+Post-veto counts: **201 / 210 / 183 / 202** against C0's 266 / 254 / 233 / 254 — a 17–24% reduction per window.
+**y3 falls to 183, below the Auditor's Gate-1 200-trade minimum (Appendix A §5.2).** Per acceptance criterion (c) that
+is a standalone failure, whatever PF does — and note that y3 is precisely the window where the candidate looks best
+(PF 1.2020 → 1.3591). The gate is not touched, questioned or proposed for change: the candidate fails it, and the
+sample it would leave a promotion decision to rest on is the reason the criterion was written before the run.
+For scale: the deployed config's Test-year A@real book is 309 records; a ~20% cut would put it near ~247 — still above
+200, but that is a projection, NOT a measurement, and the Test year was not run.
+
+### 5. MEASUREMENT (e) — THE INFORMATIONAL FULL-PARITY OVERLAY (Val only, post-defect-fix engine)
+```
+cell  records  positions    PF      net$    maxDD%   avgR   pf_ex5  winRate  news_exits
+EP       324       291    1.0724  +253.47  10.2112  0.1134  0.9700  0.4877      96
+EPV      258       231    1.0532  +149.11   9.7730  0.1091  0.9370  0.4845      76
+EPV − EP: PF -0.0192, net -$104.36, DD -0.44, records -66 (-20.4%)
+```
+EP reproduces the 2026-08-04 fix NOTE's y4 EP row (324 / 1.0724 / +$253) to the cent, which is a free extra fidelity
+confirmation. The overlay **agrees with the primary conclusion**: adding the veto on top of full news parity costs
+$104 and 0.019 PF on Validation and cuts the book by a further 20%. It does not contradict, and — as pre-registered —
+it could not have rescued the candidate even had it pointed the other way. INFORMATIONAL, one row, never deciding.
+
+### 6. ACCEPTANCE CRITERIA — SCORED AS WRITTEN
+| # | criterion | outcome |
+|---|---|---|
+| (a) | portfolio improvement on Train AND Val, in PF and net$ | **FAIL** — Val PF 0.9914 < 1.0961 and net −$24.45 < +$352.60; Train itself is not per-year consistent (y1 worse on both) |
+| (b) | no year flips profitable→losing; removed population negative per-year | **FAIL twice** — y4 flips +$352.60 → −$24.45; removed subset is POSITIVE in y1 (PF 1.115) and y4 (PF 1.088) |
+| (c) | trade-count honesty vs the Gate-1 200 floor | **FAIL** — y3 = 183 < 200; Val removed subset n = 76 < rule 6's floor |
+| (d) | refill accounting published, identity holds | **PASS as a measurement** (identity 4/4) — and it shows the deltas are reshuffling-dominated, so it supports no causal claim either way |
+| (e) | EP overlay must not contradict | **PASS** — it agrees (EPV −$104 / −0.019 PF vs EP) |
+Rule 5 (plateau/neighbourhood): **n.a. by construction** — an ablation has no grid and no value to defend; recorded as
+n.a. rather than silently skipped. Rule 7: family "council-entry-tier", configs evaluated **2 primary / 2 cumulative**
+(C0 + V); the P/EP/EPV cells are descriptive, nothing was selected among anything, so no edge-inflation correction is
+warranted and none is applied. Rule 6: Train removed n = 226 clears the floor; **Val removed n = 76 does not**, and
+every Val statement about that subset above carries the pre-registered "MEASUREMENT WITH WIDE ERROR BARS" wording.
+
+### 7. VERDICT — REJECT. The partial-tier veto is not a lever; the current `council/scoring.py` stands unchanged.
+The experiment ends here by design: there is no knob, so a RECOMMEND would have needed a `src/` change plus a spec
+conversation. It is not a RECOMMEND. Concretely:
+ (1) **The candidate loses money on Validation** and turns the only clean out-of-sample year in this experiment from
+ +$352.60 into −$24.45, while cutting y3 below the promotion gate's trade-count floor.
+ (2) **The motivating evidence does not survive contact with the trade set.** The diagnostic's strongest, most
+ per-year-consistent census finding (partial tier PF < 1.0 in 4/4 years, t = −4.9) becomes 2/4 years and t = −0.91
+ pooled on Train, and −0.001R (indistinguishable) on Val, once measured on the entries that actually traded. This is
+ the third time this log has recorded that transition (EXP-015, EXP-016, and now EXP-028 on the same component), and
+ it should be treated as a standing prior about census reads, not as a surprise.
+ (3) **What the diagnostic's §7 item #4 predicted is what happened.** It ranked this candidate below #1–#3 precisely
+ because "removal ≠ improvement once sequencing is applied", and flagged EXP-016's y1-flips-negative failure mode. The
+ same mechanism reappeared, one year later in the sample (y4 instead of y1) and with the churn quantified: 40–56% of
+ every removed entry is refilled by a different, later signal.
+ (4) **The scoring-formula surface is now closed on this component from both directions**: weight change (EXP-016,
+ rejected) and full veto (EXP-028, rejected). No further partial-tier experiment is warranted, and none is proposed.
+ (5) **NOT earned and explicitly not proposed:** any tier-0 / tier-30 veto (§2's warning), any Test-year look for this
+ family, and any change to the Gate-1 trade-count floor or PF floor to accommodate a smaller book (rule 8).
+`config/base.yaml` UNCHANGED; `src/` UNCHANGED; `council/scoring.py` UNCHANGED; no promotion/demotion gate, Auditor
+threshold or circuit-breaker limit touched or proposed for change. **Test year 2025-07-22 → 2026-07-21 NOT touched by
+any run in this experiment.**
+
 ---
 
 ## EXP-029 2026-08-04 — SLOT ALLOCATION: (A) the missed-signal population & occupancy attribution, (B) `shield.duplicate_signal_cooldown_hours` (NEW family "shield-slot-allocation"; menu item #3 of the 2026-08-04 entry diagnostic)
-Status: PRE-REGISTERED (results pending). Everything from this line down to `### EXP-029 RESULTS` was written and
+Status: PART A MEASURED (the slot is the binding constraint -- 72-75% occupancy, only 41% of episodes trade -- but the missed population is WORSE than the admitted one by 0.39R/episode, t -5.9 Train / -3.3 Val, same sign 4/4 years; 92% of missed episodes are same-direction continuations, i.e. the single slot acts as an anti-pyramiding filter). PART B REJECTED (cooldown {0,2,4,8}: max effect +0.033R at t 0.28, no plateau, per-year inconsistent; 4.0 stays). PART C scoping only, its trigger condition NOT met. NO config change, NO src/ change, Test year NOT touched. See `### EXP-029 RESULTS` below. Originally: PRE-REGISTERED (results pending). Everything from this line down to `### EXP-029 RESULTS` was written and
 COMMITTED, together with a results-free `experiments/exp029_slot_allocation_harness.py`, **before any census,
 counterfactual or sweep number existed**; only the RESULTS section and this Status line are added afterwards.
 
@@ -6761,3 +6917,205 @@ change — including the Gate-1 200-trade floor and PF floor. Part C proposes no
 `max_positions_per_symbol` stays at 1 and is not swept (rule 10). If Part B rejects, `config/base.yaml` keeps
 `duplicate_signal_cooldown_hours: 4.0` and that is recorded as a "default is already fine" result (rule 9). The Test
 year is not touched under any outcome.
+
+### EXP-029 RESULTS (run 2026-08-04) — PART A: MEASURED, and it REVERSES the motivating premise. PART B: **REJECT** (`duplicate_signal_cooldown_hours` stays 4.0). PART C: scoping only, and the evidence removes its trigger condition.
+**Headline.** The slot IS the binding constraint — 72–75% of all bars are occupied and only **41%** of signal episodes
+ever trade — but the episodes it throws away are **materially WORSE, not better**: forward-walked on one identical
+convention, missed episodes score **−0.155R ± 0.041 (PF 0.778, Train)** and **−0.093R ± 0.073 (PF 0.860, Val)** against
+admitted episodes' **+0.239R ± 0.053 (PF 1.442)** and **+0.293R ± 0.093 (PF 1.546)** — a gap of **−0.394R (t −5.9)** on
+Train and **−0.386R (t −3.3)** on Val, **same sign in all four years**. **92% of missed episodes are the SAME direction
+as the position already holding the slot**, so `max_positions_per_symbol: 1` is functioning as an accidental
+anti-pyramiding filter. Shield's cooldown accounts for **1.5%** of missed episodes; the slot accounts for 98.5%. The
+{0,2,4,8} cooldown sweep moves avgR by **≤ 0.033R at t ≤ 0.28** — an order of magnitude below the pre-registered
+1.6–1.7 SE bar — on a response surface with no stable shape (4.0 is the best Train cell in 2 of 3 years and the WORST
+of four cells on Val). `config/base.yaml` UNCHANGED, `src/` UNCHANGED, **Test year NOT touched.**
+Raw output: `experiments/exp029_fidelity_out.txt` (G1/G3), `experiments/exp029_census_out.txt` (Part A per-episode
+rows), `experiments/exp029_pool_out.txt` (pooled Part A), `experiments/exp029_sweep_out.txt` (Part B grid),
+`experiments/exp029_sweeppool_out.txt` (pooled Part B). Harness `experiments/exp029_slot_allocation_harness.py`.
+Dev PC, `.venv` (Python 3.12.10).
+
+FIDELITY GATES — all run and reported BEFORE any deciding number was read:
+ G1 **PASS, all four windows, with the measurement probe installed**: 266 / 254 / 233 / 254 trades,
+    PF 1.0159 / 0.9949 / 1.2020 / 1.0961, maxDD 14.4879 / 26.1200 / 12.2659 / 9.9895%, y4 net **+$352.60** — this log's
+    universal C0 baseline to the cent, so the `signal_fn` probe is behaviour-neutral. Free bars evaluated by the
+    engine: 1,485 / 1,628 / 1,645 / 1,668 of 5,926 / 5,917 / 5,894 / 5,913.
+    *Deviation recorded honestly: the FIRST run of this gate returned the anchors but reported 0 probed bars — a
+    harness bug (the probe was built and never passed into `BacktestConfig`). It was found BY the gate, fixed, and the
+    gate re-run clean. No experimental number was read from the buggy run.*
+ G2 **PASS (asserted in code, all four windows).** (i) the set of bars the engine did NOT evaluate equals the union of
+    [entry_index, exit_index) over the C0 trades exactly — the occupancy map is exact, not approximated (the
+    `end_of_data` position, which closes after the loop, is the one case where the exit bar itself stays busy, and is
+    handled explicitly); (ii) the unconditional census agrees with the engine on plan-existence at **every** bar the
+    engine evaluated (0 disagreements); (iii) episode counts vs the diagnostic — see §1's divergence note.
+ G3 **PASS.** `cooldown = 0` == `shield_cfg = None`, trade-for-trade / field-for-field on y1 (278 == 278,
+    `identical: true`) — confirming §3's structural claim that rule 6 is the only one of Shield's six rules with any
+    effect in this single-position engine.
+
+### 1. PART A — THE SUPPLY CENSUS (and a reconciliation with the diagnostic, not a silent divergence)
+```
+window          bars  signal   episodes  (diagnostic)  C0      busy%   admitted  missed  admit%
+                      bars                             trades
+y1 2021-22      5926   2734      580        560        266    74.94      246      334    42.41
+y2 2022-23      5917   2578      576        530        254    72.49      236      340    40.97
+y3 2023-24      5894   2430      558        538        233    72.09      223      335    39.96
+y4 VAL 2024-25  5913   2650      566        543        254    71.79      238      328    42.05
+POOLED TRAIN                    1714                   753              705      1009    41.13
+POOLED VAL                       566                   254              238       328    42.05
+```
+**The structural finding REPRODUCES**: the single slot is busy ~72–75% of all bars and roughly **6 in 10 signal
+episodes never trade**. The Council gate is not what limits trade count.
+**Divergence from the diagnostic, explained rather than glossed (G2 iii).** This census counts **fewer signal BARS**
+(2,734/2,578/2,430/2,650 vs 2,762/2,610/2,507/2,745) but **more EPISODES** (580/576/558/566 vs 560/530/538/543), and
+lands at a 40–42% admit rate against its 43–48%. Both differences have the same single cause and it points the same
+way: this harness applies the **real Risk Voice** to every census bar (the engine's own signal path), while the
+diagnostic's band census scored the Council decision matrix. Risk Voice's Friday-close condition alone fires on ~798
+bars per Train+Val (diagnostic §4), so it removes scattered bars — which lowers the bar count and **splits episodes in
+two wherever it removes a middle bar**, raising the episode count and lowering the admit rate. The diagnostic's
+qualitative claim ("roughly half of episodes never trade") survives; its exact 47% becomes 41% under the stricter,
+engine-faithful definition. Neither number is used for anything except framing.
+
+### 2. PART A — IS THE MISSED POPULATION BETTER, WORSE, OR EQUAL? (the deciding descriptive)
+One forward-walk per EPISODE (not per bar), from the episode's first bar, Appendix A §5.4 cost convention,
+`time_stop_bars = 48` — the diagnostic's own machinery and convention, so the two are comparable.
+```
+window          admitted  n / avgR ± SE / PF        missed  n / avgR ± SE / PF
+y1 2021-22          246 / +0.2154 ± 0.0887 / 1.4023    334 / -0.2230 ± 0.0696 / 0.6871
+y2 2022-23          235 / +0.1543 ± 0.0916 / 1.2654    340 / -0.0974 ± 0.0727 / 0.8563
+y3 2023-24          223 / +0.3550 ± 0.0960 / 1.7029    335 / -0.1440 ± 0.0720 / 0.7923
+y4 VAL 2024-25      238 / +0.2927 ± 0.0933 / 1.5456    328 / -0.0931 ± 0.0731 / 0.8598
+POOLED TRAIN        704 / +0.2392 ± 0.0531 / 1.4421   1009 / -0.1545 ± 0.0412 / 0.7776
+POOLED VAL          238 / +0.2927 ± 0.0933 / 1.5456    328 / -0.0931 ± 0.0731 / 0.8598
+missed − admitted:  TRAIN -0.3937 ± 0.0672 (t -5.86), CI [-0.525, -0.262]
+                    VAL   -0.3858 ± 0.1185 (t -3.26), CI [-0.618, -0.154]
+```
+**The missed population is WORSE than the admitted one, in every year, on both splits, by ~0.39R per episode.** Every
+subset clears rule 6's 100-observation floor, so no wide-error-bars caveat is needed on the pooled figures — but three
+honest caveats ARE needed and are stated before anyone quotes this:
+ (i) **The comparison is descriptive, not causal.** "Admitted" is defined by the engine being flat, which is
+     endogenous. This shows the population the slot skips is worse than the one it takes; it does **not** prove a
+     two-slot engine would earn −0.15R on the skipped episodes, because a second slot changes exits, sizing and
+     equity path.
+ (ii) **Episodes are disjoint but their 48-bar forward walks are not**, so consecutive episodes' outcomes are
+     correlated and the printed SEs are optimistic. The effect is far too large (t −5.9 / −3.3, four years, same sign)
+     to be an artifact of that, but the SEs should not be quoted as exact.
+ (iii) **Levels are not comparable to the engine's.** The forward-walk convention has no slippage, no swap, no
+     Watchman and no Shield, so admitted episodes score +0.239R here against the C0 trades' actual engine avgR of
+     +0.015 / −0.025 / +0.131 / +0.051. Only the admitted-vs-missed CONTRAST inside this convention is meaningful,
+     exactly as pre-registered.
+**Why (the mechanism), with the one measurement that supports it.** DESCRIPTIVE FIELD ADDED AFTER THE
+PRE-REGISTRATION and flagged as such — it can change no verdict (Part A decides nothing and Part B is decided on its
+own grid), and it is reported because it answers the "which kinds of holds" question directly: **92% of missed
+episodes (915/994 Train, 290/322 Val) are the SAME DIRECTION as the position already holding the slot.** The blocked
+supply is overwhelmingly *continuation* signals firing while a position in that direction is already running — i.e.
+the single slot is acting as an accidental **anti-pyramiding filter**, and the entries it refuses are late-in-move
+ones. On Train both sub-buckets are negative (same-dir −0.148 ± 0.043 n=915; opposite-dir −0.120 ± 0.149 n=79); on Val
+the same-direction bucket is −0.053 ± 0.079 (n=290) and the opposite-direction one is −0.384 ± 0.212 (n=32,
+**below rule 6's floor — MEASUREMENT WITH WIDE ERROR BARS**, no claim made).
+
+### 3. PART A — OCCUPANCY ATTRIBUTION: WHICH KINDS OF HOLDS BLOCK THE MOST SUPPLY
+```
+blocked BARS attributed to the holding trade's eventual exit (missed episodes only)
+split   take_profit      stop_loss        time_stop       structure_inval
+TRAIN   1279 (37.1%)     1082 (31.3%)     1071 (31.0%)    20 (0.6%)
+VAL      445 (38.2%)      341 (29.3%)      378 (32.5%)     -
+missed EPISODES by holder exit: TRAIN  SL 371 / TP 333 / time 280 / struct 10 | VAL  TP 117 / SL 106 / time 99
+holder age at the moment of the block (bars): median 13-14, p75 23-26, p90 35-41, max 71-87, mean 16.5-18.6
+holder TOTAL length, blockers only (bars):    median 31-35, p90 53-59   |  ALL C0 trades: median 11-14, mean 16.7-18.2
+median trade length by exit, all C0 trades:   time_stop 30-46 | take_profit 11-19 | stop_loss 7-8 | struct 0-11
+```
+Three readings, in order of how load-bearing they are:
+ (1) **Blockers are the LONG holds, by a factor of ~3.** A trade that blocks at least one episode has a median length
+     of 31–35 bars against 11–14 for the book as a whole. That is mechanical (a longer hold covers more episodes) and
+     it is the quantitative form of "slot-refill sensitivity".
+ (2) **In AGGREGATE bars, winners block the most** (take_profit 37–38% of blocked bars), simply because there are many
+     of them and they run 11–19 bars. **Per trade, the time-stop bucket is by far the most expensive**: 30–46 bars of
+     occupancy each — 3–5× a stop-out's 7–8 — for a bucket the diagnostic §2.4 measures at **+0.003R average**. On y4,
+     36 time-stop trades consume 1,082 busy bars (~25% of all occupancy) to deliver approximately nothing.
+ (3) **There are no "protected runners" in this arm to blame.** C0 has news protection OFF by construction, so the
+     closest thing to a dead hold is the time-stop bucket in (2). Any claim about protection-extended holds would need
+     the P/EP arms and is NOT made here.
+**Cause mix of missed episodes: `slot_busy` 994 / 1,009 = 98.5% (Train) and 322 / 328 = 98.2% (Val); `shield_cooldown`
+15 (1.5%) and 5 (1.5%); sizing/min-lot 0 and 1.** Shield's cooldown blocked only 43 / 24 / 20 / 38 BARS per window.
+That is the whole of Part B's mechanical reach, measured before Part B was scored — and it predicts, mechanically,
+that no cooldown value can move a ~250-trade book by more than re-sequencing noise.
+
+### 4. PART B — THE COOLDOWN SWEEP {0, 2, 4, 8}, C0 context
+```
+window          cd=0                      cd=2                      cd=4 (LIVE)               cd=8
+y1 2021-22      278 / 0.9954 /  -19.29    267 / 1.0132 /  +52.75    266 / 1.0159 /  +64.07    255 / 1.0799 / +311.62
+y2 2022-23      262 / 0.9840 /  -72.33    257 / 0.9856 /  -63.40    254 / 0.9949 /  -22.38    245 / 0.9650 / -143.73
+y3 2023-24      233 / 1.1688 / +640.36    233 / 1.1746 / +662.10    233 / 1.2020 / +773.25    232 / 1.1802 / +671.72
+y4 VAL          263 / 1.1189 / +456.63    260 / 1.1442 / +555.82    254 / 1.0961 / +352.60    248 / 1.1573 / +571.25
+                (trades / PF / net$;  maxDD% y4: 9.41 / 8.52 / 9.99 / 9.16)
+POOLED TRAIN    773 / +$548.74            757 / +$651.45            753 / +$814.94            732 / +$839.61
+  avgR ± SE     0.0241 ± 0.0476           0.0268 ± 0.0481           0.0372 ± 0.0485           0.0480 ± 0.0494
+  vs baseline   -0.0131 ± 0.0680 (t-0.19) -0.0104 ± 0.0683 (t-0.15)        —                  +0.0107 ± 0.0692 (t+0.16)
+  shared entries      92.5%                     94.6%                    100%                      94.7%
+POOLED VAL      263 / +$456.63            260 / +$555.82            254 / +$352.60            248 / +$571.25
+  avgR ± SE     0.0681 ± 0.0820           0.0807 ± 0.0826           0.0505 ± 0.0823           0.0834 ± 0.0839
+  vs baseline   +0.0176 ± 0.1162 (t+0.15) +0.0302 ± 0.1166 (t+0.26)        —                  +0.0329 ± 0.1175 (t+0.28)
+  shared entries      88.2%                     90.8%                    100%                      92.3%
+  pf_ex5 (y4)         1.0149                    1.0397                    0.9873                    1.0464
+```
+**Scored against the pre-registered bars:**
+| # | criterion | outcome |
+|---|---|---|
+| (a) | improvement on Train AND Val in PF and net$ | cd=8 improves pooled Train net$ (+$25 on $815, +3%) and Val (+$219), but its per-window Train PF is WORSE in y2 (0.9650 vs 0.9949) and y3 (1.1802 vs 1.2020) — **not a clean pass** |
+| (b) | **> 1.6–1.7 SE on Train AND Val** | **FAIL, decisively** — the largest effect in the whole grid is +0.033R at **t = 0.28**; every cell is within ±0.2 SE on Train and ±0.3 SE on Val |
+| (c) | per-year consistency | **FAIL** — cd=8 beats baseline in **1 of 3** Train years (y1 only) and its y2 `pf_ex5` falls to 0.8835 vs 0.9166 |
+| (d) | plateau (rule 5) | **FAIL** — the surface has no stable shape: on Train the response is 0.9954/1.0132/1.0159/1.0799 in y1 (monotone up) but peaks at the BASELINE in y2 and y3, while on Val the baseline 4.0 is the **worst of all four cells** (1.0961 vs 1.1189 / 1.1442 / 1.1573). A knob whose live value is simultaneously the best Train cell in 2 of 3 years and the worst Val cell of four is measuring noise |
+| (e) | anti-reshuffling clause | 88–95% of every arm's entries are shared with the baseline, so the entire delta lives in a 5–12% composition change — and per §3 the cooldown's own mechanical reach is 20–43 bars/year and 4–6 episodes/year. **A mechanism that touches ~5 episodes cannot honestly be credited with a $200 swing on a 250-trade book**; that swing is re-sequencing |
+| (f) | sample floors | PASS — every cell is 232–278 trades, above rule 6's 100 and above the Gate-1 200 |
+**VERDICT: REJECT. `shield.duplicate_signal_cooldown_hours` stays 4.0** — a textbook "the default is already fine"
+(rules 5/9), and the honest reading is stronger than that: **this knob has no measurable expectancy content at all** in
+this engine.
+**The temptation, named so it cannot be quietly indulged later.** cd=8 is the best cell on pooled Train net$ AND on
+Val. A shopper would adopt it. It is not adopted because (b), (c) and (d) all fail and because §3 measured its
+mechanical reach before the sweep was scored: 4–6 blocked episodes per year cannot produce the observed swings, so the
+swings are the slot re-sequencing into different trades — precisely the failure mode the anti-reshuffling clause was
+pre-registered to catch. cd=0 is likewise not adopted despite being the "more trades" direction.
+**Independent reproduction of a prior result.** cd=4 vs cd=0 here reproduces the SIGNS of the 2026-07-23 shield-impact
+NOTE (measured at $10k on the full history, different equity and cost convention): cooldown helps all three Train
+years (+0.021 / +0.011 / +0.033 PF) and hurts Val (−0.023 PF), against the NOTE's Train +0.024 / Val −0.031. Two
+independent measurements agreeing that the effect is small and its sign is split by split is itself the result.
+
+### 5. PART C — ARCHITECTURAL OPTIONS (SCOPING ONLY; NOTHING SIMULATED, NO NUMBER INVENTED)
+The pre-registration made Part C conditional: *"if Part A shows the missed population is materially good"*.
+**It does not — it shows the opposite (§2), by 0.39R per episode, in four of four years, on both splits.** The options
+are therefore enumerated as the pre-registration requires, but with that condition recorded as NOT met, and none of
+them is recommended, requested or costed with any invented figure. All three are USER decisions.
+ **(1) Replacement policy** — close the open position when a stronger/fresher signal arrives and take the new one.
+ Cost/risk: it converts a rule-based exit system into a discretionary-flavoured one, needs a "stronger" definition
+ that does not exist in Appendix A (and any such definition is a new tunable surface with high overfitting risk); it
+ realises losses early on positions that would have recovered, which interacts directly with the time-stop and
+ structure-invalidation exits; and §2 says the replacing signals are, on average, worse than the ones already held.
+ It is the option with the largest code-surface change and the weakest evidence behind it.
+ **(2) Two slots (`max_positions_per_symbol: 1 → 2`)** — spec-bounded: *"[adjustable: เพิ่มเป็น 2 ได้หลัง live 3
+ เดือน]"*, i.e. not available until 3 months of live results support it, which is why it was NOT swept here (rule 10).
+ Cost/risk: it doubles concurrent exposure against `total_risk_ceiling_pct` 3.0 and the 8% drawdown halt, and at
+ $3,000 with the min-lot floor both legs are pinned at 0.01 lot, so it adds tail risk without adding sizing
+ flexibility (the same economics the 2026-07-23 martingale NOTE documented). Its one existing measurement (that
+ NOTE's variant B) found it neutral-to-slightly-worse on PF with lower MTM drawdown. §2 predicts the second slot
+ would be filled disproportionately with same-direction continuation entries — the population measured as negative.
+ **(3) Queue priority** — when the slot frees, prefer the best pending signal instead of the next one chronologically.
+ Cost/risk: it needs a scoring rule for "best", and the entry diagnostic §2.1/§3.3 already showed the Council score is
+ not a stable quality gradient across splits (the worst Train band is the best Val band), so the ranking key would
+ have to be invented and tuned — the highest overfitting risk of the three for the smallest structural change. It
+ also cannot increase trade COUNT at all; it only re-orders, which is the noisiest response surface this log has met.
+**What the evidence actually supports, stated plainly:** the binding constraint is real (72–75% occupancy), but
+relieving it is not obviously valuable, because the supply behind the constraint is worse than the supply in front of
+it. If anything in this area deserves attention it is the **occupancy COST of the time-stop bucket** (§3(2): 30–46
+bars per trade for ~+0.003R) — but that is an EXIT-side question (`watchman.time_stop_hours`), it belongs to a
+different family, and no experiment on it is proposed or pre-registered here.
+
+### 6. RULE COMPLIANCE
+Rule 6: every deciding subset clears the 100 floor (admitted 704/238, missed 1009/328, sweep cells 232–278); the one
+sub-floor cell (Val opposite-direction missed episodes, n=32) is labelled MEASUREMENT WITH WIDE ERROR BARS and carries
+no claim. Rule 7: family "shield-slot-allocation", configs evaluated **4 / 4** (cooldown 0/2/4/8, baseline included);
+N = 4 ≪ 20, no edge-inflation correction triggered, and nothing was selected — the honest cumulative count for the
+next session is 4. Part A added no configs. Rule 5: plateau checked and FAILED for every non-baseline cell. Rule 9:
+this is a negative result and is logged with the same rigour as a positive one. Rule 10: `max_positions_per_symbol`
+was NOT swept (spec-bounded); it is only discussed in Part C as a user decision.
+`config/base.yaml` UNCHANGED (`duplicate_signal_cooldown_hours` stays 4.0); `src/` UNCHANGED; no promotion/demotion
+gate, Auditor threshold or circuit-breaker limit touched or proposed for change (rule 8). **Test year 2025-07-22 →
+2026-07-21 NOT touched by any run in this experiment.**

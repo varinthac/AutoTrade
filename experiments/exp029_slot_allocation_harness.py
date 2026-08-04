@@ -148,6 +148,7 @@ def build_cfg(cfg, *, cooldown: float | None, signal_fn=None) -> BacktestConfig:
         risk_voice_cfg=rv_cfg, watchman_cfg=wm_cfg, shield_cfg=sh_cfg,
         pivot_bars=cfg["global"]["swing_pivot_bars"],
         min_lot_risk_cap_pct=cfg["cfo"]["min_lot_risk_cap_pct"],
+        **kw,
         **order,
     )
 
@@ -240,7 +241,7 @@ def mode_census(args) -> int:
             # frees the slot BEFORE that bar's signal step, so bar x is free.
             # `end_of_data` is closed AFTER the loop, so bar x stays busy.
             last_busy = x if t.exit_reason == "end_of_data" else x - 1
-            holders.append({"entry_i": e, "exit_i": x, "len": x - e,
+            holders.append({"entry_i": e, "exit_i": x, "len": x - e, "dir": t.direction,
                             "exit": t.exit_reason, "r": round(t.r_multiple, 4)})
             for b in range(e, last_busy + 1):
                 holder_of[b] = k
@@ -319,6 +320,11 @@ def mode_census(args) -> int:
                 "holder_len": None if h is None else h["len"],
                 "holder_exit": None if h is None else h["exit"],
                 "holder_r": None if h is None else h["r"],
+                # DESCRIPTIVE field added after the pre-registration (flagged as
+                # such in RESULTS): is the blocked episode the SAME direction as
+                # the position holding the slot? -- i.e. would admitting it have
+                # been a pyramid into a running move, or a genuine reversal?
+                "holder_same_dir": None if h is None else (h["dir"] == ep["dir"]),
             })
     finally:
         e22.uninstall_fast_path()
