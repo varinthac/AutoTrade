@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1551 (including all parametrized variants)
+- **Total Test Count**: 1557 (including all parametrized variants)
 - **Test Files**: ~59 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -80,6 +80,7 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 | **Watchman Subtotal** | | **170** |
 | Scripts & CLI | test_autotrade_control.py | 24 |
 | | test_backup_db.py | 8 |
+| | test_pull_vps_backups.py | 6 |
 | | test_build_backtest_calendar.py | 23 |
 | | test_calendar_export_watchdog.py | 12 |
 | | test_clock.py | 1 |
@@ -108,9 +109,9 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 | | test_service_watchdog.py | 9 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **437** |
+| **Scripts & CLI Subtotal** | | **443** |
 | | | |
-| **GRAND TOTAL** | | **1551** |
+| **GRAND TOTAL** | | **1557** |
 
 ---
 
@@ -1419,6 +1420,15 @@ This document provides a comprehensive list of all 1545 test cases in the AutoTr
 - test_main_dispatches_status
 - test_main_dispatches_emergency_stop_with_confirm_flag
 - test_main_dispatches_emergency_stop_without_confirm_flag
+
+### tests/unit/test_pull_vps_backups.py
+
+- test_missing_locally_skips_files_that_already_exist
+- test_missing_locally_empty_remote_means_nothing_to_pull
+- test_main_listing_failure_is_a_hard_failure_not_up_to_date
+- test_main_pulls_only_missing_files_and_succeeds
+- test_main_partial_pull_failure_exits_nonzero
+- test_pull_one_removes_partial_file_on_transfer_failure
 
 ### tests/unit/test_backup_db.py
 

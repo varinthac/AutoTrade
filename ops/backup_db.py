@@ -44,6 +44,17 @@ CALENDAR_SRC = Path(r"C:\AutoTrade\data\db\news_calendar_history.csv")
 # subfolder must exist under the signed-in account's My Drive -- create it
 # once after Google Drive for Desktop is installed and signed in (an
 # interactive step -- see docs/vps_deployment.md Section 8).
+#
+# 2026-08-04 (docs/vps_lean_plan.md defect D-2): the paragraph above turned
+# out to have the SAME failure shape it was fixing -- GoogleDriveFS.exe only
+# runs in a logged-on interactive session, and once the stack moved to
+# session-independent Session 0 operation the sync silently stopped while
+# this task kept reporting 0. This folder is therefore now treated as a
+# plain STAGING directory: the GUARANTEED off-box transport is the dev PC's
+# daily pull (`ops/pull_vps_backups.py`, over the existing SSH key), and
+# Google Drive sync is a bonus second copy whenever a session happens to
+# exist. Do not "fix" a missing My Drive folder by reinstalling the sync
+# client -- the pull works regardless.
 DEST_DIR = Path(r"C:\Users\Administrator\My Drive\AutoTrade_Backups")
 KEEP_DAYS = 30
 
