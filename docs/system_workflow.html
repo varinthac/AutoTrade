@@ -348,7 +348,7 @@
       เขียนสำหรับผู้อ่านที่ไม่เคยเทรดมาก่อนก็อ่านเข้าใจได้
     </p>
     <div class="meta-row">
-      <span>อัปเดตล่าสุด: <strong>23 ก.ค. 2026</strong></span>
+      <span>อัปเดตล่าสุด: <strong>5 ส.ค. 2026</strong></span>
       <span>อ้างอิงค่าจาก: <strong>config/base.yaml</strong> (ปัจจุบัน)</span>
       <span>สัญลักษณ์ที่ถือปฏิบัติ: <strong class="pill adopted">ใช้งานจริง</strong> <strong class="pill pending">รอตัดสินใจ</strong> <strong class="pill rejected">ถูกปฏิเสธ</strong></span>
     </div>
@@ -651,6 +651,7 @@
     <h3>ประวัติการปรับจูน</h3>
     <p><span class="pill adopted">ใช้งานจริง</span> <span class="history-exp">EXP-003</span> — ทดสอบเปรียบเทียบ &ldquo;เทรดได้แค่ช่วง 14:00–18:00&rdquo (เดิม) กับ &ldquo;เทรดได้ตลอด 24 ชั่วโมง&rdquo; พบว่าเปิดตลอด 24 ชม. ชนะใน 4 จาก 5 ปีที่ทดสอบ (รวมปีที่กันไว้ทดสอบสุดท้ายด้วย) — ช่วงเดิมบังเอิญปิดกั้นเวลาที่ทำกำไรได้ดีจากตลาดเอเชียไปด้วย จึงเปลี่ยนเป็นเปิดตลอด 24 ชม.</p>
     <p><span class="pill rejected">ถูกปฏิเสธ</span> <span class="history-exp">EXP-004</span> — ทดสอบทางเลือกกลางๆ คือเปิดตลอดยกเว้นชั่วโมง 22:00–24:00 (ช่วงเปลี่ยนกะตลาด) ผลปรากฏว่าแย่กว่าเปิดตลอด 24 ชม.เฉยๆ เพราะ &ldquo;ชั่วโมง 22-23 ขาดทุน&rdquo; ที่ดูเหมือนจริงในภาพรวมหลายปี จริงๆ แล้วไม่ได้เกิดขึ้นสม่ำเสมอทุกปี</p>
+    <p><span class="pill neutral">วัดแล้ว — คงเดิม</span> <span class="history-exp">EXP-027 (4 ส.ค. 2026)</span> — เงื่อนไขห้ามเข้าไม้ช่วงข่าว (news blackout, [−45,+30] นาทีรอบข่าว USD แรง) ถูกจำลองใน backtest ได้เป็นครั้งแรกด้วยปฏิทินจริง: veto จริง ~10–15% ของสัญญาณ แต่ slot เดี่ยวของระบบเติมไม้ทดแทนกลับมา ~76% ผลสุทธิระดับพอร์ตจึง<b>แทบเป็นศูนย์</b> — เป็น control ที่ &ldquo;แทบฟรี&rdquo; เก็บไว้ตามเดิม และการจูนขนาด window ถูกบล็อกถาวรด้วย sample ที่เล็กเกินไป</p>
     <p><span class="pill neutral">ยืนยันแล้ว</span> DST / Server-time validation (23 ก.ค. 2026, diagnostic NOTE) — ยืนยันว่า <code>friday_close_hour: 20</code> ซึ่งตั้งในเวลา server มีระยะห่างเสถียรจากการปิดตลาดจริง (ประมาณ 3 ชั่วโมง) ตลอดปี ไม่มี drift เมื่อ DST สลับ (broker observes DST: EET/EEST = UTC+2/+3) → ไม่ต้อง config change | ถ้า account move to fixed-UTC broker ต้อง re-verify hour thresholds ทั้งหมด</p>
   </section>
 
@@ -772,7 +773,7 @@
       <li><b>ตาม Stop Loss ให้ราคา (Trailing)</b> — เมื่อกำไรเกิน 1.5R เลื่อน Stop Loss ตามราคาขึ้นไปเรื่อยๆ เพื่อล็อกกำไรเพิ่ม</li>
       <li><b>ตรวจจับโครงสร้างพัง (Structure Invalidation)</b> — ถ้าราคาทำลายจุดโครงสร้างที่ใช้เป็นเหตุผลเข้าไม้ตั้งแต่แรก แปลว่าสมมติฐานเดิมผิดแล้ว → ปิดทันที ไม่รอ Stop Loss</li>
       <li><b>ไม้ค้าง (Time Stop)</b> — ไม้ที่เปิดมานานเกินไปแล้วยังไม่ไปทางไหนชัดเจน (กำไร/ขาดทุนน้อยมาก) → ปิดทิ้ง ไม่ปล่อยให้เงินจมอยู่เฉยๆ</li>
-      <li><b>ป้องกันข่าว (News Protection)</b> — ถ้าข่าวสำคัญใกล้เข้ามาและไม้นี้มีกำไรอยู่แล้ว → ปิดครึ่งหนึ่งเก็บกำไรไว้ก่อน กันข่าวทำราคาผันผวนจนพลิกกลับ</li>
+      <li><b>ป้องกันข่าว (News Protection)</b> — ถ้าข่าวสำคัญใกล้เข้ามาและไม้นี้มีกำไร ≥ 0.5R → ปิดครึ่งหนึ่งเก็บกำไรไว้ก่อน (และเลื่อน SL ของส่วนที่เหลือไปจุดเข้า) กันข่าวทำราคาผันผวนจนพลิกกลับ <em style="color: var(--text-muted);">[วัดจริง 3–4 ส.ค. 2026]</em> — ที่บัญชี ~$3,000 ไม้ส่วนใหญ่เป็น lot ขั้นต่ำ 0.01 ครึ่งไม้จึงปัดเหลือศูนย์ → กลไกกลายเป็น &ldquo;ปิดทั้งไม้ที่ ~+0.5R&rdquo; โดยพฤตินัย; EXP-024 วัดด้วยปฏิทินข่าวจริงพบว่าโดน ~26–28% ของไม้ทั้งหมด คิดเป็นต้นทุน ~−0.15R ต่อไม้ที่โดน แลกกับการที่ไม้กลุ่มนั้น<b>ไม่มีขาดทุนเลยแม้แต่ไม้เดียว</b> — ทางเลือกทุกทาง (lock-SL/EXP-023, ยก threshold/EXP-025, SKIP/EXP-026) ทดสอบแล้วแย่กว่าทั้งหมด จึงคงพฤติกรรมเดิมไว้โดยรู้ราคาแล้ว</li>
       <li><b>ดูแลปุ่ม AutoTrading ของ MT5 (AutoTrading Toggle Monitor)</b> <em style="color: var(--text-muted);">[ใหม่ 22 ก.ค. 2026]</em> — ระบบเฝ้าดูปุ่ม &ldquo;AutoTrading&rdquo;/&ldquo;Algo Trading&rdquo; ในเมนู Tools &gt; Options &gt; Expert Advisors ของตัว MT5 — ถ้ามีใครกดเปิด/ปิดปุ่มนี้ ระบบจะส่ง Telegram alert ทันที ยกเลิก entries ใหม่ และแจ้งเมื่อปุ่มถูกเปิดกลับแล้ว (เกิดจากเหตุการณ์จริง 21 ก.ค. 2026: ปุ่มถูกปิดโดยไม่ตั้งใจ ทำให้ MT5 ปฏิเสธทุก order ด้วย retcode 10027 แต่ไม่มีใคร­รู้นาน)</li>
       <li><b>ยืนยันการปิดตำแหน่งแบบทันที (Close Position Reconciliation)</b> <em style="color: var(--text-muted);">[แก้ไข 22 ก.ค. 2026]</em> — เมื่อระบบพยายามปิดตำแหน่ง หากสูญเสีย network acknowledgment ช่วงสั้นๆ ตัวเดิมจะถือว่าปิด​ไม่สำเร็จ ส่ง alert ซ้ำๆ จนกว่า periodic safety-check จะตรวจพบว่าปิดได้จริงแล้ว (หลาย cycles ต่อมา) — ตอนนี้แก้ไขให้ re-query broker state ทันที ตรวจสอบ 3 สิ่ง: (1) ปิดของระบบเรา? (2) ปิดโดย manual/EA อื่น? (3) ยังเปิดอยู่หรือไม่ — ระบบตอนนี้แยกแยะ "ปิดโดยระบบของเรา" ให้เป็น <code>reconciled_system_close</code> แทนการแบ่ง generic "manual" ปัญหาจึง resolve ใน seconds แทนที่จะ alarm หลายรอบ</li>
     </ul>
@@ -804,6 +805,16 @@
       <a href="#history">ประวัติการปรับจูน</a> ด้านล่าง
     </div>
 
+    <div class="callout">
+      <strong>อัปเดต 3–4 ส.ค. 2026 — คำถาม News Protection ปิดครบทุกบานด้วยการวัดจริง:</strong>
+      ได้ปฏิทินข่าวย้อนหลังของจริงจาก MT5 (ครบ 2021-07→ปัจจุบัน, <code>mql5/CalendarHistoryDump.mq5</code>)
+      ทำให้กลไกข่าวทั้งฝั่งออก (News Protection) และฝั่งเข้า (Risk Voice blackout) ถูกจำลองใน backtest ได้เป็นครั้งแรก
+      — ผลวัด: <span class="pill rejected">ถูกปฏิเสธ</span> lock-SL แทนการปิด (EXP-023), ยก threshold 0.5→0.75–1.5 (EXP-025),
+      SKIP ที่ min-lot (EXP-026) — ทุกทางแย่กว่าพฤติกรรมปัจจุบัน; <span class="pill adopted">ใช้งานจริง</span>
+      backtest จำลองข่าวทั้งสองกลไกเป็นค่าเริ่มต้น และ Gate-1 ปฏิเสธผลทดสอบที่ไม่จำลองข่าวโดยอัตโนมัติ
+      (honesty criterion ตัวที่ 6) — ดูรายละเอียดใน <a href="#history">ประวัติการปรับจูน</a>
+    </div>
+
     <h3>ประวัติการปรับจูน</h3>
     <p><span class="pill adopted">ใช้งานจริง</span> ดูหัวข้อ <strong><a href="#history">08. ประวัติการปรับจูนโดยละเอียด</a></strong> ด้านล่างของเอกสาร สำหรับรายละเอียดการทดสอบและ joint verification ที่นำไปสู่การตัดสินใจนี้</p>
   </section>
@@ -819,6 +830,7 @@
     <ul class="role-why">
       <li>บันทึกจำนวนไม้ที่เทรด, กำไร/ขาดทุนแต่ละไม้, และ <span class="glossary-term">Profit Factor</span> (ทำกำไรได้กี่เท่าของที่ขาดทุนไป)</li>
       <li>บันทึกสัญญาณที่ถูกระงับโดย Council / Risk Voice / Shield ไว้ด้วย เพื่อดูภาพรวมว่าระบบเข้มงวดเกินไปหรือไม่</li>
+      <li><b>Avg SL overshoot</b> <em style="color: var(--text-muted);">[ใหม่ 4 ส.ค. 2026]</em> — รายงานประจำวันวัดว่าไม้ที่โดน Stop Loss ปิดได้แย่กว่า −1R เฉลี่ยเท่าไหร่ (จาก slippage/gap) — เป็นต้นทุนเดียวของฝั่ง exit ที่ backtest มองไม่เห็น พบจาก live จริงที่ −1.33R/−1.34R; ต้องเฝ้าดูเมื่อ sample โต เพราะ margin ของ Gate-1 บางมาก</li>
     </ul>
 
     <h3>เกณฑ์การเลื่อนขั้น (Promotion Gates)</h3>
@@ -829,7 +841,7 @@
           <tr>
             <td>ทดสอบย้อนหลัง<br>(Backtest)</td>
             <td>เทรดจำลอง<br>(Paper)</td>
-            <td>ทดสอบกับข้อมูลที่ไม่เคยใช้จูนค่าเลย: Profit Factor ≥ 1.3, ขาดทุนสูงสุด ≤ 15%, อย่างน้อย 200 ไม้, รวมต้นทุนจริงครบ (spread+ค่าคอม+slippage)</td>
+            <td>ทดสอบกับข้อมูลที่ไม่เคยใช้จูนค่าเลย: Profit Factor ≥ 1.3, ขาดทุนสูงสุด ≤ 15%, อย่างน้อย 200 ไม้, รวมต้นทุนจริงครบ (spread+ค่าคอม+slippage+swap) <em style="color: var(--text-muted);">[4 ส.ค. 2026]</em> และต้องจำลองกลไกข่าวทั้งสองตัวด้วย (news protection + entry blackout) — ผลทดสอบที่ไม่จำลองจะถูก Gate ปฏิเสธอัตโนมัติ ไม่ใช่แค่เตือน</td>
           </tr>
           <tr>
             <td>เทรดจำลอง<br>(Paper)</td>
@@ -846,7 +858,14 @@
     </div>
 
     <h3>ประวัติการปรับจูน</h3>
-    <p><span class="pill neutral">ยังไม่มีการทดลอง</span> เกณฑ์การเลื่อน/ถอดขั้นเหล่านี้ยังไม่เคยถูกปรับ — เป็นกฎที่ตั้งใจให้แข็ง ไม่ปรับตามผลการทดลองอื่นๆ เพื่อป้องกันการ &ldquo;จูนเกณฑ์ให้ผ่านง่ายขึ้น&rdquo; โดยไม่ตั้งใจ</p>
+    <p><span class="pill neutral">เกณฑ์ตัวเลขไม่เคยถูกปรับ</span> เกณฑ์การเลื่อน/ถอดขั้นเหล่านี้ไม่เคยถูกปรับตัวเลข — เป็นกฎที่ตั้งใจให้แข็ง ไม่ปรับตามผลการทดลองอื่นๆ เพื่อป้องกันการ &ldquo;จูนเกณฑ์ให้ผ่านง่ายขึ้น&rdquo; โดยไม่ตั้งใจ (สิ่งเดียวที่เพิ่มคือเงื่อนไข &ldquo;ความซื่อสัตย์ของการจำลอง&rdquo; ตัวที่ 6 เรื่องข่าว เมื่อ 4 ส.ค. 2026 — เข้มขึ้น ไม่ใช่หย่อนลง)</p>
+    <div class="callout">
+      <strong>สถานะจริง ณ 4 ส.ค. 2026 (honest Test baseline):</strong> เมื่อวัดปีทดสอบล่าสุด (ก.ค. 2025→ก.ค. 2026)
+      ด้วยการจำลองที่ครบทุกกลไกจริงที่ live ใช้ ระบบได้ <strong>PF 1.1116 (309 ไม้, +$574 บนทุน $3,000)</strong>
+      — <strong>ยังไม่ผ่านเกณฑ์ PF ≥ 1.3</strong> (ตัวเลข &ldquo;เกือบผ่าน&rdquo; ทุกตัวที่เคยอ้างในอดีต เช่น 1.277/1.294
+      วัดโดยไม่มีต้นทุนข่าว จึงถูกแทนที่แล้ว) ทุกคันโยกฝั่ง entry/exit ถูกวัดครบและไม่มีตัวไหนปิดช่องว่างนี้ได้
+      — เส้นทางปัจจุบันคือเทรดจำลอง (paper) สะสมข้อมูลต่อ และห้าม promote ไปเงินจริงจนกว่าจะผ่านแบบซื่อสัตย์
+    </div>
   </section>
 
   <!-- ============================================================ -->
@@ -882,11 +901,42 @@
 
   <!-- ============================================================ -->
   <section id="history">
-    <h2><span class="section-num">08</span> ประวัติการปรับจูน <span class="role-tag">— โดยละเอียด (session 21–22 ก.ค. 2026)</span></h2>
+    <h2><span class="section-num">08</span> ประวัติการปรับจูน <span class="role-tag">— โดยละเอียด (21 ก.ค. – 4 ส.ค. 2026)</span></h2>
     <p class="lede">
       สรุปการเปลี่ยนแปลงทั้งหมดที่เกิดขึ้นในช่วงนี้ เรียงจากผลกระทบมากไปน้อย พร้อมสถานะปัจจุบันของแต่ละเรื่อง
       ทุกการเปลี่ยนแปลงผ่านการทดสอบแบบมีวินัย (แบ่งข้อมูลเป็นชุดฝึก/ตรวจสอบ/ทดสอบจริงแยกกัน ไม่แอบดูชุดทดสอบก่อนเวลา)
     </p>
+
+    <h3 style="margin-top:2rem;">อัปเดตใหญ่ 3–4 ส.ค. 2026 — วัดราคาจริงของ News Protection และปิดเมนู entry ทั้งหมด</h3>
+    <div class="history-item">
+      <span class="history-title">ปฏิทินข่าวย้อนหลังของจริง + จำลองกลไกข่าวใน backtest ได้ครบ</span>
+      <dl class="history-meta">
+        <dt>สถานะ</dt><dd><span class="pill adopted">ใช้งานจริง</span> <code>run_backtest.py</code> จำลองข่าวทั้งสองกลไกเป็นค่าเริ่มต้น + Gate-1 ปฏิเสธผลที่ไม่จำลอง (honesty criterion ตัวที่ 6)</dd>
+        <dt>ที่มา</dt><dd>ดึงประวัติปฏิทินข่าวจาก MT5 เองด้วย <code>CalendarHistoryDump.mq5</code> (2021-07→ปัจจุบัน ครบ 62 เดือน, FOMC 17/17) — พิสูจน์ timezone quirk ด้วยราคาจริง (เวลาใน dump เป็น UTC+offset ปัจจุบันทั้งประวัติ ต้อง −1 ชม. ช่วง US-DST winter; ยืนยันด้วยแท่ง NFP)</dd>
+        <dt>ผลวัด (EXP-024)</dt><dd>trigger rate จริง 25.6–28.0% ของไม้ (ไม่ใช่ 61% ตาม proxy เดิม) ต้นทุน −0.157R ± 0.090 ต่อไม้ที่โดน (CI ครอบศูนย์) แลกกับไม้กลุ่มที่โดนไม่มีขาดทุนเลย</dd>
+        <dt>ทางเลือกที่ปฏิเสธ</dt><dd><span class="pill rejected">EXP-023</span> lock-SL แทนปิด (ฆ่า TP rate 48.7%→1.9%) · <span class="pill rejected">EXP-025</span> ยก threshold (median = threshold พอดีทุกค่า ไม่มี optimum) · <span class="pill rejected">EXP-026</span> SKIP ที่ min-lot (ค่าเฉลี่ยเท่ากันแต่คืน losers 25/157 — เป็น lottery ล้วน)</dd>
+      </dl>
+    </div>
+    <div class="history-item">
+      <span class="history-title">Honest Test baseline — ตัวเลขจริงของ config ที่ live รันอยู่</span>
+      <dl class="history-meta">
+        <dt>สถานะ</dt><dd><span class="pill pending">วัดแล้ว — ตก Gate-1</span> PF 1.1116 / 309 ไม้ / +$574 บนปีทดสอบ (เทียบ 1.1903 / +$845 ถ้าไม่คิดต้นทุนข่าว) — ต้นทุนข่าว ≈ 32% ของกำไรปี Test</dd>
+        <dt>ความหมาย</dt><dd>ตัวเลข &ldquo;เกือบผ่าน 1.3&rdquo; ทุกตัวในเอกสารเวอร์ชันก่อนถูกแทนที่ — ช่องว่างจริงใหญ่กว่าที่เคยเชื่อ และ<b>ไม่มีคันโยกที่วัดแล้วตัวไหนปิดได้</b></dd>
+      </dl>
+    </div>
+    <div class="history-item">
+      <span class="history-title">เมนูฝั่ง entry — วัดครบ ปฏิเสธครบ (EXP-028/029 + diagnostic)</span>
+      <dl class="history-meta">
+        <dt>สถานะ</dt><dd><span class="pill rejected">EXP-028</span> ตัด partial-trend tier (สถิติ unconditional หลอก — replay จริงแล้ว Val พลิกลบ + sample หลุด floor) · <span class="pill rejected">EXP-029</span> ขยาย/จูน slot (พบว่า<b>สัญญาณที่พลาด slot แย่กว่าที่ได้เข้า −0.39R อย่างมีนัย 4/4 ปี และ 92% เป็นทิศเดียวกับไม้ที่ถืออยู่</b> — slot เดี่ยวทำหน้าที่ anti-pyramiding filter โดยบังเอิญ ห้ามไป &ldquo;แก้&rdquo; มัน) · cooldown 4.0 ชม. คงเดิม</dd>
+        <dt>บทเรียนซ้ำ</dt><dd>สถิติ unconditional บนประชากรสัญญาณ ≠ ผลจริงบน executed set ที่มี slot เดียว — กับดักนี้โผล่เป็นครั้งที่ 4 แล้ว (EXP-015/016/027/028)</dd>
+      </dl>
+    </div>
+    <div class="history-item">
+      <span class="history-title">ฝั่งปฏิบัติการ (4 ส.ค.) — เก็บนอกตาราง experiment</span>
+      <dl class="history-meta">
+        <dt>รายการ</dt><dd>รายงานประจำวันเพิ่ม Avg SL overshoot · แก้บั๊ก exporter เขียนเวลา UTC หลัง MT5 restart (+ guard ฝั่ง Python) · backup มีขาการันตีผ่าน dev-PC pull รายวัน · VPS ทน reboot โดยไม่พึ่ง logon (S4U + At-startup, พิสูจน์ด้วย no-logon reboot จริง) · dashboard เป็น on-demand ผ่านคำสั่ง <code>/dashboard</code> ใน Telegram (idle TTL 30 นาที)</dd>
+      </dl>
+    </div>
 
     <h3 style="margin-top:2rem;">ใช้งานจริงแล้ว (session 21–22–23 ก.ค.)</h3>
 
@@ -1146,7 +1196,7 @@
   </section>
 
   <footer>
-    <p>เอกสารนี้อ้างอิงค่าจาก <code>config/base.yaml</code> และผลการทดลองใน <code>experiments/experiments_log.md</code> ณ วันที่ 23 กรกฎาคม 2026 — เมื่อมีการปรับจูนค่าเพิ่มเติม ควรอัปเดตเอกสารนี้ให้ตรงกันเสมอ</p>
+    <p>เอกสารนี้อ้างอิงค่าจาก <code>config/base.yaml</code> และผลการทดลองใน <code>experiments/experiments_log.md</code> ณ วันที่ 5 สิงหาคม 2026 (ครอบคลุมถึง EXP-029 และ honest Test baseline) — เมื่อมีการปรับจูนค่าเพิ่มเติม ควรอัปเดตเอกสารนี้ให้ตรงกันเสมอ</p>
   </footer>
 
 </div>
