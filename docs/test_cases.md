@@ -1,10 +1,10 @@
 # AutoTrade Test Cases Reference
 
-This document provides a comprehensive list of all 1531 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
+This document provides a comprehensive list of all 1541 test cases in the AutoTrade test suite, organized by subsystem for easy reference.
 
 ## Overview
 
-- **Total Test Count**: 1531 (including all parametrized variants)
+- **Total Test Count**: 1541 (including all parametrized variants)
 - **Test Files**: ~59 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -23,12 +23,12 @@ This document provides a comprehensive list of all 1531 test cases in the AutoTr
 | **Auditor Subtotal** | | **80** |
 | Backtest | test_clock.py | 3 |
 | | test_cost_model.py | 7 |
-| | test_engine.py | 52 |
+| | test_engine.py | 56 |
 | | test_forward_walk.py | 10 |
 | | test_historical_news_calendar.py | 10 |
 | | test_lookahead_validation.py | 3 |
 | | test_report.py | 15 |
-| **Backtest Subtotal** | | **100** |
+| **Backtest Subtotal** | | **104** |
 | Council | test_calendar_archive.py | 10 |
 | | test_decision_matrix.py | 50 |
 | | test_finnhub_news_calendar.py | 12 |
@@ -98,7 +98,7 @@ This document provides a comprehensive list of all 1531 test cases in the AutoTr
 | | test_pid_file.py | 19 |
 | | test_poller.py | 10 |
 | | test_run_auditor.py | 42 |
-| | test_run_backtest.py | 25 |
+| | test_run_backtest.py | 31 |
 | | test_run_dashboard.py | 4 |
 | | test_run_health_check.py | 5 |
 | | test_run_scheduled_daily_report.py | 3 |
@@ -108,9 +108,9 @@ This document provides a comprehensive list of all 1531 test cases in the AutoTr
 | | test_service_watchdog.py | 9 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **429** |
+| **Scripts & CLI Subtotal** | | **435** |
 | | | |
-| **GRAND TOTAL** | | **1521** |
+| **GRAND TOTAL** | | **1541** |
 
 ---
 
@@ -260,6 +260,10 @@ This document provides a comprehensive list of all 1531 test cases in the AutoTr
 - test_risk_voice_cfg_session_veto_blocks_the_trade_entirely
 - test_risk_voice_cfg_stop_distance_veto_blocks_the_trade
 - test_no_historical_news_data_provider_always_returns_empty_list_never_none
+- test_model_risk_voice_news_default_false_trades_through_a_bar_that_would_be_vetoed_if_modeled
+- test_model_risk_voice_news_true_vetoes_a_signal_bar_inside_the_blackout_window
+- test_model_risk_voice_news_true_lets_a_signal_outside_the_blackout_window_through
+- test_model_risk_voice_news_true_without_news_calendar_is_a_config_error
 - test_watchman_buy_trails_to_breakeven_then_stops_exactly_at_breakeven
 - test_watchman_cfg_none_never_trails_or_closes_even_when_price_would_trigger_breakeven
 - test_watchman_trailed_stop_moves_beyond_breakeven_and_stops_at_the_trailed_level
@@ -1753,6 +1757,8 @@ This document provides a comprehensive list of all 1531 test cases in the AutoTr
 - test_run_and_persist_risk_voice_cfg_marks_envelope_as_modeled
 - test_run_and_persist_watchman_cfg_marks_envelope_as_modeled
 - test_run_and_persist_shield_cfg_marks_envelope_as_modeled
+- test_run_and_persist_model_risk_voice_news_marks_envelope_as_modeled
+- test_run_and_persist_model_risk_voice_news_defaults_to_false
 - test_run_and_persist_threads_pivot_bars_into_backtest_config
 - test_run_and_persist_threads_min_lot_risk_cap_pct_into_backtest_config_and_envelope
 - test_main_requires_commission_per_lot_argument
@@ -1764,6 +1770,10 @@ This document provides a comprehensive list of all 1531 test cases in the AutoTr
 - test_main_min_lot_risk_cap_pct_cli_override_takes_precedence_over_config
 - test_main_writes_an_envelope_with_risk_voice_modeled_true
 - test_main_with_commission_zero_writes_envelope_with_cost_model_complete_true
+- test_main_threads_model_risk_voice_news_flag_into_run_and_persist
+- test_main_model_risk_voice_news_defaults_to_false_and_builds_no_calendar
+- test_main_model_risk_voice_news_missing_calendar_file_returns_error
+- test_main_writes_an_envelope_with_risk_voice_news_modeled_true
 
 ### tests/unit/test_run_dashboard.py
 

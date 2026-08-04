@@ -13,6 +13,8 @@ same equity/risk setup (equity=10000, risk_per_trade_pct=1.0%, stop_distance
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 import pandas as pd
 import pytest
 
@@ -761,6 +763,123 @@ def test_no_historical_news_data_provider_always_returns_empty_list_never_none()
     )
 
     assert events == []
+
+
+# --- Risk Voice's own news-entry blackout, real-calendar wiring (closes the
+# entry_diagnostic_2026-08-04.md §5/§7 menu item #1 gap: this condition
+# always evaluated against NoHistoricalNewsDataProvider above, never a real
+# calendar). `model_risk_voice_news=False` (BacktestConfig's default) leaves
+# that stub in place -- these tests prove the opt-in real-calendar routing
+# and its window semantics. ---------------------------------------------
+
+
+class _SingleEventNewsCalendar:
+    """Fake `NewsCalendarProvider` with exactly one high-impact event and
+    real window-membership semantics (unlike `_AlwaysNewsProvider`/
+    `_NoNewsProvider` below, which ignore the query window entirely) -- lets
+    a test place the event a controlled distance from the signal bar's own
+    clock time and prove `check_risk_voice`'s own before/after-window math,
+    not just a stubbed always/never response."""
+
+    def __init__(self, event_time: datetime):
+        self._event_time = event_time
+
+    def get_high_impact_events(self, currency, window_start, window_end):
+        if window_start <= self._event_time <= window_end:
+            return [NewsEvent(currency=currency, impact="high", event_time=self._event_time)]
+        return []
+
+
+def test_model_risk_voice_news_default_false_trades_through_a_bar_that_would_be_vetoed_if_modeled(monkeypatch):
+    # Same council-fires-at-bar-13 fixture the risk_voice_cfg session tests
+    # above use. `model_risk_voice_news` is left at its False default (and no
+    # `news_calendar` is given, since BacktestConfig's own pairing assert
+    # forbids one without the flag) -- the trade must fire at bar 13's own
+    # fill (bar 14, 14:00:00), completely unaffected, proving the default
+    # preserves this engine's prior behavior bit-for-bit even when a real
+    # veto-worthy event would exist in the world (see the paired "vetoes"
+    # test below, which places an event at this exact bar 13 clock time).
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        risk_voice_cfg=_PERMISSIVE_RISK_VOICE_CFG,
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].entry_time == pd.Timestamp("2026-07-06 14:00:00")
+
+
+def test_model_risk_voice_news_true_vetoes_a_signal_bar_inside_the_blackout_window(monkeypatch):
+    # A single high-impact USD event exactly at bar 13's own clock time
+    # (13:00:00) falls inside the default news_blackout window
+    # (news_blackout_after_min=30 before "now", news_blackout_before_min=45
+    # after "now" -- window [12:30, 13:45]), so bar 13's signal is vetoed on
+    # the news condition alone (every other condition permissive via
+    # _PERMISSIVE_RISK_VOICE_CFG). Exactly like a session/stop-distance veto
+    # (see the tests above), the engine simply re-evaluates on the next bar --
+    # bar 14 (14:00:00), whose window [13:30, 14:45] no longer contains the
+    # 13:00 event, so THAT signal passes. The trade therefore lands one bar
+    # later than the unmodeled-default test above: bar 14 signal -> bar 15
+    # fill (15:00:00), not bar 13 -> bar 14.
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    news_calendar = _SingleEventNewsCalendar(datetime(2026, 7, 6, 13, 0, 0))
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        risk_voice_cfg=_PERMISSIVE_RISK_VOICE_CFG,
+        model_risk_voice_news=True, news_calendar=news_calendar,
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].entry_time == pd.Timestamp("2026-07-06 15:00:00")
+
+
+def test_model_risk_voice_news_true_lets_a_signal_outside_the_blackout_window_through(monkeypatch):
+    # The event sits 5 hours before bar 13's own clock time -- far outside
+    # the [-30, +45] minute window around any bar this fixture ever reaches
+    # -- so the news condition never fires and bar 13's signal fills exactly
+    # like the unmodeled-default test above.
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    news_calendar = _SingleEventNewsCalendar(datetime(2026, 7, 6, 8, 0, 0))
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        risk_voice_cfg=_PERMISSIVE_RISK_VOICE_CFG,
+        model_risk_voice_news=True, news_calendar=news_calendar,
+    )
+
+    trades = run_backtest(df, "XAUUSD", SYMBOL, config)
+
+    assert len(trades) == 1
+    assert trades[0].entry_time == pd.Timestamp("2026-07-06 14:00:00")
+
+
+def test_model_risk_voice_news_true_without_news_calendar_is_a_config_error():
+    plan = OrderPlan(direction="BUY", entry=100.0, stop_loss=90.0, take_profit=120.0, stop_distance=10.0)
+    df = _bars([
+        {"open": 99, "high": 100, "low": 98, "close": 100, "spread": 0},
+        {"open": 100.0, "high": 101, "low": 99, "close": 100.5, "spread": 0},
+    ])
+    config = BacktestConfig(
+        starting_equity=STARTING_EQUITY, risk_per_trade_pct=RISK_PCT,
+        cost_model=CostModelConfig(commission_per_lot=0.0, slippage_points=0.0),
+        signal_fn=_fixed_signal_at(0, plan, []),
+        risk_voice_cfg=_PERMISSIVE_RISK_VOICE_CFG, model_risk_voice_news=True,
+    )
+
+    with pytest.raises(AssertionError):
+        run_backtest(df, "XAUUSD", SYMBOL, config)
 
 
 # --- Watchman exits wiring (closes the "watchman.* is a no-op in backtest"

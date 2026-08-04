@@ -21,8 +21,14 @@ replay itself runs entirely offline against the historical CSV.
 
 Risk Voice (`council/risk_voice.py`) is always modeled, using
 `config/base.yaml`'s `risk_voice:` thresholds -- see `backtest/engine.py`'s
-module docstring for exactly which of its 6 conditions are (and are not,
-i.e. news) faithfully replayed here.
+module docstring for exactly which of its 6 conditions are faithfully
+replayed here by default. Risk Voice's OWN news-entry blackout (condition 2)
+is OPT-IN via `--model-risk-voice-news` (shares `--news-calendar-path` with
+`--model-news-protection` below, an independent flag): builds
+`BacktestConfig.model_risk_voice_news=True` plus a
+`HistoricalNewsCalendarProvider` over that path. Omit the flag to leave it
+unmodeled (envelope `risk_voice_news_modeled=false`), this CLI's prior
+default behavior.
 
 Watchman's exit management (breakeven/trail/structure-invalidation/time-stop)
 is likewise always modeled, using `config/base.yaml`'s `watchman:` block --
@@ -90,6 +96,7 @@ def build_envelope(
     watchman_exits_modeled: bool,
     shield_modeled: bool,
     news_protection_modeled: bool,
+    risk_voice_news_modeled: bool,
     min_lot_risk_cap_pct: float | None,
 ) -> dict:
     """The JSON-serializable envelope written to disk -- see
@@ -114,6 +121,13 @@ def build_envelope(
     `cost_model_complete` -- it is not a cost-model item, unlike
     `swap_modeled` (see the 2026-07-25 note below); it gets its own flag,
     same as `risk_voice_modeled`/`watchman_exits_modeled`/`shield_modeled`.
+    `risk_voice_news_modeled` mirrors this same "don't silently count an
+    incomplete simulation" philosophy for Risk Voice's OWN news-entry
+    blackout (`backtest/engine.py::BacktestConfig.model_risk_voice_news`) --
+    a SEPARATE mechanism from `news_protection_modeled` (different Council
+    persona, different window), deliberately NOT folded into either that
+    flag or `cost_model_complete`, and NOT implied by `risk_voice_modeled`
+    (which only means Risk Voice's other 5 conditions were modeled).
     `min_lot_risk_cap_pct` records this run's
     `BacktestConfig.min_lot_risk_cap_pct` for auditability (`None` when the
     min-lot risk-cap fallback was disabled) -- see `risk/sizing.py`'s
@@ -148,6 +162,7 @@ def build_envelope(
         "watchman_exits_modeled": watchman_exits_modeled,
         "shield_modeled": shield_modeled,
         "news_protection_modeled": news_protection_modeled,
+        "risk_voice_news_modeled": risk_voice_news_modeled,
         "min_lot_risk_cap_pct": min_lot_risk_cap_pct,
         "report": asdict(report),
     }
@@ -167,6 +182,7 @@ def run_and_persist(
     shield_cfg: ShieldConfig | None = None,
     news_protection_cfg: NewsProtectionConfig | None = None,
     news_calendar: NewsCalendarProvider | None = None,
+    model_risk_voice_news: bool = False,
     pivot_bars: int = 3,
     min_lot_risk_cap_pct: float | None = None,
 ) -> Path:
@@ -179,8 +195,12 @@ def run_and_persist(
     constructs real ones from `config/base.yaml`'s `risk_voice:`/`watchman:`
     blocks unless `--model-news-protection` is omitted; leaving any `None` is
     only appropriate for tests/tooling that don't need that veto/exit/
-    cooldown/news-protection behavior. `news_protection_cfg` and
-    `news_calendar` must be given together (`run_backtest` asserts this).
+    cooldown/news-protection behavior. `news_protection_cfg` and/or
+    `model_risk_voice_news=True` require `news_calendar` (`run_backtest`
+    asserts this) -- the two news mechanisms are independent and may share
+    the same `news_calendar` instance. `model_risk_voice_news=False` (the
+    default) means Risk Voice's OWN news-entry blackout is NOT modeled --
+    `main()` sets it `True` only when `--model-risk-voice-news` is given.
     `pivot_bars` defaults to `BacktestConfig`'s own default (3); `main()`
     always passes `config/base.yaml`'s `global.swing_pivot_bars` instead of
     relying on that default. `min_lot_risk_cap_pct=None` (the default)
@@ -191,6 +211,7 @@ def run_and_persist(
         starting_equity=starting_equity, risk_per_trade_pct=risk_per_trade_pct, cost_model=cost_model,
         risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg, shield_cfg=shield_cfg, pivot_bars=pivot_bars,
         news_protection_cfg=news_protection_cfg, news_calendar=news_calendar,
+        model_risk_voice_news=model_risk_voice_news,
         min_lot_risk_cap_pct=min_lot_risk_cap_pct,
     )
     trades = run_backtest(df, symbol, symbol_spec, config)
@@ -201,6 +222,7 @@ def run_and_persist(
         watchman_exits_modeled=watchman_cfg is not None,
         shield_modeled=shield_cfg is not None,
         news_protection_modeled=news_protection_cfg is not None,
+        risk_voice_news_modeled=model_risk_voice_news,
         min_lot_risk_cap_pct=min_lot_risk_cap_pct,
     )
 
@@ -283,9 +305,17 @@ def main() -> int:
              "unmodeled (envelope news_protection_modeled=false), the prior default behavior.",
     )
     parser.add_argument(
+        "--model-risk-voice-news", action="store_true",
+        help="Model Risk Voice's OWN news-entry blackout (`council/risk_voice.py` condition 2, "
+             "news_blackout_before_min/news_blackout_after_min) against the real historical calendar built "
+             "by scripts/build_backtest_calendar.py. Independent of --model-news-protection (a separate "
+             "mechanism); may be given alone or combined. Omit to leave it unmodeled (envelope "
+             "risk_voice_news_modeled=false), the prior default behavior.",
+    )
+    parser.add_argument(
         "--news-calendar-path", type=Path, default=DEFAULT_NEWS_CALENDAR,
         help="Canonical historical calendar CSV (scripts/build_backtest_calendar.py's output). Only read "
-             "when --model-news-protection is given.",
+             "when --model-news-protection and/or --model-risk-voice-news is given.",
     )
     args = parser.parse_args()
 
@@ -346,25 +376,28 @@ def main() -> int:
         duplicate_signal_cooldown_hours=cfg["shield"]["duplicate_signal_cooldown_hours"],
     )
 
-    # Opt-in (unlike risk_voice_cfg/watchman_cfg/shield_cfg above): news
-    # protection needs a real calendar file built by
+    # Opt-in (unlike risk_voice_cfg/watchman_cfg/shield_cfg above): both news
+    # mechanisms need a real calendar file built by
     # scripts/build_backtest_calendar.py, which is not guaranteed to exist on
     # every machine that runs this CLI (see backtest/historical_news_calendar.py).
+    # The two flags are independent but share one HistoricalNewsCalendarProvider
+    # instance when both are given.
     news_protection_cfg = None
     news_calendar = None
-    if args.model_news_protection:
+    if args.model_news_protection or args.model_risk_voice_news:
         if not args.news_calendar_path.exists():
             logger.error(
-                "--model-news-protection given but no calendar at %s -- run "
+                "--model-news-protection/--model-risk-voice-news given but no calendar at %s -- run "
                 "scripts/build_backtest_calendar.py first.", args.news_calendar_path,
             )
             return 1
-        news_protection_cfg = NewsProtectionConfig(
-            news_window_minutes=cfg["watchman"]["news_window_minutes"],
-            profit_threshold_r=cfg["watchman"]["news_profit_threshold_r"],
-            close_mode=cfg["watchman"]["news_close_mode"],
-        )
         news_calendar = HistoricalNewsCalendarProvider(args.news_calendar_path)
+        if args.model_news_protection:
+            news_protection_cfg = NewsProtectionConfig(
+                news_window_minutes=cfg["watchman"]["news_window_minutes"],
+                profit_threshold_r=cfg["watchman"]["news_profit_threshold_r"],
+                close_mode=cfg["watchman"]["news_close_mode"],
+            )
 
     creds = load_mt5_credentials()
     with mt5_session(creds):
@@ -393,6 +426,7 @@ def main() -> int:
         cost_model, args.out_of_sample, args.output_dir,
         risk_voice_cfg=risk_voice_cfg, watchman_cfg=watchman_cfg, shield_cfg=shield_cfg,
         news_protection_cfg=news_protection_cfg, news_calendar=news_calendar,
+        model_risk_voice_news=args.model_risk_voice_news,
         pivot_bars=cfg["global"]["swing_pivot_bars"],
         min_lot_risk_cap_pct=min_lot_risk_cap_pct,
     )

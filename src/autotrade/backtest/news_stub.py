@@ -12,24 +12,30 @@ backtesting: it would veto every single historical trade, making Risk Voice
 appear in a backtest as "always blocks everything" rather than modeling its
 actual conditions.
 
-This provider exists for RISK VOICE's news condition specifically, which is
-STILL not wired to a historical calendar (`council/risk_voice.py`'s "Known
-gap Phase 6b" note) -- a separate, deliberately still-open gap from
-Watchman's own news protection (`watchman/news_protection.py`), which CAN
-now be modeled via `backtest/historical_news_calendar.
-HistoricalNewsCalendarProvider` over EXP-024's real calendar dump (see
-`backtest/engine.py`'s module docstring). This module's `[]`-always
-behavior is unrelated to that dataset's existence or absence; it is a
-deliberate choice to model Risk Voice's other five conditions
+This provider is `backtest/engine.py::BacktestConfig`'s DEFAULT for RISK
+VOICE's news condition -- used whenever `model_risk_voice_news` is `False`
+(the default). Risk Voice's news condition CAN now be modeled against a
+real historical calendar instead, via `backtest/historical_news_calendar.
+HistoricalNewsCalendarProvider` over EXP-024's real calendar dump, by setting
+`BacktestConfig.model_risk_voice_news=True` (see `backtest/engine.py`'s
+module docstring) -- the same dataset and provider class Watchman's own news
+protection (`watchman/news_protection.py`) already uses, but wired to a
+DIFFERENT Council persona and window (Risk Voice's own
+`news_blackout_before_min`/`news_blackout_after_min`, condition 2 of 6).
+This module's `[]`-always behavior remains the DEFAULT: a deliberate choice
+to model Risk Voice's other five conditions
 (spread/stop-distance/session/Friday-close/ATR-panic) accurately in
-backtests while leaving RISK VOICE's news condition NOT modeled, rather than
-letting the news condition's fail-safe veto silently swallow every other
-condition's signal. `NoHistoricalNewsDataProvider` always returns `[]`
-("fetched successfully, no high-impact event") rather than `None` for that
-reason. `backtest/report.py`'s envelope records `risk_voice_modeled` so a
-promotion-gate reader always knows this limitation applies, the same
-"never silently pretend to model something you don't" convention
-`backtest/cost_model.py`'s `commission_per_lot=0.0` placeholder uses.
+backtests while leaving RISK VOICE's news condition NOT modeled unless
+explicitly opted into, rather than letting the news condition's fail-safe
+veto silently swallow every other condition's signal.
+`NoHistoricalNewsDataProvider` always returns `[]` ("fetched successfully,
+no high-impact event") rather than `None` for that reason.
+`backtest/report.py`'s envelope records `risk_voice_modeled` (and,
+independently, `scripts/run_backtest.py`'s envelope records
+`risk_voice_news_modeled`) so a promotion-gate reader always knows which
+mode a given run used, the same "never silently pretend to model something
+you don't" convention `backtest/cost_model.py`'s `commission_per_lot=0.0`
+placeholder uses.
 """
 from __future__ import annotations
 

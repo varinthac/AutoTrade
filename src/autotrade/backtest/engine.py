@@ -14,18 +14,26 @@ always passes a real one for any run whose result might feed a promotion
 decision, and `backtest/report.py`'s envelope records `risk_voice_modeled`
 so a reader always knows which mode a given run used).
 
-**One condition remains genuinely unmodeled even when `risk_voice_cfg` is
-given**: Risk Voice's OWN news-calendar veto (a separate mechanism from
-Watchman's news protection below, which now CAN be modeled -- see this
-docstring's Watchman section). This project has a real historical
-economic-calendar dataset now (EXP-024's calendar dump, `backtest/
-historical_news_calendar.HistoricalNewsCalendarProvider`), but Risk Voice's
-news condition is not yet wired to it -- `backtest/news_stub.
-NoHistoricalNewsDataProvider`'s docstring has the full reasoning for why that
-remains a deliberately separate, still-open gap -- so the news condition
-always evaluates to "no event" here, never a real veto. The other five
-conditions (spread, stop-distance, session, Friday-close, ATR-panic) ARE
-modeled faithfully, using the bar's own spread/ATR and the same 20-day
+**Risk Voice's OWN news-calendar veto is now ALSO optionally modeled** (a
+separate mechanism from Watchman's news protection below, which can also be
+modeled -- see this docstring's Watchman section), via an OPTIONAL
+`model_risk_voice_news: bool` on `BacktestConfig` (default `False` --
+explicitly means "not modeled", same placeholder convention as
+`risk_voice_cfg`/`watchman_cfg` above; `False` reproduces this engine's prior
+behavior bit-for-bit). When `True`, `_council_signal_fn` routes Risk Voice's
+news condition to the SAME real historical calendar (`news_calendar` below,
+`backtest/historical_news_calendar.HistoricalNewsCalendarProvider`) Watchman's
+news protection uses -- `model_risk_voice_news=True` REQUIRES `news_calendar`
+to be given too (asserted at the top of `run_backtest`), but does NOT require
+`news_protection_cfg` itself to be set: the two are independent mechanisms
+(different Council persona, different window) that can be modeled together or
+separately. When `model_risk_voice_news` is `False` (the default), Risk
+Voice's news condition still evaluates against `backtest/news_stub.
+NoHistoricalNewsDataProvider` (always "no event", never a real veto) --
+that stub's own docstring has the full reasoning for why this remained a
+deliberately separate, still-open gap until now. The other five conditions
+(spread, stop-distance, session, Friday-close, ATR-panic) ARE modeled
+faithfully, using the bar's own spread/ATR and the same 20-day
 rolling-average approximation (`features/indicators.rolling_average`)
 `orchestrator/shadow_loop.py`'s live re-check uses, so both stay consistent
 by construction. Unlike the live loop's twice-per-trade re-check (signal-time
@@ -242,6 +250,8 @@ def _council_signal_fn(
     bear_threshold: int = 70,
     conflict_threshold: int = 55,
     risk_voice_cfg: RiskVoiceConfig | None = None,
+    model_risk_voice_news: bool = False,
+    news_calendar: NewsCalendarProvider | None = None,
     clock: Clock | None = None,
 ) -> OrderPlan | None:
     """Default `SignalFn` -- adapts `council.decision_matrix.evaluate_council`'s
@@ -255,12 +265,13 @@ def _council_signal_fn(
     When `risk_voice_cfg` is given (never `None` for a real promotion-gate
     run -- see module docstring), a Council BUY/SELL decision is additionally
     passed through `check_risk_voice` before becoming a trade, using
-    `_risk_voice_inputs` for the market-state numbers and
+    `_risk_voice_inputs` for the market-state numbers and, by default,
     `backtest.news_stub.NoHistoricalNewsDataProvider` for the news condition
-    (see module docstring for why that's the one condition NOT genuinely
-    modeled). `clock` must be given whenever `risk_voice_cfg` is (asserted
-    below) -- `run_backtest`'s loop always passes its own ticking
-    `SimulatedClock`."""
+    (see module docstring for why that was, until now, the one condition NOT
+    genuinely modeled). When `model_risk_voice_news` is `True`, the real
+    `news_calendar` provider is used instead (asserted not `None` below).
+    `clock` must be given whenever `risk_voice_cfg` is (asserted below) --
+    `run_backtest`'s loop always passes its own ticking `SimulatedClock`."""
     decision, _borderline_case = evaluate_council(
         df, as_of_index, symbol, symbol_spec,
         bull_threshold=bull_threshold, bear_threshold=bear_threshold, conflict_threshold=conflict_threshold,
@@ -272,8 +283,12 @@ def _council_signal_fn(
 
     if risk_voice_cfg is not None:
         assert clock is not None, "clock is required whenever risk_voice_cfg is given"
+        news_provider = _NO_HISTORICAL_NEWS_PROVIDER
+        if model_risk_voice_news:
+            assert news_calendar is not None, "news_calendar is required whenever model_risk_voice_news is True"
+            news_provider = news_calendar
         risk_voice_decision = check_risk_voice(
-            symbol=symbol, order_plan=decision.order_plan, news_provider=_NO_HISTORICAL_NEWS_PROVIDER,
+            symbol=symbol, order_plan=decision.order_plan, news_provider=news_provider,
             clock=clock, config=risk_voice_cfg, **_risk_voice_inputs(df, as_of_index),
         )
         if risk_voice_decision.vetoed:
@@ -330,8 +345,9 @@ class BacktestConfig:
     `risk_voice_cfg` is given -- see module docstring) but is injected so it
     can be replaced without touching this engine -- it must accept `(df,
     as_of_index, symbol=, symbol_spec=, sl_buffer_atr=, sl_min_atr=,
-    sl_max_atr=, tp_r_multiple=, pivot_bars=, risk_voice_cfg=, clock=) ->
-    OrderPlan | None` (see `run_backtest`'s call site). `council.trivial_signal.
+    sl_max_atr=, tp_r_multiple=, pivot_bars=, risk_voice_cfg=,
+    model_risk_voice_news=, news_calendar=, clock=) -> OrderPlan | None` (see
+    `run_backtest`'s call site). `council.trivial_signal.
     build_trade_idea` (Phase 3) does not accept `symbol`/`symbol_spec` and so
     is no longer a drop-in `signal_fn` without a small adapter of its own.
 
@@ -362,6 +378,20 @@ class BacktestConfig:
     `RiskVoiceConfig` loaded from `config/base.yaml`; leaving this `None` is
     only appropriate for tests/tooling that don't need Risk Voice's veto
     behavior."""
+    model_risk_voice_news: bool = False
+    """`False` (the default) means Risk Voice's OWN news-entry blackout
+    (condition 2, `news_blackout_before_min`/`news_blackout_after_min`) is
+    NOT modeled even when `risk_voice_cfg` is given -- the news condition
+    still evaluates against `backtest.news_stub.NoHistoricalNewsDataProvider`
+    (always "no event"), same bit-for-bit-preserving placeholder convention
+    as `risk_voice_cfg`/`watchman_cfg` above. `True` requires `news_calendar`
+    below to be given too (`run_backtest` asserts this) -- reuses the SAME
+    real historical calendar Watchman's news protection queries, but is an
+    INDEPENDENT opt-in from `news_protection_cfg`: either may be modeled
+    without the other. `scripts/run_backtest.py`'s `--model-risk-voice-news`
+    flag sets this `True` and threads `--news-calendar-path` into
+    `news_calendar`; leaving this `False` is only appropriate for
+    tests/tooling that don't need Risk Voice's own news veto modeled."""
     watchman_cfg: WatchmanConfig | None = None
     """`None` (the default) means Watchman's exit management (breakeven,
     ATR-trailing stop, structure-invalidation, time-stop) is NOT modeled in
@@ -396,8 +426,10 @@ class BacktestConfig:
     for tests/tooling that don't need news-protection exits."""
     news_calendar: NewsCalendarProvider | None = None
     """The real historical calendar `check_news_protection` queries when
-    `news_protection_cfg` is set -- see that field's docstring. Kept as a
-    separate field (not folded into `NewsProtectionConfig`) because
+    `news_protection_cfg` is set, and/or `check_risk_voice` queries when
+    `model_risk_voice_news` is `True` (see those fields' docstrings) -- the
+    SAME provider instance serves both mechanisms when both are enabled.
+    Kept as a separate field (not folded into `NewsProtectionConfig`) because
     `check_news_protection` itself takes a config and a provider as sibling
     arguments, never one bundled inside the other."""
 
@@ -818,9 +850,11 @@ def run_backtest(
     fixed starting value, so position sizing reflects the account's actual
     trajectory through the backtest.
     """
-    assert (config.news_protection_cfg is None) == (config.news_calendar is None), (
-        "news_protection_cfg and news_calendar must be given together (both, to model Watchman's "
-        "news protection) or both left None (news protection unmodeled) -- see BacktestConfig's docstring"
+    news_calendar_required = config.news_protection_cfg is not None or config.model_risk_voice_news
+    assert news_calendar_required == (config.news_calendar is not None), (
+        "news_calendar must be given whenever news_protection_cfg is set (to model Watchman's news "
+        "protection) or model_risk_voice_news is True (to model Risk Voice's own news veto), and left "
+        "None when neither is set -- see BacktestConfig's docstring"
     )
     if len(df) < 2:
         return []
@@ -925,7 +959,8 @@ def run_backtest(
                 sl_max_atr=config.sl_max_atr, tp_r_multiple=config.tp_r_multiple,
                 pivot_bars=config.pivot_bars, bull_threshold=config.bull_threshold,
                 bear_threshold=config.bear_threshold, conflict_threshold=config.conflict_threshold,
-                risk_voice_cfg=config.risk_voice_cfg, clock=clock,
+                risk_voice_cfg=config.risk_voice_cfg, model_risk_voice_news=config.model_risk_voice_news,
+                news_calendar=config.news_calendar, clock=clock,
             )
             swing_index = None
             if plan is not None and shield is not None:

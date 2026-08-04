@@ -123,7 +123,7 @@ def test_build_envelope_cost_model_complete_true_when_commission_set_min_spread_
         "XAUUSD", df, report,
         CostModelConfig(commission_per_lot=3.5, slippage_points=None, swap_model=_SWAP_MODEL),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
-        shield_modeled=True, news_protection_modeled=False, min_lot_risk_cap_pct=None,
+        shield_modeled=True, news_protection_modeled=False, risk_voice_news_modeled=False, min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is True
 
@@ -140,7 +140,7 @@ def test_build_envelope_cost_model_complete_true_when_commission_zero_min_spread
         "XAUUSD", df, report,
         CostModelConfig(commission_per_lot=0.0, slippage_points=None, swap_model=_SWAP_MODEL),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
-        shield_modeled=True, news_protection_modeled=False, min_lot_risk_cap_pct=None,
+        shield_modeled=True, news_protection_modeled=False, risk_voice_news_modeled=False, min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is True
 
@@ -154,7 +154,7 @@ def test_build_envelope_cost_model_complete_false_when_slippage_explicitly_overr
         "XAUUSD", df, report,
         CostModelConfig(commission_per_lot=3.5, slippage_points=2.0, swap_model=_SWAP_MODEL),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
-        shield_modeled=True, news_protection_modeled=False, min_lot_risk_cap_pct=None,
+        shield_modeled=True, news_protection_modeled=False, risk_voice_news_modeled=False, min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is False
 
@@ -168,7 +168,7 @@ def test_build_envelope_cost_model_complete_false_when_swap_not_modeled():
     envelope = run_backtest_script.build_envelope(
         "XAUUSD", df, report, CostModelConfig(commission_per_lot=3.5, slippage_points=None, swap_model=None),
         10_000.0, False, risk_voice_modeled=True, watchman_exits_modeled=True,
-        shield_modeled=True, news_protection_modeled=False, min_lot_risk_cap_pct=None,
+        shield_modeled=True, news_protection_modeled=False, risk_voice_news_modeled=False, min_lot_risk_cap_pct=None,
     )
     assert envelope["cost_model_complete"] is False
     assert envelope["swap_modeled"] is False
@@ -252,6 +252,54 @@ def test_run_and_persist_shield_cfg_marks_envelope_as_modeled(tmp_path, monkeypa
 
     envelope = load_backtest_report_envelope(out_path)
     assert envelope.shield_modeled is True
+
+
+class _NoNewsEverCalendar:
+    def get_high_impact_events(self, currency, window_start, window_end):
+        return []
+
+
+def test_run_and_persist_model_risk_voice_news_marks_envelope_as_modeled(tmp_path, monkeypatch):
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    output_dir = tmp_path / "backtest_reports"
+    permissive_risk_voice_cfg = RiskVoiceConfig(
+        max_spread_multiple=1e9, max_spread_points_xauusd=1e9,
+        max_stop_atr_multiple=1e9, session_start_hour=0, session_end_hour=24,
+        friday_close_hour=24, max_atr_panic_multiple=1e9,
+    )
+
+    out_path = run_backtest_script.run_and_persist(
+        "XAUUSD", df, SYMBOL, 10_000.0, 1.0,
+        CostModelConfig(commission_per_lot=2.0, slippage_points=None),
+        False, output_dir, risk_voice_cfg=permissive_risk_voice_cfg,
+        model_risk_voice_news=True, news_calendar=_NoNewsEverCalendar(),
+    )
+
+    # risk_voice_news_modeled isn't part of BacktestReportEnvelope's own
+    # schema (same as news_protection_modeled -- see backtest_results.py) --
+    # read the raw written JSON directly, same convention
+    # test_run_and_persist_writes_a_loadable_envelope above uses.
+    raw = json.loads(out_path.read_text(encoding="utf-8"))
+    assert raw["risk_voice_news_modeled"] is True
+    assert raw["news_protection_modeled"] is False  # independent flag, unaffected
+
+
+def test_run_and_persist_model_risk_voice_news_defaults_to_false(tmp_path, monkeypatch):
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    df = _council_signal_bars()
+    output_dir = tmp_path / "backtest_reports"
+
+    out_path = run_backtest_script.run_and_persist(
+        "XAUUSD", df, SYMBOL, 10_000.0, 1.0,
+        CostModelConfig(commission_per_lot=2.0, slippage_points=None),
+        False, output_dir,
+    )
+
+    raw = json.loads(out_path.read_text(encoding="utf-8"))
+    assert raw["risk_voice_news_modeled"] is False
 
 
 def test_run_and_persist_threads_pivot_bars_into_backtest_config(tmp_path, monkeypatch):
@@ -565,3 +613,107 @@ def test_main_with_commission_zero_writes_envelope_with_cost_model_complete_true
     envelope = load_backtest_report_envelope(out_path)
     assert envelope.cost_model.commission_per_lot == 0.0
     assert envelope.cost_model_complete is True
+
+
+# --- --model-risk-voice-news CLI flag (closes entry_diagnostic_2026-08-04.md
+# §5/§7 menu item #1's engine gap: Risk Voice's own news-entry blackout was
+# never wired to a real calendar in the backtest engine before this) --------
+
+
+def _write_news_calendar_csv(tmp_path, rows: list[str]) -> Path:
+    path = tmp_path / "news_calendar.csv"
+    header = "event_time,currency,importance,event_name,forecast,previous,actual"
+    path.write_text(
+        "# generated_at_server_time=2026-08-04 00:00:00\n" + header + "\n" + "\n".join(rows) + "\n",
+        encoding="ascii",
+    )
+    return path
+
+
+def test_main_threads_model_risk_voice_news_flag_into_run_and_persist(monkeypatch, tmp_path):
+    _patch_main_wiring(
+        monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}])
+    )
+    calendar_path = _write_news_calendar_csv(tmp_path, ["2026-01-06 00:30:00,USD,high,Event,,,"])
+    monkeypatch.setattr(sys, "argv", [
+        "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0",
+        "--model-risk-voice-news", "--news-calendar-path", str(calendar_path),
+    ])
+
+    captured = {}
+
+    def _fake_run_and_persist(*args, **kwargs):
+        captured["model_risk_voice_news"] = kwargs.get("model_risk_voice_news")
+        captured["news_calendar"] = kwargs.get("news_calendar")
+        captured["news_protection_cfg"] = kwargs.get("news_protection_cfg")
+        return tmp_path / "envelope.json"
+
+    monkeypatch.setattr(run_backtest_script, "run_and_persist", _fake_run_and_persist)
+
+    exit_code = run_backtest_script.main()
+
+    assert exit_code == 0
+    assert captured["model_risk_voice_news"] is True
+    assert captured["news_calendar"] is not None
+    # --model-risk-voice-news alone must NOT also turn on news protection --
+    # the two flags are independent.
+    assert captured["news_protection_cfg"] is None
+
+
+def test_main_model_risk_voice_news_defaults_to_false_and_builds_no_calendar(monkeypatch, tmp_path):
+    _patch_main_wiring(
+        monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}])
+    )
+    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0"])
+
+    captured = {}
+
+    def _fake_run_and_persist(*args, **kwargs):
+        captured["model_risk_voice_news"] = kwargs.get("model_risk_voice_news")
+        captured["news_calendar"] = kwargs.get("news_calendar")
+        return tmp_path / "envelope.json"
+
+    monkeypatch.setattr(run_backtest_script, "run_and_persist", _fake_run_and_persist)
+
+    exit_code = run_backtest_script.main()
+
+    assert exit_code == 0
+    assert captured["model_risk_voice_news"] is False
+    assert captured["news_calendar"] is None
+
+
+def test_main_model_risk_voice_news_missing_calendar_file_returns_error(monkeypatch, tmp_path):
+    _patch_main_wiring(
+        monkeypatch, tmp_path, _bars([{"open": 100, "high": 101, "low": 99, "close": 100, "spread": 5}])
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0",
+        "--model-risk-voice-news", "--news-calendar-path", str(tmp_path / "missing.csv"),
+    ])
+
+    exit_code = run_backtest_script.main()
+
+    assert exit_code == 1
+
+
+def test_main_writes_an_envelope_with_risk_voice_news_modeled_true(monkeypatch, tmp_path):
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bull_voice", lambda *a, **k: _score(75))
+    monkeypatch.setattr("autotrade.council.decision_matrix.score_bear_voice", lambda *a, **k: _score(30))
+    _patch_main_wiring(monkeypatch, tmp_path, _council_signal_bars())
+    output_dir = tmp_path / "backtest_reports"
+    # Far from any bar this fixture reaches -- never vetoes, only proves the
+    # envelope flag itself, not the veto mechanics (covered exhaustively in
+    # tests/unit/backtest/test_engine.py).
+    calendar_path = _write_news_calendar_csv(tmp_path, ["2000-01-01 00:00:00,USD,high,Event,,,"])
+    monkeypatch.setattr(sys, "argv", [
+        "run_backtest.py", "XAUUSD", "--commission-per-lot", "5.0", "--output-dir", str(output_dir),
+        "--model-risk-voice-news", "--news-calendar-path", str(calendar_path),
+    ])
+
+    exit_code = run_backtest_script.main()
+
+    assert exit_code == 0
+    [out_path] = list(output_dir.glob("XAUUSD_*.json"))
+    raw = json.loads(out_path.read_text(encoding="utf-8"))
+    assert raw["risk_voice_news_modeled"] is True
+    assert raw["news_protection_modeled"] is False  # independent, unaffected by this flag
