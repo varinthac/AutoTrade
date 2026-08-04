@@ -266,6 +266,7 @@ lot_size = risk_amount / (stop_distance × point_value)
 - จำนวน​ไม้​ที่​ trade / profit / loss / net P&L
 - Profit Factor = (gross profit) / (gross loss) — ค่า >1.0 = กำไรโดยรวม
 - ค่า​เฉลี่ย R (expectancy) = กำไร​เฉลี่ย​ต่อ​ไม้​ในหน่วย​ R (R = risk size)
+- ค่าเฉลี่ย SL overshoot = เท่าไหร่ที่ stop-loss fills แย่กว่าที่เตรียมไว้ (−1R target) — indicator of gap/slippage/timing risk
 - Signal blocks = ที่ block​ ด้วย​ Council​ / Risk Voice / Shield
 
 ก่อนสำคัญ: **ตัด​สินใจ​ว่า​กลยุทธ์​พร้อม​สำหรับ​ไม้​ใหม่​หรือ​ยัง** — Auditor gate​
@@ -524,6 +525,6 @@ auditor:
 
 ---
 
-**Document Date:** 2026-07-23  
-**Config Version:** `config/base.yaml` (post-EXP-003 session-gate change, post-EXP-008 Watchman breakeven/trail adoption, min-lot-risk-cap-pct: 1.5 adopted, Standard account cost model)  
-**Last Major Change:** `place_order()` hardened against the same ack-loss ambiguity as `close_position()` 2026-07-22 (commit `ee6a97f`) — an order-open that times out is now re-confirmed against MT5's real state instead of assumed failed; EXP-010 REJECTED 2026-07-22 (H1→M30 hybrid entry timing — whipsaw + regime failure); Watchman close-position reconciliation fix (reconciled_system_close exit reason); EXP-008 ADOPTED 2026-07-22 (`watchman.breakeven_enabled`/`trail_enabled: false`, live restarted); min-lot fallback adopted (cfo.min_lot_risk_cap_pct: 1.5); Account type confirmed **Standard** (ZERO commission); Timeframe probe H1-confirmed (M30/M15/M5 rejected)
+**Document Date:** 2026-08-04  
+**Config Version:** `config/base.yaml` (post-EXP-003 session-gate change, post-EXP-008 Watchman breakeven/trail adoption, min-lot-risk-cap-pct: 1.5 adopted, Standard account cost model, news-modeling adopted)  
+**Last Major Change:** Daily report (Telegram + dashboard) now tracks avg SL overshoot past −1R (2026-08-04). News protection mechanisms modeled in backtest engine: Watchman lock-SL + Risk Voice entry blackout, both hardened in `run_backtest.py` with calendar snapshot from `data/historical/news_calendar_backtest.csv` (built via `scripts/build_backtest_calendar.py`). Dashboard moved on-demand via Telegram `/dashboard` command (30-min idle TTL). VPS ops: all tasks S4U + At-startup (staggered, honest ExecutionTimeLimits); "AutoTrade Watchdog" task DELETED (script remains for manual use); off-box backup guarantee via dev PC's daily `ops/pull_vps_backups.py` pull (Google Drive sync bonus-only). EXP-008 adoption confirmed 2026-07-22 (breakeven/trail disabled, structure-invalidation/time-stop kept).

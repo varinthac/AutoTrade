@@ -302,16 +302,13 @@ and alerts you itself (email/Telegram/etc., independent of this codebase)
 if the ping doesn't show up within a grace period.
 
 **2026-07-24 incident:** the shadow loop died silently (~13:00 server time)
-and `scripts/run_loop_watchdog.py` -- the console-window process meant to
-alert on exactly that -- was ALSO found not running, so zero alert fired.
-A process that only (re)launches "at logon" cannot recover from its own
-silent death mid-session. This section's Task Scheduler task, because it
-has its own *repeating* trigger, doesn't have that problem: Task Scheduler
-dispatches a fresh one-shot process every cycle, so there's no long-lived
-watchdog process here that can silently die. It is now the primary
-mechanism for both detecting AND auto-recovering from the loop dying;
-`run_loop_watchdog.py`/`AutoTrade_Watchdog_Start.bat` remain as a secondary,
-alert-only (no restart) belt-and-suspenders check when manually launched.
+and `scripts/run_loop_watchdog.py` was not running either (it was scheduled
+"at logon", a per-session trigger that does not auto-recover when nobody is
+logged on). The heartbeat task is now the primary mechanism for both detecting
+AND auto-recovering from the loop dying. **As of 2026-08-04**, the
+`AutoTrade Watchdog` scheduled task has been DELETED; `run_loop_watchdog.py`
+and `AutoTrade_Watchdog_Start.bat` remain as optional manual-use tools for
+testing/diagnostics if needed, but are no longer auto-started.
 
 **Same day, same incident window:** found genuine duplicate Dashboard/
 Telegram-control-listener processes (neither had run_shadow_loop.py's own
@@ -352,23 +349,19 @@ command in the first place.
        (no ping arrives at all) and if Windows is up but the shadow loop
        process itself has crashed (ping is skipped because it isn't
        RUNNING).
-3. [ ] Task Scheduler: run this script every 10 minutes. Unlike a plain
-       read-only status check, this one's restart attempt launches
-       `run_shadow_loop.py`, which has the exact same interactive-desktop
-       requirement Section 6a explains (MT5's GUI needs a real Session 1,
-       not Session 0) -- so this task MUST use the same settings as 6a's
-       three tasks: trigger "At log on" + repeat every 10 minutes, security
-       option **"Run only when user is logged on"** (NOT "whether user is
-       logged on or not" -- that would silently break the auto-restart's
-       MT5 connection even though the heartbeat ping itself would still
-       look fine). Action:
+3. [ ] Task Scheduler: run this script every 10 minutes with a
+       8-minute time limit (PT8M, Section 6a's convention; prevents stacking if
+       a cycle runs long). Settings should match Section 6a: S4U logon type,
+       "At startup" trigger with PT10M repeat interval. Action:
        `powershell.exe -ExecutionPolicy Bypass -File C:\AutoTrade\ops\heartbeat.ps1`
 
 ## 7. Remote access to the dashboard
 
-The dashboard (`scripts/run_dashboard.py`) binds `127.0.0.1:8765` only, by
-design, with no auth -- this must never change on the VPS. Two ways to
-view it remotely, both keep that binding intact:
+**As of 2026-08-04**, the dashboard is on-demand (launched via Telegram
+`/dashboard` command with a 30-minute idle auto-stop), not always-on. When
+running, the dashboard (`scripts/run_dashboard.py`) binds `127.0.0.1:8765`
+only, by design, with no auth -- this must never change. Two ways to view it
+remotely (when it is running), both keep that binding intact:
 
 - **Simplest (zero extra setup)**: RDP into the VPS and open a browser
   inside that session pointed at `http://127.0.0.1:8765` -- you already
@@ -411,24 +404,14 @@ plain file copy; Python's stdlib sqlite3 module has this built in
        ```
 2. [ ] Schedule it nightly (Task Scheduler, e.g. 00:30, "whether user is
        logged on or not" is fine -- pure file I/O, no MT5/GUI dependency).
-3. [x] Get copies off the VPS, not just into a local backups\ folder (a
-       backup that lives on the same disk as the original doesn't protect
-       you if the VPS itself is lost/corrupted): the simplest option for a
-       solo user is a synced cloud folder (OneDrive/Google Drive desktop
-       client installed on the VPS, DEST_DIR pointed at the synced
-       folder) -- no extra script needed, the sync client handles off-box
-       transfer on its own. robocopy/rclone to remote storage is an
-       equally valid alternative if you'd rather not run a sync client on
-       the VPS.
-
-       **2026-07-28: done, following exactly this plan** -- this step had
-       actually been skipped since the original cutover (a 2026-07-28 audit
-       found nightly backups reporting success while providing zero real
-       off-box protection). Google Drive for Desktop installed on the VPS;
-       `ops/backup_db.py`'s `DEST_DIR` now points at
-       `C:\Users\Administrator\My Drive\AutoTrade_Backups`. The Google
-       account sign-in itself is an interactive, one-time step (OAuth
-       login, can't be scripted) -- done once over RDP.
+3. [x] **Guaranteed off-box backup mechanism (2026-08-04):** the dev PC runs
+       `ops/pull_vps_backups.py` daily at 13:00 via Task Scheduler, which
+       uses SSH to pull the local VPS `backups/` folder off-box. This is the
+       guaranteed leg that works regardless of VPS session state. Google
+       Drive or rclone sync on the VPS can serve as a bonus second copy if
+       desired, but are NOT the guarantee. See the memory note
+       `project_vps_journal_pull_wal.md` for WAL-snapshot details (never
+       raw-scp the .sqlite file; run `ops/snapshot_db.py` on VPS first).
 4. [ ] Prune old backups periodically (keep, say, the last 30 days) -- a
        one-line Get-ChildItem/Where-Object delete-if-older-than in the
        same or a small companion script; not critical for v1, just don't

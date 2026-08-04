@@ -463,3 +463,39 @@ the *better* one:
 **Sequence: Phase 0 - 1 - 2 - 3 - 4 - 5 - 6** (as ordered in Section D; note
 Phase 2 = backup correctness is the first *change*). Stop after Phase 4 and
 re-measure; Phases 5-6 may prove unnecessary.
+
+---
+
+## EXECUTION STATUS (2026-08-04, same-day, corrected against what actually shipped)
+
+### Executed
+- **P1 (dashboard on-demand):** "AutoTrade Dashboard" task DISABLED; Telegram `/dashboard` command
+  shipped (`2fc3db6`, slow-start reply fix `796e12a`) with a 30-min idle TTL; `run_health_check.py`
+  no longer checks/restarts the dashboard. Full cycle proven live incl. the TTL self-stop.
+- **P2 (off-box backup):** NOT rclone (the plan's suggestion) -- implemented as the dev PC's daily
+  SSH pull instead (`ops/pull_vps_backups.py`, `f8d55d4`; simpler, zero new auth, zero new VPS
+  software). First pull recovered all 11 stranded files. Google Drive for Desktop was NOT removed --
+  it remains a bonus copy whenever a logon session exists.
+- **P3 (cruft):** "AutoTrade Watchdog" task deleted (script kept for manual use); Print Spooler
+  stopped+disabled; both Edge Update tasks disabled; Terminal/Community cache (105 MB) deleted.
+  Item 5 (Defender exclusions) NOT applied -- moot: the provider image ships with the Defender
+  service itself DISABLED (0x800106ba on Add-MpPreference; documented fact, not our change).
+- **P4 (session-independent tasks):** all AutoTrade tasks converted to S4U principals;
+  loop/telegram/(watchdog, since deleted) moved to At-startup triggers staggered PT1M/PT2M/PT3M;
+  ExecutionTimeLimit DISABLED on service-style tasks (the prior PT72H default would have killed a
+  task-launched loop every 3 days). Acceptance-tested with a real NO-LOGON reboot: full stack incl.
+  MT5 terminal + exporter Service came up in pure Session 0. Runbook 6a rewritten (`36c02a9`).
+- **P5/D-3 (heartbeat):** ExecutionTimeLimit capped at PT8M (vs the observed 16-min overrun);
+  Daily Report / DB Backup capped at PT30M. The plan's further idea (dropping the PowerShell
+  wrapper / folding the ping into Python) was NOT implemented -- config-only fix chosen.
+
+### Measured outcome
+| Metric | Crisis low (incident) | After P1-P5 | 
+|---|---|---|
+| Free RAM | 405 MB | >1 GB (1,048 MB measured post-TTL-stop) |
+| Always-on python processes | loop+dashboard+telegram+watchdog | loop+telegram only |
+| Unattended-reboot survival | nothing guaranteed (Interactive tasks + broken auto-logon) | proven with a zero-logon reboot |
+
+### Not done / open
+- P6 and the plan's P5 code-level heartbeat trim: deferred, low value after the caps.
+- Auto-logon remains broken (cloudbase-init keeps clearing it) and is now deliberately OPTIONAL.
