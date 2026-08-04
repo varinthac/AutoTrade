@@ -211,57 +211,67 @@ rotation needed for keys that were never functionally in use.
 
 ## 6. Unattended reliability
 
-### 6a. Auto-start on boot (shadow loop, dashboard, Telegram bot)
+### 6a. Auto-start on boot (shadow loop, Telegram bot) -- session-independent
 
-The core wrinkle: `terminal64.exe` (launched by `mt5.initialize()` inside
-`mt5_session()`) is a real Win32 GUI app -- it needs an interactive desktop
-session to render/operate correctly, not a Session-0 service context. A
-Task Scheduler task set to "Run whether user is logged on or not" runs in
-Session 0 with no interactive window station, and MT5 will not work
-reliably there. The standard, well-established pattern for this exact
-situation (the same one retail forex VPS hosts use for MT4/MT5):
+**2026-08-04 REWRITE -- the original version of this section was wrong on
+its central claim.** It asserted that `terminal64.exe` "needs an interactive
+desktop session ... and MT5 will not work reliably" in Session 0, and built
+the whole auto-start design on Windows auto-logon + "At log on" +
+"Run only when user is logged on" tasks. Both halves failed in production
+the same day they were first really exercised: the VPS provider's
+cloudbase-init cleared the auto-logon credentials during a surprise
+double-reboot, no session ever logged on, and every Interactive task --
+including the watchdog layer that was supposed to self-heal -- silently
+never started (~2h of a live position with only the broker-side SL
+watching it). Recovery then proved the premise false: the full stack
+(shadow loop, `terminal64.exe` spawned headless by `mt5.initialize()`, the
+MQL5 calendar-exporter Service inside it, Telegram bot) ran a full trading
+day in Session 0, placed real demo orders, and exported the calendar on
+schedule. Auto-logon is therefore no longer a dependency of anything.
 
-1. [ ] Enable Windows auto-logon for the dedicated account from Section 2,
-       so an interactive desktop session (Session 1) exists automatically
-       after every reboot with no human needing to RDP in. Use Sysinternals
-       Autologon.exe (safer than hand-editing the registry -- it encrypts
-       the stored password via LSA secrets rather than plaintext registry).
-2. [ ] Create two Task Scheduler tasks (shadow loop, Telegram control) --
-       **do NOT create a third "AutoTrade Dashboard" logon task.** 2026-08-04
-       (lean-plan P1, docs/vps_lean_plan.md): the dashboard is on-demand now,
-       started via Telegram's `/dashboard` command and self-terminating
-       after an idle TTL (`scripts/run_dashboard.py --idle-ttl-minutes`); an
-       "At log on" task for it would defeat the entire point by starting it
-       unconditionally on every boot/logon again. If this task already
-       exists from before 2026-08-04, disable/delete it (`schtasks /Change
-       /TN "AutoTrade Dashboard" /DISABLE` or `/Delete`). Each surviving
-       task:
-       - Trigger: "At log on", specific user = the dedicated account,
-         with a 1-2 minute delay ("Delay task for" under trigger settings)
-         so networking is up before MT5 tries to connect.
-       - Security options: "Run only when user is logged on" (NOT
-         "whether user is logged on or not" -- that's the Session-0 trap
-         above).
-       - Actions (call the underlying python.exe directly, not the .bat
-         files -- AutoTrade_Start.bat/AutoTrade_Stop.bat each end in a
-         `pause`, which is harmless for interactive double-click use but
-         leaves an unanswered "press any key" prompt sitting in a
-         scheduled-task-launched console forever):
-         - Shadow loop: `"C:\AutoTrade\.venv\Scripts\python.exe" "C:\AutoTrade\scripts\autotrade_control.py" start`
-           (this itself launches run_shadow_loop.py --adapter demo detached
-           in its own console and returns immediately, per
-           scripts/autotrade_control.py's do_start()).
-         - Telegram control: `"C:\AutoTrade\.venv\Scripts\python.exe" "C:\AutoTrade\scripts\run_telegram_control.py"`
-3. [ ] Never click "Sign out"/"Log off" on the VPS. Always disconnect the
-       RDP session (the X button, or Start > Disconnect) instead --
-       disconnecting keeps the Session-1 desktop and everything running in
-       it alive; logging off tears the whole session down and kills MT5,
-       the shadow loop, dashboard, and Telegram bot with it.
-4. [ ] Test by rebooting the VPS once (during the flat-book cutover
-       window, before it's the live/only copy) and confirming, without
-       RDP-ing in, that a Telegram "AutoTrade started" message arrives on
-       its own (the shadow loop sends this via notify() right after
-       connecting -- see run_shadow_loop.py's main()).
+Production convention (acceptance-tested with a real no-logon reboot,
+2026-08-04):
+
+1. [ ] All AutoTrade tasks run as the dedicated account with logon type
+       **S4U** ("Run whether user is logged on or not" WITHOUT storing the
+       password -- `New-ScheduledTaskPrincipal -LogonType S4U`). No
+       password in the task store, no dependency on anyone ever logging on.
+       Register/modify via PowerShell `Register-ScheduledTask`/
+       `Set-ScheduledTask` (never sc.exe/schtasks for creation -- quoting
+       bugs; see the GUI/ops memory note).
+2. [ ] Service-style tasks (shadow loop, Telegram control, watchdog):
+       trigger **At startup** with staggered delays (PT1M / PT2M / PT3M --
+       one physical core; simultaneous pandas imports at boot are worse
+       than the RAM they use), and **ExecutionTimeLimit DISABLED**
+       (`[TimeSpan]::Zero`). The old default PT72H limit was a time bomb:
+       Task Scheduler kills the task instance at the limit, i.e. a
+       task-launched shadow loop would have been killed every 3 days.
+       Actions unchanged (call python.exe directly, not the `pause`-ending
+       .bat files):
+       - Shadow loop: `"C:\AutoTrade\.venv\Scripts\python.exe" "C:\AutoTrade\scripts\autotrade_control.py" start`
+       - Telegram control: `"C:\AutoTrade\.venv\Scripts\python.exe" "C:\AutoTrade\scripts\run_telegram_control.py"`
+       **Do NOT create an "AutoTrade Dashboard" task at all** (lean-plan
+       P1: the dashboard is on-demand via Telegram's `/dashboard`, with an
+       idle TTL -- `scripts/run_dashboard.py --idle-ttl-minutes`); if one
+       exists from before 2026-08-04, disable/delete it.
+3. [ ] Repeating/one-shot tasks keep their schedules but get honest
+       ExecutionTimeLimits so an overrun can never stack onto its own next
+       cycle (lean-plan defect D-3: a heartbeat run once took 16 minutes on
+       a 10-minute schedule): Heartbeat = PT8M, Daily Report / DB Backup =
+       PT30M.
+4. [ ] Auto-logon (Sysinternals Autologon) is now OPTIONAL -- nice for
+       RDP convenience and it lets Google Drive for Desktop sync as a bonus
+       backup copy, but nothing depends on it: the guaranteed off-box
+       backup leg is the dev PC's `ops/pull_vps_backups.py` daily pull.
+       Signing out no longer kills the stack (nothing runs in the
+       interactive session anymore), but disconnect-not-logoff remains the
+       polite habit when RDP-ing.
+5. [ ] Acceptance test after any change here: reboot WITHOUT any logon and
+       confirm, without RDP-ing in, that (a) a Telegram "AutoTrade started"
+       message arrives, (b) the calendar export file resumes updating on
+       its 5-minute cadence with a plausible server-time offset, and (c)
+       `query session` over SSH shows NO logged-on user -- proving the
+       stack came up session-independent.
 
 ### 6b. Daily Auditor report
 
