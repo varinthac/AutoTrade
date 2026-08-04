@@ -6629,3 +6629,135 @@ as a way to make any number pass — **including** the Gate-1 200-trade floor an
 baseline already showed the deployed config failing. If the veto cuts the sample below the floor, the candidate fails;
 the floor does not move. No `config/base.yaml` change can follow from this experiment because no config key is
 involved; no `src/` change is made here under any outcome. The Test year is not touched.
+
+---
+
+## EXP-029 2026-08-04 — SLOT ALLOCATION: (A) the missed-signal population & occupancy attribution, (B) `shield.duplicate_signal_cooldown_hours` (NEW family "shield-slot-allocation"; menu item #3 of the 2026-08-04 entry diagnostic)
+Status: PRE-REGISTERED (results pending). Everything from this line down to `### EXP-029 RESULTS` was written and
+COMMITTED, together with a results-free `experiments/exp029_slot_allocation_harness.py`, **before any census,
+counterfactual or sweep number existed**; only the RESULTS section and this Status line are added afterwards.
+
+### 0. WHY THIS, AND WHAT KIND OF THING IT IS
+The 2026-08-04 entry diagnostic §3.4 reports a STRUCTURAL finding: only ~47% of distinct Council signal episodes ever
+become trades (560/530/538/543 episodes vs 266/254/233/254 executed), because `max_positions_per_symbol: 1` keeps the
+single slot busy. If true, **slot occupancy — not the Council gate — is the binding constraint on this strategy's trade
+population**, and it is the mechanical reason every filter this log has tested produced reshuffling noise rather than a
+clean effect (EXP-017/020/021, EXP-024 §3, EXP-026 §4, EXP-027 §4, EXP-028 §3).
+This experiment is therefore deliberately split:
+ * **PART A is a MEASUREMENT.** No candidate, no grid, nothing selected, no config or `src/` change can follow from it.
+   Its job is to price the missed population and to attribute the blocking to KINDS OF HOLDS.
+ * **PART B is a small pre-registered sweep** over the ONE existing `[adjustable]` knob in this area,
+   `shield.duplicate_signal_cooldown_hours` (4.0, never tested).
+ * **PART C is SCOPING PROSE ONLY — explicitly NOT simulated**, and it invents no numbers. `max_positions_per_symbol`
+   is bounded by the spec's own "[adjustable: เพิ่มเป็น 2 ได้หลัง live 3 เดือน]" (raise to 2 only after 3 months
+   live), so per rule 10 it may NOT be swept here and is not. Part C only enumerates options for a future USER
+   decision.
+**SCOPE: Train (y1/y2/y3) + Val (y4) ONLY. The Test year 2025-07-22 → 2026-07-21 is NOT touched by this experiment
+under ANY outcome** — this family has no authorised Test budget, `load_window` refuses `y5*` unconditionally, and the
+harness has no `--allow-test` escape hatch, deliberately.
+
+### 1. ACCOUNT CONTEXT, WINDOWS, COST MODEL (identical to EXP-022..028)
+Train y1 2021-07-22→2022-07-21, y2 2022-07-22→2023-07-21, y3 2023-07-22→2024-07-21; Val y4 2024-07-22→2025-07-21.
+$3,000 per-year anchored equity, `min_lot_risk_cap_pct` 1.5, `risk_per_trade_pct` 1.0, all-24h session, be/trail OFF,
+`tp_r_multiple` 2.0, `swing_pivot_bars` 3, complete cost model (slippage = min-1-spread, swap EXP-018, commission
+$0.00). **News mechanisms OFF in every cell = the C0 convention**, so every row here is directly comparable to this
+log's universal baseline. Production path only: the real `run_backtest`, the real `evaluate_council`, the real
+`check_risk_voice`, the real `Shield`. EXP-022's fast-path shim for speed. Harness
+`experiments/exp029_slot_allocation_harness.py`; raw output `experiments/exp029_*.txt`.
+
+### 2. PART A — DEFINITIONS FIXED BEFORE ANY NUMBER EXISTS
+ * **signal bar**: a bar at which the REAL `_council_signal_fn` (real Council + real Risk Voice) returns an
+   `OrderPlan`, evaluated UNCONDITIONALLY at every bar with a `SimulatedClock` ticked to that bar's OPEN time — exactly
+   the engine's own convention. This is the SUPPLY.
+ * **signal episode**: a maximal run of CONSECUTIVE signal bars with the SAME direction; a gap bar or a direction
+   change starts a new one. (The diagnostic §3.4 used the same construction; its published counts 560 / 530 / 538 /
+   543 are cited HERE, before the run, as the number the census must land near — see gate G2.)
+ * **admitted / missed**: an episode is ADMITTED iff some bar of it is the signal bar of an actual C0 trade; otherwise
+   MISSED.
+ * **counterfactual quality**: `backtest.forward_walk.simulate_order_forward` on the episode's FIRST bar's plan,
+   started at the next bar, entry = the plan's own entry (signal bar's close), spread = the signal bar's spread,
+   `time_stop_bars = 48`, Appendix A §5.4 cost convention (spread + commission, **no slippage**, no Watchman, no
+   Shield, no news) — the SAME machinery and convention the entry diagnostic used, so the two are comparable.
+   **ONE observation per EPISODE, not per bar**, which deliberately avoids the ~5x overlap inflation the diagnostic's
+   own §1.1 caveat 1 warns about. Absolute levels under this convention run hotter than the engine's; only
+   admitted-vs-missed comparison INSIDE the convention is meaningful, and that is the only comparison made.
+ * **blocking attribution**: for a missed episode, the reason at its FIRST bar — `slot_busy` (the engine never
+   evaluated that bar: a position was open), `shield_cooldown` (evaluated, plan returned, Shield rule 6 blocked),
+   `sizing_or_no_next_bar` (evaluated, plan returned, Shield passed, still no trade: the min-lot floor, or no next bar
+   to fill on). For `slot_busy`, the HOLDER is identified: its age in bars at that instant, its total holding length,
+   and its eventual exit reason — which is the "which kinds of holds block the most supply" question, reported both as
+   missed EPISODES and as blocked BARS per holder exit reason.
+Reported: episode census per window; admit rate; missed count; cause mix; admitted-vs-missed forward-walk quality with
+SE and the difference-of-means; quality by cause; the occupancy attribution above; and the C0 trades' own engine R for
+scale. **Rule 6:** every subset under 100 observations is reported in the pre-registered words **"MEASUREMENT WITH
+WIDE ERROR BARS"** with SE and 95% interval, and no significance claim is made in either direction.
+**What Part A may NOT do (binding):** it selects nothing, so it cannot justify any config or `src/` change by itself,
+and it may not be used to argue for a specific replacement policy — that is Part C's scoping question and a user
+decision.
+
+### 3. PART B — THE ONE KNOB: what `duplicate_signal_cooldown_hours` ACTUALLY gates (read from code first)
+`shield/checkpoint.py` rule 6, verbatim: a new signal is blocked iff **(same symbol AND same direction as the last
+trade Shield approved and that was actually FILLED)** AND **(the `swing_index` re-derived at signal time EQUALS the one
+recorded at that trade)** AND **(elapsed < cooldown)**. A genuinely NEW confirmed swing bypasses it entirely, whatever
+the elapsed time. In this single-position engine it is the ONLY one of Shield's six rules with any effect
+(`open_positions` is always `[]`, so rules 2/3/4/5 can never fire; `min_rr` always passes at `tp_r_multiple` 2.0) —
+therefore **`cooldown = 0` must be behaviourally identical to `shield_cfg = None`**, which is fidelity gate G3.
+So the knob does NOT gate "how long to wait after any trade"; it gates **same-direction re-entry on the SAME confirmed
+swing**. Raising it suppresses same-swing re-entries for longer; lowering it toward 0 restores the pre-2026-07-23
+behaviour every EXP before that date was measured under.
+**PRIOR EVIDENCE, stated before the run and against the candidate:**
+ (i) The 2026-07-23 NOTE "MEASURED impact of the now-wired Shield cooldown" is effectively the {4} vs {0} contrast
+     already, at $10k equity on the full history: net −2.4% trades (104 blocked entries, ~73 refilled by later signals
+     — the same slot-refill dynamic), |ΔPF| ≤ 0.031 per window, **sign non-systematic** (Train +0.024, Val −0.031,
+     Test +0.002, full-history +0.008). Its own conclusion was "noise-level, not a directional bias".
+ (ii) The 2026-07-23 martingale NOTE's **variant B** measured the ADJACENT structural question — unlocking a second
+     independent slot on a fresh signal — as **neutral-to-slightly-worse** (Train PF 1.092 vs baseline 1.102) with
+     lower MTM drawdown (23.1% vs 25.5%), per-year consistent, and concluded "safe but delivers no clear edge".
+ **Expectation, recorded before the run: REJECT / neutral.** A clean negative result is a valid and expected outcome
+ (rule 9), and this pre-registration exists so that a lucky cell cannot be promoted after the fact.
+**Grid: {0, 2, 4 (baseline), 8} hours. Nothing else is swept.** No refinement pass is authorised: with the expectation
+above, a second pass around a "best" cell would be exactly the shopping this protocol forbids.
+
+### 4. PART B — ACCEPTANCE CRITERIA (standard bars, set HARDER than usual, and why)
+ (a) **Portfolio improvement on Train AND Val**, in PF and net$, vs the 4.0 baseline. Either split failing = REJECT.
+ (b) **> 1.6–1.7 SE** on the avgR difference vs baseline, on Train AND on Val. **DECLARED IN ADVANCE: no PAIRED test
+     is available for this knob.** By construction, an entry that exists in both arms is the SAME trade with the same
+     exit and the same R (nothing but the cooldown differs), so the paired difference on shared entries is exactly
+     ZERO and 100% of any effect lives in the composition change. The reported SE is therefore the **unpaired**
+     `sqrt(se_a² + se_b²)`, which OVERSTATES the true SE for two heavily-overlapping trade sets and is thus
+     conservative for a REJECT and demanding for an ADOPT — deliberately, per (e).
+ (c) **Per-year consistency**: the candidate must beat 4.0 in the majority of Train years and not flip any year from
+     profitable to losing.
+ (d) **Plateau (rule 5)**: the candidate's neighbours in the grid must perform within ~15% of it. An isolated peak at
+     one grid point is rejected as noise even if it is the best number in the sweep.
+ (e) **The anti-reshuffling clause (the diagnostic's own requirement, adopted verbatim).** This knob's whole mechanism
+     IS re-sequencing, so the usual "portfolio deltas are reshuffling noise" veto cannot be invoked to dismiss the
+     result — which means **the plateau and per-year bars carry the entire weight and are set harder than usual**.
+     Concretely: the shared-entry fraction between each arm and the baseline is reported, and if it is low the result
+     is declared composition-dominated and the candidate must clear (c) and (d) unambiguously, not marginally.
+ (f) **Rule 6 sample floor**: every window must stay ≥ 100 trades for a conclusion, and any window's Gate-1 200-trade
+     status is reported (rule 8: the floor is not negotiable and is not touched).
+**Rule 7 (multiple testing).** Family "shield-slot-allocation" is NEW. Configs evaluated: **4 / 4** (cooldown 0, 2, 4,
+8; the baseline 4.0 is one of them). N = 4 ≪ 20, so no edge-inflation correction is triggered; the honest count is
+recorded so a future session continues from 4, not from 0. Part A's census selects nothing and adds no configs.
+`max_positions_per_symbol` is NOT swept and NOT counted (rule 10, spec-bounded).
+
+### 5. FIDELITY GATES — all run and reported BEFORE any deciding number is read; any failure STOPS the experiment
+ G1 **C0 anchors, all four windows, with the cooldown at its live 4.0 and the measurement probe installed**:
+    **266 / 254 / 233 / 254** trades, PF **1.0159 / 0.9949 / 1.2020 / 1.0961**, maxDD **14.4879 / 26.12 / 12.2659 /
+    9.9895%**, y4 net **+$352.60**. Because the probe wraps `signal_fn`, G1 doubles as proof that the instrumentation
+    is behaviour-neutral.
+ G2 **PART A self-consistency, asserted IN CODE (the mode aborts on failure)**: (i) the set of bars the engine did NOT
+    evaluate must EQUAL the union of [entry_index, exit_index) over the C0 trades (the occupancy map is either exact or
+    the attribution is meaningless); (ii) at every bar the engine DID evaluate, the unconditional census must agree
+    with the engine on whether a plan exists; (iii) the episode count is reported against the diagnostic's published
+    560 / 530 / 538 / 543 — a material divergence must be explained in RESULTS, not glossed.
+ G3 **`cooldown = 0` == `shield_cfg = None`**, trade-for-trade / field-for-field on a full window — the structural
+    claim in §3 that rule 6 is the only live rule in this engine.
+
+### 6. WHAT CANNOT FOLLOW FROM THIS EXPERIMENT (rule 8, binding)
+No promotion/demotion gate, Auditor threshold or circuit-breaker limit is touched, and none will be proposed for
+change — including the Gate-1 200-trade floor and PF floor. Part C proposes no numbers and simulates nothing;
+`max_positions_per_symbol` stays at 1 and is not swept (rule 10). If Part B rejects, `config/base.yaml` keeps
+`duplicate_signal_cooldown_hours: 4.0` and that is recorded as a "default is already fine" result (rule 9). The Test
+year is not touched under any outcome.
