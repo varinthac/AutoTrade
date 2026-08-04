@@ -253,6 +253,11 @@ def portfolio_metrics(trades) -> dict:
         "win_rate": None if rep.win_rate is None else round(rep.win_rate, 4),
         "loser_rate": round(sum(1 for r in rs if r < 0) / len(rs), 4) if rs else None,
         "worstR": round(min(rs), 4) if rs else None,
+        # CONTEXT ONLY, added after the treated-subset numbers were read and
+        # disclosed as such in the log: the book's OWN rate of losses worse
+        # than a clean stop-out, i.e. the denominator a reader needs to judge
+        # criterion (c3)'s absolute 5% bar. It changes no pre-registered bar.
+        "frac_below_minus1R": round(sum(1 for r in rs if r < -1.0) / len(rs), 4) if rs else None,
         "news_exits": sum(1 for t in trades if t.exit_reason == "news_protection"),
     }
 
