@@ -160,7 +160,7 @@ def run_arm(window: str, arm: str, *, persist: bool, out_of_sample: bool) -> dic
         path = out_dir / f"{SYMBOL}_TASK1_{window}_{arm}.json"
         path.write_text(json.dumps(env, indent=2, default=str), encoding="utf-8")
         row["envelope"] = str(path)
-        loaded = load_backtest_report_envelope(json.loads(path.read_text(encoding="utf-8")))
+        loaded = load_backtest_report_envelope(path)
         a = cfg["auditor"]["promotion"]
         gate = evaluate_backtest_to_paper_gate(loaded, PromotionThresholds(
             backtest_min_profit_factor=a["backtest_min_profit_factor"],

@@ -5655,3 +5655,142 @@ moving the bar.
      is baked into the ENTRY only), which makes mode A's market close ~1 spread too favourable in BOTH arms.
  (v) The live archive `data/db/news_calendar_history.csv` on this dev PC is a stale local copy (VPS-owned) and every
      row it contributes is dated 2026-08, i.e. **outside the Test window entirely** — it cannot affect either number.
+
+## EXP-026 2026-08-04 — News-protection min-lot fallback: **SKIP vs CLOSE_ALL** (CONTINUATION of EXP-023's family "news-protection min-lot fallback"; the fail-direction EXP-025 §6(iii) and EXP-024 §8(2) both deferred)
+Status: PRE-REGISTERED (results pending). Everything from this line down to `### EXP-026 RESULTS` was written and
+COMMITTED, together with a results-free `experiments/exp026_minlot_skip_harness.py`, **before any B_skip outcome number
+existed**; only the RESULTS section and this Status line are added afterwards.
+Scope: Train (y1/y2/y3) + Val (y4). **The Test year 2025-07-22 -> 2026-07-21 is NOT touched unless every acceptance bar
+in §6 clears first** — the harness refuses `--window y5*` without an explicit `--allow-test`. This family's one-touch
+Test budget is **UNSPENT** (EXP-023 §5, re-confirmed by EXP-025 §5 and EXP-024 §7; the 2026-08-04 honest-Test-baseline
+MEASUREMENT above did not spend it, because it selected nothing). **Whatever the verdict, ADOPTION is a separate
+user-level risk-appetite decision: this experiment ends at RECOMMEND / REJECT / INSUFFICIENT, and changes no
+`config/base.yaml` value and nothing under `src/`.**
+
+### 0. THE MECHANISM, AND WHY IT IS THE LAST UNTESTED ONE IN THIS LINE
+Live's `watchman/loop.py::_act_on_news_decision`, on a `CLOSE_HALF_AND_BREAKEVEN` decision, calls
+`_half_volume_rounded(position.volume, spec)`; when half the volume rounds below the broker's `volume_min` it returns
+`None` and the branch **recurses into `CLOSE_ALL`** — the whole position is closed at ~+0.5R. The code comment states
+the reason in full: *"closing the WHOLE position instead (still risk-reducing) rather than skipping protection
+entirely"* — a fail-DIRECTION chosen on instinct, never measured. At a $3,000 account in the current gold regime this
+is not a corner case: it is the norm for the smallest-lot trades (EXP-022 §1).
+**Candidate B_skip:** when, and ONLY when, half-lot < `volume_min`, SKIP the protection action entirely — position
+untouched, stop unmoved, no `news_protected_until` suppression recorded, re-checked on the next trigger exactly as
+live's ~5s loop would. Trades whose half-lot IS a valid lot are **identical in both arms** (the engine's genuine
+partial-close branch runs untouched), so the treatment is confined by construction to min-lot trades.
+This is a distinct question from EXP-023's (which changed the ACTION to a locked stop and was rejected) and from
+EXP-025's (which changed the trigger LEVEL and was rejected). It is the one EXP-024 §8(2) ranked as "the only remaining
+mechanism with a plausible upside", and it is explicitly flagged there as a **risk-control WEAKENING direction**: it
+removes the only reason the affected subset currently has a zero-loser, +0.33R floor. Hence §6(c)'s mandatory,
+independently-decisive tail criterion.
+
+### 1. ARMS (three; one mechanism, no parameter is swept anywhere in this experiment)
+| id | what | role |
+|----|------|------|
+| **A_live** | current behavior: min-lot -> CLOSE_ALL | BASELINE (= what runs live today) |
+| **B_skip** | min-lot -> SKIP protection; everything else identical | **THE CANDIDATE** |
+| C | news protection not modeled | REFERENCE BOUND ONLY — not a candidate (removing a deliberate risk control is out of scope, EXP-023/024/025 precedent) |
+Configs evaluated (this exp / cumulative for THIS family): **3 / 23** (EXP-023 burned 20 on the sibling lock-SL
+question, same windows, same data, same searcher). Rule 7 at N=23: required edge **1.7 SE**, the same level EXP-023 and
+EXP-025 used. No threshold anywhere in this experiment can be chosen by its result.
+
+### 2. THE ENGINE PATH, AND WHY IT WAS CHOSEN OVER ADAPTING THE exp024 HARNESS (declared before results, as required)
+This experiment drives the REAL `backtest.engine.run_backtest`, with B_skip installed as a **monkeypatched decision
+seam** over `engine._act_on_news_decision` (`experiments/exp026_minlot_skip_harness.py`'s `MinLotSeam`). Nothing under
+`src/` or `config/` is modified. Reason: per the 2026-08-04 engine NOTE, EXP-023/024/025's harnesses model the min-lot
+CLOSE_ALL degeneration ONLY and never the genuine partial close, so their arm-level sequences diverge from live for
+every larger-than-min-lot trade (the NOTE measured the difference on y4: engine 350 trades / PF 1.0667 vs harness 314 /
+1.091). Because those non-min-lot trades are exactly the ones that behave IDENTICALLY in both arms here, a full-close-
+only harness would still give the right *treatment* estimate — but it would give the wrong *portfolio* rows for
+criterion (d) and the wrong denominator for the tail comparison. The engine path has no such defect, so it is used.
+The conditional replay calls the engine's own `check_exit` / `_step_news_protection` / `evaluate_watchman` /
+`_close_trade` per bar; only the bar-loop skeleton (which contains no decision) is local.
+
+### 3. THE DECIDING METRIC (trade-matched, conditional, sequence held FIXED — EXP-023 D3 / EXP-025 E1, unchanged)
+`max_positions_per_symbol: 1` means any later exit reshuffles which signal is taken next, and EXP-017/020/021
+established that reshuffling noise dominates portfolio deltas. So:
+ * TREATED SUBSET = positions on which arm A_live's replay performs **at least one min-lot degeneration**, i.e.
+   precisely the positions on which the two arms can differ at all. Identified identically in both arms by the seam.
+ * DECIDING METRIC = the **paired per-position R difference `R(B_skip) − R(A_live)`** on that subset, same entry bar,
+   same fill, same lot, same metadata, same subsequent bars; SE of the DIFFERENCE. Position R = the sum of the net P&L
+   of all of that position's `ClosedTrade` records (a genuine partial close emits two) over its ORIGINAL risk amount.
+ * Full-sequence portfolio runs are reported as **VETO-ONLY** evidence (criterion (d)), never as selection evidence.
+ * Structural assertion, checked in code every window: positions with ZERO min-lot degenerations must produce
+   BIT-IDENTICAL outcomes in both arms (`untouched_identical`). If that ever fails, the seam is not confined to the
+   mechanism it claims to change and the experiment stops.
+
+### 4. WINDOWS, ACCOUNT CONTEXT, COST MODEL (identical to EXP-022/023/024/025 and to the Task-1 measurement above)
+Train y1 2021-07-22→2022-07-21, y2 2022-07-22→2023-07-21, y3 2023-07-22→2024-07-21; Val y4 2024-07-22→2025-07-21.
+$3,000 per-year anchored, `min_lot_risk_cap_pct` 1.5, `risk_per_trade_pct` 1.0, all-24h, be/trail OFF, tp 2.0, pivot 3.
+COST MODEL COMPLETE: slippage = min-1-spread (`slippage_points=None`), swap modelled (EXP-018 long −53.2 / short
++36.8, 3× Wed), commission $0.00. News protection from the calendar built this session
+(`data/historical/news_calendar_backtest.csv`), `news_profit_threshold_r` 0.5, `news_window_minutes` 30,
+`news_close_mode` half — `config/base.yaml` exactly as adopted.
+
+### 5. FIDELITY GATES — ALL RUN AND REPORTED BEFORE THIS PRE-REGISTRATION WAS WRITTEN (full disclosure of ordering)
+ G1 fast-path shim identical to the unshimmed engine trade-for-trade, news OFF (176 trades) and news ON (242). **PASS.**
+ G2 y4/VAL mode C = **254 / PF 1.0961 / +$352.60 / maxDD 9.9895%** — EXP-022's cap-1.5 y4 cell, re-confirmed by
+    EXP-023/024/025. **PASS.**
+ G3 y4/VAL A_live = **350 / PF 1.0667 / +$259.67 / maxDD 11.4154%** — the 2026-08-04 engine NOTE's published engine
+    figure, to the cent. **PASS.**
+ G4 conditional-replay self-check on y4/VAL: replaying every A_live position one-by-one reproduces the full-sequence
+    A_live trade list **field-for-field (350 == 350, identical)**. **PASS.**
+ **DISCLOSURE, because the reader is entitled to know what was visible before the bars below were set:** G3/G4 also
+ printed y4's seam counts — **65 min-lot degenerations and 40 genuine partial closes** out of 105 protection actions.
+ So the y4 treated-subset SIZE (<= 65, i.e. below rule 6's 100-trade floor) was known before §6 was written. No
+ OUTCOME number (no R, no PF, no paired difference for either arm on the treated subset) was computed or seen. That a
+ treated subset would be small was in any case predictable from EXP-024 (affected@real 64/62/67/71) and from EXP-022 §3
+ (the min-lot regime barely exists before 2024) — which is exactly why §6(e) is written as an asymmetric rule that can
+ block a RECOMMEND but cannot manufacture one.
+
+### 6. ACCEPTANCE CRITERIA — ALL must hold to RECOMMEND B_skip (set before any B_skip outcome number existed)
+ (a) **TREATMENT EFFECT.** Pooled paired mean `R(B_skip) − R(A_live)` on the treated subset must exceed **+1.7 SE** of
+     that paired difference on **Train (y1+y2+y3) AND on Val (y4)**. Both, not either.
+ (b) **PER-YEAR SIGN CONSISTENCY.** The paired mean difference must have the same sign in every window that contains
+     any treated position — no flips. (Windows with zero treated positions are reported as empty, not as agreement.)
+ (c) **TAIL — MANDATORY, AND DECISIVE ON ITS OWN.** B_skip re-exposes treated positions to full SL risk, an outcome
+     A_live makes arithmetically impossible (its floor is the trigger price, ~+0.3R; A's loser count is expected to be
+     0 by construction and will be MEASURED, not assumed). Reported per window and pooled: loser count and loser RATE
+     under both arms, worst single R under both arms, count below −1.0R, and the paired downside distribution (count
+     of negative differences, 5th percentile of the difference, worst single difference).
+     **"Materially fat" is defined numerically, here, before results — any ONE breach REJECTS regardless of the mean:**
+      * **c1** B's loser rate on the treated subset exceeds the SAME window's full-portfolio loser rate under A_live by
+        more than **5 percentage points**. (Rationale: every treated position was at ≥+0.5R at some point, so it should
+        lose LESS often than an ordinary trade, never materially more. y4's A_live portfolio loser rate is 0.480 and
+        mode C's is 0.626 — both already on record from G2/G3.)
+      * **c2** B's worst single treated-position R is worse than the SAME window's worst single R under A_live's full
+        sequence (y4: −1.3456). This tests for a NEW KIND of loss, not merely a nonzero one: B may hand a treated trade
+        the ordinary −1R stop-out the strategy already takes everywhere else, but it may not produce something worse
+        than the book's own worst case.
+      * **c3** More than **5%** of treated positions under B end below **−1.0R** (i.e. worse than a clean stop-out —
+        gap/slippage beyond the stop, the genuinely new risk A_live's certain exit removes).
+ (d) **PORTFOLIO NON-DEGRADATION (veto-only, never selection).** Full-sequence PF and max DD under B_skip within
+     **~15% relative** of A_live on every Train window and on Val.
+ (e) **SAMPLE HONESTY (rule 6), stated asymmetrically and deliberately.** Treated-subset sizes are reported per window.
+     Deciding statements pool Train and, separately, Val. **If pooled Train treated < 100, this experiment may NOT
+     issue a RECOMMEND at all** — the verdict is then at most INSUFFICIENT, the numbers are reported in the
+     pre-registered words **"MEASUREMENT WITH WIDE ERROR BARS"** with SE and interval printed, and no significance
+     claim is made. A REJECT remains available on (c) or (d), because the status quo needs no new evidence and a change
+     does. A Train+Val pooled figure may be printed as DESCRIPTION only; it can never be the basis of a decision
+     (that would break the split).
+ (f) **TEST CONFIRMATION — only if (a)–(e) ALL clear, else the Test year is NOT touched** (EXP-008 §6.4 pattern).
+     Pre-registered now so it cannot be invented later: ONE run of A_live and B_skip on `y5_TEST_2025-26`, same harness,
+     same context, `--allow-test`, no re-runs and no variants. Confirmation requires ALL of: (i) the paired mean
+     difference on the Test treated subset is POSITIVE, with the same sign as Train and Val; (ii) all three tail bars
+     c1/c2/c3 hold on Test; (iii) portfolio PF and max DD within ~15% of A_live on Test. Anything else = NOT confirmed,
+     reported as such. The result is reported whatever it is; a spent touch is never un-spent.
+ Walk-forward: the 4 windows ARE the rolling confirmation for (b); no separate tooling exists in this repo.
+ **Rule 8:** no promotion/demotion gate, Auditor threshold or circuit-breaker limit is touched, and none will be
+ proposed for change as a way to make any result pass — including the Gate-1 floors the Task-1 measurement above just
+ showed the deployed config failing.
+
+### 7. INHERITED LIMITATIONS (unchanged, all pre-declared)
+ (i) Fail-safe episodes are not modelled: live fires protection whenever its calendar read fails, so the treated subset
+     measured here is a LOWER BOUND on the set live actually treats (EXP-024 §6(iii)). Direction: B_skip's real-world
+     footprint is LARGER than measured here.
+ (ii) Current-classification look-ahead + erased reschedules in the dump (~1%); direction unknown.
+ (iii) H1 bar resolution: eligibility is bar-granular, live is 5-second granular.
+ (iv) Exits fill nominally (spread/slippage baked into the ENTRY only), so A_live's market close at ~+0.5R is modelled
+     ~1 spread (≈0.01–0.03R) too favourably — a bias that flatters the BASELINE, i.e. it works against the candidate.
+ (v) The 2025-11-20 NFP normalisation defect is inside the TEST year only; it is irrelevant to Train/Val and would be
+     re-declared if (f) is ever earned.
