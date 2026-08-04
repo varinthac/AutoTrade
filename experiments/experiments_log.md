@@ -6471,3 +6471,20 @@ ANCHOR STATUS after the fix (post-fix rows, `exp027` harness conventions):
   present (protection under-fires ~7-19% of affected trades), so the honest Test PF 1.0845 modestly UNDER-charges mode
   A's true cost. Re-measuring the Test baseline with the fixed engine is a USER decision (it would be a correction of
   the same authorised measurement touch, not a new one) — deliberately not taken unilaterally.
+
+### AMENDMENT 2026-08-04 (same day) to the HONEST TEST BASELINE — re-measured with the post-defect-fix engine (user-authorised correction of the SAME measurement touch, not a new touch)
+The original Task-1 A@real row was produced with EXP-027's defect 1 present (the +0.5R float boundary under-firing
+protection). Re-run with the fixed engine (`2b0b109`), same driver, same pre-registration, C arm first as control:
+- C (anchor): 228 / PF 1.1903 / +$845.29 / DD 12.39 / pf_ex5 1.0666 — IDENTICAL to the original (C is untouched by
+  both fixes, as required).
+- **A@real CORRECTED: 309 trades / PF 1.1116 / +$574.44 / DD 14.57 / avgR 0.0802 / pf_ex5 1.0095 / 77 news exits**
+  (was 292 / 1.0845 / +$429.27 / 13.85 / 0.9866 / 59 — the missing fires were exactly the under-fire the fix
+  recovered, 59→77).
+Reading, honestly: the correction SOFTENS but does not reverse the original verdict. The deployed config still FAILS
+Gate-1 on the Test year (PF 1.1116 < 1.3; the gap vs mode C's own miss widens −0.110 → −0.188), but the top-5
+criterion flips BACK to passing (pf_ex5 1.0095 > 1.0 — the original "fails ex-top-5" statement is retracted), DD stays
+under the 15% ceiling by 0.43pp, and news protection's Test-year cost is −$271 (~32% of mode-C net), not the −$416
+(~49%) first reported. Mechanism: on this Test year the recovered fires mostly banked +0.5R on trades that would
+otherwise have retraced — firing MORE was net-positive here, unlike the Train-side picture. Gate thresholds untouched
+(rule 8). Driver got a one-line compat fix (`risk_voice_news_modeled=False` in its envelope call — the flag postdates
+the driver; both Task-1 arms are defined as protection-only).

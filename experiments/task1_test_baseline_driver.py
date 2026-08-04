@@ -153,6 +153,10 @@ def run_arm(window: str, arm: str, *, persist: bool, out_of_sample: bool) -> dic
             SYMBOL, df, rep, bt.cost_model, EQUITY, out_of_sample,
             risk_voice_modeled=True, watchman_exits_modeled=True, shield_modeled=True,
             news_protection_modeled=(arm == "A"),
+            # 2026-08-04 (post-3ec55ee compat): the entry blackout stays
+            # unmodeled in BOTH Task-1 arms -- the measurement pre-dates that
+            # flag and its arms are defined as protection-only.
+            risk_voice_news_modeled=False,
             min_lot_risk_cap_pct=bt.min_lot_risk_cap_pct,
         )
         out_dir = REPO_ROOT / "data" / "db" / "backtest_reports"
