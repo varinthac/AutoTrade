@@ -54,6 +54,24 @@ def test_healthy_task_does_not_alert(monkeypatch, tmp_path):
     assert calls == []
 
 
+def test_sched_s_task_running_is_healthy_not_a_failure(monkeypatch, tmp_path):
+    """2026-08-05 live false alarm: the heartbeat queried the Daily Report
+    task while its 09:00 instance was still executing -- Windows reports
+    Last Result = 267009 (0x41301, SCHED_S_TASK_RUNNING) during a run, and
+    the plain non-zero check alerted on it seconds before the task finished
+    with 0. In-progress must read as healthy; a genuinely HUNG run is
+    covered by the task's own ExecutionTimeLimit, whose kill produces a
+    real non-zero code this check still flags."""
+    calls = _capture_notify(monkeypatch)
+    _stub_schtasks(monkeypatch, stdout=_fake_schtasks_output(last_result="267009"))
+    state_path = tmp_path / "state.json"
+
+    results = check_all(state_path=state_path)
+
+    assert all(results.values())
+    assert calls == []
+
+
 def test_nonzero_last_result_is_unhealthy_and_alerts(monkeypatch, tmp_path):
     calls = _capture_notify(monkeypatch)
     _stub_schtasks(monkeypatch, stdout=_fake_schtasks_output(last_result="1"))

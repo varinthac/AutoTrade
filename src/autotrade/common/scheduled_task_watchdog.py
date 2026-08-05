@@ -49,6 +49,9 @@ _MONITORED_TASKS: dict[str, timedelta] = {
 
 _DATETIME_FORMATS = ("%m/%d/%Y %I:%M:%S %p", "%d/%m/%Y %H:%M:%S")
 _SCHTASKS_QUERY_TIMEOUT_SEC = 30
+# 0x41301 -- Task Scheduler's "the task is currently running" STATUS code,
+# surfaced through the Last Result field while an instance is mid-run.
+_SCHED_S_TASK_RUNNING = 267009
 
 
 def check_all(state_path: Path | None = None) -> dict[str, bool]:
@@ -105,6 +108,18 @@ def _query_and_evaluate(task_name: str, max_age: timedelta) -> tuple[bool, str]:
     except ValueError:
         return False, f"non-numeric Last Result {last_result_raw!r}"
 
+    if last_result == _SCHED_S_TASK_RUNNING:
+        # 2026-08-05 false-alarm fix: while a task instance is EXECUTING,
+        # Windows reports Last Result = 0x41301 (267009, SCHED_S_TASK_RUNNING)
+        # -- a status code, not a failure. The heartbeat fired at 09:00:0x,
+        # squarely inside the Daily Report's own run, and alerted on it;
+        # seconds later the task finished with 0. In-progress is healthy:
+        # the task demonstrably fired (that is what this watchdog exists to
+        # verify), and a HUNG run is still covered elsewhere -- every
+        # watched task now carries its own ExecutionTimeLimit (runbook 6a),
+        # after which Task Scheduler kills it and Last Result becomes a
+        # genuine non-zero code this check flags on the next cycle.
+        return True, "ok (task currently running)"
     if last_result != 0:
         return False, f"Last Result={last_result} (non-zero -- the task's own last run failed)"
 

@@ -4,7 +4,7 @@ This document provides a comprehensive list of all 1573 test cases in the AutoTr
 
 ## Overview
 
-- **Total Test Count**: 1585 (including all parametrized variants)
+- **Total Test Count**: 1586 (including all parametrized variants)
 - **Test Files**: ~59 files across `tests/unit/` subdirectories
 - **How to Regenerate**: Run `pytest --collect-only -q` from the repo root
 
@@ -105,13 +105,13 @@ This document provides a comprehensive list of all 1573 test cases in the AutoTr
 | | test_run_scheduled_daily_report.py | 3 |
 | | test_run_shadow_loop.py | 42 |
 | | test_run_telegram_control.py | 26 |
-| | test_scheduled_task_watchdog.py | 9 |
+| | test_scheduled_task_watchdog.py | 10 |
 | | test_service_watchdog.py | 11 |
 | | test_stop_request_flag.py | 9 |
 | | test_symbols.py | 7 |
-| **Scripts & CLI Subtotal** | | **467** |
+| **Scripts & CLI Subtotal** | | **468** |
 | | | |
-| **GRAND TOTAL** | | **1585** |
+| **GRAND TOTAL** | | **1586** |
 
 ---
 
@@ -1919,6 +1919,7 @@ This document provides a comprehensive list of all 1573 test cases in the AutoTr
 ### tests/unit/common/test_scheduled_task_watchdog.py
 
 - test_healthy_task_does_not_alert
+- test_sched_s_task_running_is_healthy_not_a_failure
 - test_nonzero_last_result_is_unhealthy_and_alerts
 - test_stale_last_run_time_is_unhealthy
 - test_schtasks_query_failure_is_unhealthy
